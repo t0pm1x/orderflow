@@ -25,6 +25,7 @@ import (
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
 	"github.com/t0pm1x/orderflow/platform/events"
 
+	svcconsumer "github.com/t0pm1x/orderflow/services/order/internal/consumer"
 	svcoutbox "github.com/t0pm1x/orderflow/services/order/internal/outbox"
 )
 
@@ -41,22 +42,29 @@ func Run(ctx context.Context) error {
 	logger := slog.Default()
 	dbURL := envOrDefault("DATABASE_URL", "")
 	broker := envOrDefault("KAFKA_BROKER", "")
+	groupID := envOrDefault("KAFKA_GROUP_ID", "orderflow-order")
 	httpAddr := envOrDefault("HTTP_ADDR", ":8081")
 
 	logger.Info("orderflow-order starting",
 		"version", Version,
 		"database", redact(dbURL),
 		"kafka", broker,
+		"kafka_group", groupID,
 		"http_addr", httpAddr,
 		"table", TableName)
 
-	closeFn, err := startOutbox(ctx, logger, dbURL, broker, httpAddr)
+	outboxClose, err := startOutbox(ctx, logger, dbURL, broker, httpAddr)
 	if err != nil {
 		return fmt.Errorf("outbox start: %w", err)
 	}
-	defer func() {
-		_ = closeFn(context.Background())
-	}()
+	defer func() { _ = outboxClose(context.Background()) }()
+
+	consumerClose, err := svcconsumer.Start(ctx, logger, broker, groupID)
+	if err != nil {
+		return fmt.Errorf("consumer start: %w", err)
+	}
+	defer func() { _ = consumerClose(context.Background()) }()
+
 	<-ctx.Done()
 	return nil
 }
