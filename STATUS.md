@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.5.b)
+**Last updated:** 2026-08-17 (3.4.c)
 
 ## Sub-stages
 
@@ -22,6 +22,7 @@
 | 3.3.e-f | events envelope (franz-go) + typed errors | done | 823d267   |
 | 3.4.a | Order Service skeleton (cmd/order, internal package dirs, migrations) | done | 9ffb1cc |
 | 3.4.b | Order Domain (state machine + Order aggregate + InvalidTransitionError) | done | cec01b9 |
+| 3.4.c | Order REST API (POST/GET/List /v1/orders, Repository interface, mockRepo tests) | done | c63785b |
 | 3.5.a | Payment Service skeleton (cmd/payment, provider/idempotency/webhook/consumer/outbox stubs) | done | 67c399f |
 | 3.5.b | Payment mock provider (deterministic Charge/Refund by last-4) | done | e7a0a3f |
 | 3.6.a | Inventory Service skeleton (cmd/inventory, model/lock/redis/api/consumer/outbox stubs) | done | 65ec9cf |
@@ -29,9 +30,8 @@
 
 ## Next up
 
-- 3.4.c Order domain: domain events emitted on state transitions
-  (OrderCreated / OrderReserved / OrderConfirmed / OrderCancelled /
-  OrderFailed), outbox record helpers
+- 3.4.d Order outbox (DB-backed, INSERT … RETURNING outbox_id, status
+  PENDING → SENT, poller reads by PENDING + created_at ASC batched)
 - 3.5.c Payment idempotency (DB-backed key, race-safe via INSERT ON CONFLICT)
 - 3.6.c Inventory optimistic lock (lock.Upsert with `UPDATE ... WHERE
   version = $2`, returns ErrStaleVersion on 0 rows affected)
@@ -74,3 +74,22 @@
   but `TestReservation_Expired` uses `time.Now`); (c) dropped the
   duplicate `// Package model ...` comment from `stock.go` since the
   canonical package doc already lives in `doc.go` from 3.6.a.
+- 3.4.c deviations from spec: (a) spec used import path
+  `github.com/t0pm1x/orderflow/platform/apierrors` but the actual module
+  is `pkg/platform/errors` (package name `errors`). Aliased as
+  `apierrors` in handler.go to avoid shadowing stdlib `errors` and to
+  match the spec's call-site verbosity; (b) spec's `parseUUID` was a
+  placeholder that wouldn't compile (returned `[16]byte` but
+  `types.OrderID`/`types.CustomerID` are `uuid.UUID` under the hood);
+  replaced with `uuid.Parse` + proper INVALID_ID 400 response on bad
+  input; (c) spec used `apierrors.WriteError` but no such helper
+  existed in `pkg/platform` — added `WriteError(w, err)` to
+  `pkg/platform/errors` that serializes `*APIError` as JSON
+  (`{"code","message"}`) and falls back to 500 INTERNAL for plain
+  errors; (d) spec's `errNotFound` shadowed stdlib `errors` — kept the
+  sentinel for the mock repo but `errors.Is(err, errNotFound)` in the
+  handler works because the handler imports both stdlib `errors` and
+  the aliased `apierrors`; (e) `get` handler had a `:=` type-conflict
+  (`err` was `*APIError` from `parseOrderID`, then `h.repo.Get` returns
+  `error`) — renamed the first to `parseErr` to keep `errors.Is` on the
+  repo branch clean.
