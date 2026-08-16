@@ -5,6 +5,7 @@ use (
 	./cmd/order
 	./cmd/payment
 	./cmd/saga
+	./pkg/consumer
 	./pkg/outbox
 	./pkg/platform
 	./services/inventory

@@ -1,0 +1,236 @@
+// Package consumer provides the Kafka consumer base + per-event
+// handler plumbing used by every orderflow service. It complements
+// pkg/outbox (which is the producer side of the same events): the
+// outbox poller writes events, this package reads them and dispatches
+// to per-service handlers.
+//
+// Sub-stages:
+//   - 3.8.a Consumer base + per-service consumer group
+//   - 3.8.b Idempotent handler wrapper (event_id dedupe)
+//   - 3.8.c Consumer DLQ (handler error → retry → DLQ)
+//
+// Per-service handlers live in services/<svc>/internal/consumer/.
+// See the spec for the full mapping of which handler reads which
+// event.
+package consumer
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/twmb/franz-go/pkg/kgo"
+
+	"github.com/t0pm1x/orderflow/platform/events"
+)
+
+// Handler processes one event envelope. Returning nil acknowledges
+// the offset; returning a non-nil error triggers retry/DLQ logic
+// (see WithDLQ).
+type Handler func(ctx context.Context, env *events.Envelope) error
+
+// HandlerRegistry maps event_type strings to Handler funcs. The
+// Consumer looks up the handler for each record by the envelope's
+// EventType field; an unknown event_type is acked-and-skipped so a
+// forward-compatible producer doesn't block the consumer group.
+type HandlerRegistry map[string]Handler
+
+// Consumer is one service's subscription to one or more Kafka
+// topics. Construct it once at startup; Run blocks until ctx is
+// cancelled.
+type Consumer struct {
+	client   *kgo.Client
+	registry HandlerRegistry
+
+	dlq     DLQ
+	deduper Deduper
+
+	maxAttempts  int
+	retryBackoff time.Duration
+
+	stopOnce sync.Once
+	stopped  chan struct{}
+}
+
+// DLQ is the contract for shipping poison-pill events to a DLQ
+// topic after MaxAttempts retries. The default impl lives in
+// kafka_dlq.go (this package).
+type DLQ interface {
+	Send(ctx context.Context, env *events.Envelope, reason string) error
+}
+
+// Deduper records which event_ids have already been processed so
+// the consumer can ack replays without double-effect. The default
+// in-memory impl is for tests; production swaps in a Redis- or
+// Postgres-backed one (sub-stage 3.8.b).
+type Deduper interface {
+	Seen(ctx context.Context, eventID string) (bool, error)
+	Mark(ctx context.Context, eventID string) error
+}
+
+// Config tunes the Consumer.
+type Config struct {
+	Brokers []string
+	GroupID string
+	Topics  []string
+
+	// MaxAttempts is the cap on per-event retries before DLQ.
+	// Default 5.
+	MaxAttempts int
+
+	// RetryBackoff is the sleep between retry attempts. Default 1s.
+	RetryBackoff time.Duration
+
+	// DLQ is required if MaxAttempts > 0; nil disables retry/DLQ
+	// (handler errors are still acked to avoid blocking the group,
+	// which is the pre-DLQ behavior).
+	DLQ DLQ
+
+	// Deduper is optional. nil = no dedup (every record processed).
+	Deduper Deduper
+}
+
+// New constructs a Consumer. The franz-go client is owned by the
+// Consumer; Close releases it.
+func New(cfg Config, registry HandlerRegistry) (*Consumer, error) {
+	if len(cfg.Topics) == 0 {
+		return nil, errors.New("consumer: at least one topic required")
+	}
+	if cfg.GroupID == "" {
+		return nil, errors.New("consumer: GroupID required")
+	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 5
+	}
+	if cfg.RetryBackoff <= 0 {
+		cfg.RetryBackoff = time.Second
+	}
+
+	cli, err := kgo.NewClient(
+		kgo.SeedBrokers(cfg.Brokers...),
+		kgo.ConsumerGroup(cfg.GroupID),
+		kgo.ConsumeTopics(cfg.Topics...),
+		kgo.DisableAutoCommit(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kafka client: %w", err)
+	}
+
+	return &Consumer{
+		client:       cli,
+		registry:     registry,
+		dlq:          cfg.DLQ,
+		deduper:      cfg.Deduper,
+		maxAttempts:  cfg.MaxAttempts,
+		retryBackoff: cfg.RetryBackoff,
+		stopped:      make(chan struct{}),
+	}, nil
+}
+
+// Run polls Kafka and dispatches records to handlers until ctx is
+// cancelled or Stop is called.
+func (c *Consumer) Run(ctx context.Context) error {
+	defer close(c.stopped)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		fetches := c.client.PollFetches(ctx)
+		if errs := fetches.Errors(); len(errs) > 0 {
+			for _, e := range errs {
+				if errors.Is(e.Err, context.Canceled) {
+					return nil
+				}
+				// Best-effort: log via returned error chain. The
+				// outbox poller observes via metrics; consumers
+				// don't yet have a metrics hook (sub-stage 3.8.c).
+				_ = e // intentionally swallowed; loop continues
+			}
+		}
+		fetches.EachRecord(func(rec *kgo.Record) {
+			c.dispatch(ctx, rec)
+		})
+		c.client.CommitMarkedOffsets(ctx)
+	}
+}
+
+// Stop signals Run to exit at the next poll boundary.
+func (c *Consumer) Stop() {
+	c.stopOnce.Do(func() {
+		c.client.Close()
+	})
+}
+
+// dispatch decodes the record and invokes the registered handler.
+// Retry + DLQ semantics live here.
+func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
+	var env events.Envelope
+	if err := json.Unmarshal(rec.Value, &env); err != nil {
+		c.toDLQ(ctx, nil, fmt.Sprintf("decode error: %v", err), rec)
+		return
+	}
+
+	if c.deduper != nil {
+		seen, err := c.deduper.Seen(ctx, env.EventID)
+		if err == nil && seen {
+			return // already processed — idempotent skip
+		}
+	}
+
+	handler, ok := c.registry[env.EventType]
+	if !ok {
+		// Unknown event_type — ack-and-skip to avoid blocking the
+		// group on a forward-compatible producer.
+		return
+	}
+
+	maxAttempts := c.maxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := handler(ctx, &env); err != nil {
+			lastErr = err
+			if attempt < maxAttempts {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(c.retryBackoff):
+				}
+			}
+			continue
+		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		c.toDLQ(ctx, &env, lastErr.Error(), rec)
+		return
+	}
+
+	if c.deduper != nil {
+		_ = c.deduper.Mark(ctx, env.EventID)
+	}
+}
+
+func (c *Consumer) toDLQ(ctx context.Context, env *events.Envelope, reason string, rec *kgo.Record) {
+	if c.dlq == nil {
+		return
+	}
+	if env == nil {
+		// Synthesize a minimal envelope so the DLQ consumer can
+		// at least see the topic and key.
+		env = &events.Envelope{
+			EventType:     "Unknown",
+			AggregateID:   string(rec.Key),
+			AggregateType: "Unknown",
+		}
+	}
+	_ = c.dlq.Send(ctx, env, reason)
+}
