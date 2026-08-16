@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.4.b)
+**Last updated:** 2026-08-17 (3.5.b)
 
 ## Sub-stages
 
@@ -23,6 +23,7 @@
 | 3.4.a | Order Service skeleton (cmd/order, internal package dirs, migrations) | done | 9ffb1cc |
 | 3.4.b | Order Domain (state machine + Order aggregate + InvalidTransitionError) | done | cec01b9 |
 | 3.5.a | Payment Service skeleton (cmd/payment, provider/idempotency/webhook/consumer/outbox stubs) | done | 67c399f |
+| 3.5.b | Payment mock provider (deterministic Charge/Refund by last-4) | done | e7a0a3f |
 | 3.6.a | Inventory Service skeleton (cmd/inventory, model/lock/redis/api/consumer/outbox stubs) | done | 65ec9cf |
 
 ## Next up
@@ -30,6 +31,7 @@
 - 3.4.c Order domain: domain events emitted on state transitions
   (OrderCreated / OrderReserved / OrderConfirmed / OrderCancelled /
   OrderFailed), outbox record helpers
+- 3.5.c Payment idempotency (DB-backed key, race-safe via INSERT ON CONFLICT)
 - 3.6.b Inventory domain (Stock aggregate with version column, optimistic lock SQL)
 
 ## Notes
@@ -58,3 +60,7 @@
   strip them, so requires were re-added post-tidy to match the spec
   exactly; future sub-stages that actually import these packages will
   lock them in via their own tidy runs.
+- 3.5.b deviation from spec: spec listed `"strings"` in the import block
+  of `provider.go` but no `strings.*` function is actually used in the
+  body (`Charge` only does length/slicing on `lastFour`). Dropped the
+  import to keep `go vet` clean.
