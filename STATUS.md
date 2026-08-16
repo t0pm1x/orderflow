@@ -25,6 +25,7 @@
 | 3.5.a | Payment Service skeleton (cmd/payment, provider/idempotency/webhook/consumer/outbox stubs) | done | 67c399f |
 | 3.5.b | Payment mock provider (deterministic Charge/Refund by last-4) | done | e7a0a3f |
 | 3.6.a | Inventory Service skeleton (cmd/inventory, model/lock/redis/api/consumer/outbox stubs) | done | 65ec9cf |
+| 3.6.b | Inventory Stock model (version optimistic-lock token) + Reservation | done | ef156cc |
 
 ## Next up
 
@@ -32,7 +33,8 @@
   (OrderCreated / OrderReserved / OrderConfirmed / OrderCancelled /
   OrderFailed), outbox record helpers
 - 3.5.c Payment idempotency (DB-backed key, race-safe via INSERT ON CONFLICT)
-- 3.6.b Inventory domain (Stock aggregate with version column, optimistic lock SQL)
+- 3.6.c Inventory optimistic lock (lock.Upsert with `UPDATE ... WHERE
+  version = $2`, returns ErrStaleVersion on 0 rows affected)
 
 ## Notes
 
@@ -64,3 +66,11 @@
   of `provider.go` but no `strings.*` function is actually used in the
   body (`Charge` only does length/slicing on `lastFour`). Dropped the
   import to keep `go vet` clean.
+- 3.6.b deviations from spec: (a) dropped the
+  `github.com/t0pm1x/orderflow/platform/types` import from `stock.go` —
+  there is no `types.SKU`/quantity type, so `SKU string` leaves the
+  import unused and would not compile; (b) added the missing `"time"`
+  import to `stock_test.go` (spec's import block listed only `testing`
+  but `TestReservation_Expired` uses `time.Now`); (c) dropped the
+  duplicate `// Package model ...` comment from `stock.go` since the
+  canonical package doc already lives in `doc.go` from 3.6.a.
