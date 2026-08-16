@@ -1,10 +1,11 @@
 // Package provider implements a mock payment provider for tests.
 // Card behavior is deterministic based on the last 4 digits:
-//   ...0000 → success
-//   ...0001 → declined
-//   ...0002 → insufficient funds
-//   ...0003 → timeout (returns error after delay)
-//   anything else → success
+//
+//	...0000 → success
+//	...0001 → declined
+//	...0002 → insufficient funds
+//	...0003 → timeout (returns error after delay)
+//	anything else → success
 package provider
 
 import (
