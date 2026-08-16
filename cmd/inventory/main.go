@@ -1,10 +1,8 @@
-// Inventory: stock reservation with optimistic locking and Redis-backed reservation TTL.
+// Inventory Service binary — wiring lives in services/inventory/cmd/inventory.
 package main
 
-import "fmt"
-
-var version = "0.0.0-dev"
+import "github.com/t0pm1x/orderflow/services/inventory/cmd/inventory"
 
 func main() {
-	fmt.Printf("orderflow-inventory version %s\n", version)
+	inventory.Main()
 }

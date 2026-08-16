@@ -1,10 +1,10 @@
-// Order: accepts POST /v1/orders, owns the order aggregate, publishes OrderCreated events via outbox.
+// Order Service binary — wiring lives in services/order/cmd/order
+// so it can access the service's internal packages; this top-level
+// cmd is just the binary entry point.
 package main
 
-import "fmt"
-
-var version = "0.0.0-dev"
+import "github.com/t0pm1x/orderflow/services/order/cmd/order"
 
 func main() {
-	fmt.Printf("orderflow-order version %s\n", version)
+	order.Main()
 }

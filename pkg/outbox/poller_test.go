@@ -136,7 +136,7 @@ func rec(id string) outbox.Record {
 func TestPoller_PollsAndPublishesOnce(t *testing.T) {
 	src := &fakeSource{pending: []outbox.Record{rec("e1"), rec("e2")}}
 	pub := &fakePublisher{}
-	p := New(Config{Table: "t", BatchSize: 10, Interval: 10 * time.Millisecond}, src, pub, nil, nil)
+	p := New(PollerConfig{Table: "t", BatchSize: 10, Interval: 10 * time.Millisecond}, src, pub, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -156,7 +156,7 @@ func TestPoller_PollsAndPublishesOnce(t *testing.T) {
 func TestPoller_RetriesOnPublishError(t *testing.T) {
 	src := &fakeSource{pending: []outbox.Record{rec("e1")}}
 	pub := &fakePublisher{alwaysErr: errors.New("kafka down")}
-	p := New(Config{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 10}, src, pub, nil, nil)
+	p := New(PollerConfig{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 10}, src, pub, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
@@ -174,7 +174,7 @@ func TestPoller_RoutesToDLQAfterMaxAttempts(t *testing.T) {
 	src := &fakeSource{pending: []outbox.Record{rec("e1")}}
 	pub := &fakePublisher{errByCall: map[int]error{0: errors.New("kafka down"), 1: errors.New("kafka down"), 2: errors.New("kafka down")}}
 	dlq := &fakeDLQ{}
-	p := New(Config{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 3}, src, pub, dlq, nil)
+	p := New(PollerConfig{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 3}, src, pub, dlq, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -194,7 +194,7 @@ func TestPoller_RoutesToDLQAfterMaxAttempts(t *testing.T) {
 func TestPoller_StopExitsCleanly(t *testing.T) {
 	src := &fakeSource{}
 	pub := &fakePublisher{}
-	p := New(Config{Table: "t", Interval: 50 * time.Millisecond}, src, pub, nil, nil)
+	p := New(PollerConfig{Table: "t", Interval: 50 * time.Millisecond}, src, pub, nil, nil)
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
@@ -208,7 +208,7 @@ func TestPoller_StopExitsCleanly(t *testing.T) {
 func TestPoller_ContextCancelExitsCleanly(t *testing.T) {
 	src := &fakeSource{}
 	pub := &fakePublisher{}
-	p := New(Config{Table: "t", Interval: 50 * time.Millisecond}, src, pub, nil, nil)
+	p := New(PollerConfig{Table: "t", Interval: 50 * time.Millisecond}, src, pub, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -223,7 +223,7 @@ func TestPoller_ContextCancelExitsCleanly(t *testing.T) {
 func TestPoller_BatchSizeRespected(t *testing.T) {
 	src := &fakeSource{pending: []outbox.Record{rec("e1"), rec("e2"), rec("e3"), rec("e4"), rec("e5")}}
 	pub := &fakePublisher{}
-	p := New(Config{Table: "t", BatchSize: 2, Interval: 5 * time.Millisecond}, src, pub, nil, nil)
+	p := New(PollerConfig{Table: "t", BatchSize: 2, Interval: 5 * time.Millisecond}, src, pub, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

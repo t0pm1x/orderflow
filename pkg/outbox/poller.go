@@ -10,8 +10,8 @@ import (
 	"github.com/t0pm1x/orderflow/platform/outbox"
 )
 
-// Config tunes the Poller.
-type Config struct {
+// PollerConfig tunes the Poller.
+type PollerConfig struct {
 	// Table is the outbox table name. Used only for logging/metrics
 	// labels; Source implementations already know their table.
 	Table string
@@ -29,7 +29,7 @@ type Config struct {
 
 // applyDefaults returns a copy of c with zero values replaced by
 // the documented defaults.
-func (c Config) applyDefaults() Config {
+func (c PollerConfig) applyDefaults() PollerConfig {
 	if c.BatchSize <= 0 {
 		c.BatchSize = 100
 	}
@@ -49,7 +49,7 @@ var ErrSourceClosed = errors.New("outbox: source closed")
 // Poller drives one service's outbox table. Construct it once at
 // startup and call Run() in a goroutine; Stop() shuts it down.
 type Poller struct {
-	cfg       Config
+	cfg       PollerConfig
 	src       Source
 	pub       Publisher
 	dlq       DLQ
@@ -63,7 +63,7 @@ type Poller struct {
 // New constructs a Poller. dlq may be nil (then MaxAttempts>0 is
 // ignored — failed rows stay PENDING forever). metrics may be nil
 // and defaults to NoopMetrics.
-func New(cfg Config, src Source, pub Publisher, dlq DLQ, metrics Metrics) *Poller {
+func New(cfg PollerConfig, src Source, pub Publisher, dlq DLQ, metrics Metrics) *Poller {
 	if metrics == nil {
 		metrics = NoopMetrics{}
 	}
