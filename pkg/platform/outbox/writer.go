@@ -12,8 +12,13 @@ import (
 // *pgxpool.Pool and pgx.Tx satisfy this interface, so the same
 // Writer works in unit tests (against a tx from a tx-aware fixture)
 // and in production (against the service's tx-wrapped pool).
+//
+// QueryRow is included because some writers (e.g. inventory lock)
+// need to read-then-write within the same tx (UPDATE ... RETURNING
+// or a follow-up SELECT to disambiguate concurrent modifications).
 type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Writer appends outbox records inside a caller-supplied transaction.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/t0pm1x/orderflow/platform/outbox"
 )
@@ -22,6 +23,11 @@ type fakeCall struct {
 func (f *fakeDBTX) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	f.calls = append(f.calls, fakeCall{sql: sql, args: args})
 	return pgconn.CommandTag{}, f.err
+}
+
+func (f *fakeDBTX) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	f.calls = append(f.calls, fakeCall{sql: sql, args: args})
+	return nil
 }
 
 func argsEqual(a, b any) bool {

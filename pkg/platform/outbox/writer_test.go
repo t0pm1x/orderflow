@@ -50,6 +50,11 @@ func (f *fakeDBTX) Exec(ctx context.Context, sql string, args ...any) (pgconn.Co
 	return pgconn.CommandTag{}, f.err
 }
 
+func (f *fakeDBTX) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	f.calls = append(f.calls, fakeCall{sql: sql, args: args})
+	return nil
+}
+
 // fakeWriter is the minimum to assert Writer.Append delegates the SQL
 // and args through to DBTX.
 type fakeWriter struct {
