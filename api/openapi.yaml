@@ -1,0 +1,397 @@
+openapi: 3.0.3
+info:
+  title: orderflow API
+  version: 0.1.0
+  description: |
+    Event-driven order processing platform.
+
+    Three independent HTTP services, each exposing its own port:
+      - Order Service     (8080) — customer-facing order CRUD
+      - Payment Service   (8081) — mock payment provider callback
+      - Inventory Service (8082) — stock reservation (called by saga)
+
+    Saga coordination is event-driven via Kafka, not via these HTTP APIs,
+    so each service is loosely coupled and individually deployable.
+
+servers:
+  - url: http://localhost:8080
+    description: Order Service (dev)
+  - url: http://localhost:8081
+    description: Payment Service (dev)
+  - url: http://localhost:8082
+    description: Inventory Service (dev)
+
+tags:
+  - name: orders
+    description: Order lifecycle (Order Service)
+  - name: payments
+    description: Payment provider webhook (Payment Service)
+  - name: inventory
+    description: Stock reservation (Inventory Service, saga-only)
+  - name: health
+    description: Liveness/readiness probes
+
+paths:
+  /v1/orders:
+    post:
+      tags: [orders]
+      summary: Submit a new order
+      operationId: submitOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderSubmit'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    get:
+      tags: [orders]
+      summary: List orders
+      operationId: listOrders
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/OrderState'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 500
+            minimum: 1
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque pagination cursor returned by previous list call.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /v1/orders/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      tags: [orders]
+      summary: Get order by ID
+      operationId: getOrder
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [orders]
+      summary: Cancel an order
+      description: |
+        Idempotent cancel. If order is already in a terminal state
+        (cancelled/failed/confirmed), returns 204 anyway.
+      operationId: cancelOrder
+      responses:
+        '204':
+          description: Cancelled (or already terminal)
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/payments/webhook:
+    post:
+      tags: [payments]
+      summary: Webhook for payment provider callbacks
+      description: |
+        Mock payment provider posts async results here. Idempotent on
+        `payment_id` — replays are ignored. Authentication via shared
+        HMAC header (out of scope for v1; TODO add `X-Signature`).
+      operationId: paymentWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentWebhook'
+      responses:
+        '202':
+          description: Accepted (queued for processing)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /v1/inventory/reserve:
+    post:
+      tags: [inventory]
+      summary: Reserve stock (called by saga)
+      description: |
+        Internal endpoint. In production this is invoked by the saga
+        orchestrator via Kafka (`OrderCreated` consumer); this HTTP
+        shim is exposed for debugging and direct testing only.
+      operationId: reserveStock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockReserve'
+      responses:
+        '200':
+          description: Reserved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockReservation'
+        '409':
+          description: Insufficient stock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      operationId: healthz
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness (DB + Kafka reachable)
+      operationId: readyz
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    OrderState:
+      type: string
+      enum: [pending, reserved, confirmed, cancelled, failed]
+      description: |
+        Lifecycle state machine:
+        pending → reserved → confirmed
+                  ↘ cancelled / failed (terminal)
+
+    OrderSubmit:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        customer_id:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+
+    OrderItem:
+      type: object
+      required: [sku, quantity]
+      additionalProperties: false
+      properties:
+        sku:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: SKU-001
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        unit_price_cents:
+          type: integer
+          minimum: 0
+          description: Optional; if omitted, server looks up current SKU price.
+
+    Order:
+      type: object
+      required: [id, state, items, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        state:
+          $ref: '#/components/schemas/OrderState'
+        total_cents:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        failure_reason:
+          type: string
+          nullable: true
+
+    OrderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
+        next_cursor:
+          type: string
+          nullable: true
+
+    PaymentWebhook:
+      type: object
+      required: [payment_id, status]
+      additionalProperties: false
+      properties:
+        payment_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [succeeded, failed]
+        error_code:
+          type: string
+          description: Required when status=failed.
+          example: card_declined
+
+    StockReserve:
+      type: object
+      required: [sku, quantity, order_id]
+      additionalProperties: false
+      properties:
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        order_id:
+          type: string
+          format: uuid
+        reservation_ttl_seconds:
+          type: integer
+          default: 300
+          minimum: 30
+          maximum: 3600
+
+    StockReservation:
+      type: object
+      required: [reservation_id, sku, quantity, expires_at]
+      properties:
+        reservation_id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantity:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: invalid_request
+        message:
+          type: string
+          example: items must contain at least one entry
+        details:
+          type: object
+          additionalProperties: true
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limited
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Reserved for v2; v1 services trust the cluster network.
