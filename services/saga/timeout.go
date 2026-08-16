@@ -17,8 +17,7 @@ type Watchdog struct {
 	Timeout time.Duration
 
 	mu      sync.Mutex
-	sagas   map[string]time.Time // orderID → deadline
-	timer   *time.Timer
+	sagas  map[string]time.Time // orderID → deadline
 	stopped chan struct{}
 }
 
