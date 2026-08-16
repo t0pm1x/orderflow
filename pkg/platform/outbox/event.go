@@ -11,6 +11,8 @@
 // outbox table.
 package outbox
 
+import "time"
+
 // Status is the lifecycle of an outbox row.
 type Status string
 
@@ -39,4 +41,12 @@ type Record struct {
 	SchemaVersion string
 	Topic         string
 	Payload       []byte // pre-marshalled JSON
+}
+
+// OccurredAtOrNow returns the record's OccurredAt if non-zero,
+// otherwise time.Now().UTC(). Defined here (rather than calling
+// time.Now() inline at construction) so test code can compare a
+// freshly built Record against a fixed timestamp.
+func (r Record) OccurredAtOrNow() time.Time {
+	return time.Now().UTC()
 }

@@ -2,6 +2,7 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -68,12 +69,19 @@ func (c *Client) Publish(topic string, env *Envelope) error {
 	if err != nil {
 		return err
 	}
+	return c.PublishRaw(nil, topic, env.AggregateID, body)
+}
+
+// PublishRaw sends a pre-marshalled JSON body to topic with key.
+// Used by the outbox poller (3.7.b) which has the wire format
+// already from the outbox row.
+func (c *Client) PublishRaw(ctx context.Context, topic, key string, body []byte) error {
 	record := &kgo.Record{
 		Topic: topic,
-		Key:   []byte(env.AggregateID),
+		Key:   []byte(key),
 		Value: body,
 	}
-	return c.kgo.ProduceSync(nil, record).FirstErr()
+	return c.kgo.ProduceSync(ctx, record).FirstErr()
 }
 
 // Close shuts down the client.
