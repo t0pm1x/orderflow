@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.3.e-f)
+**Last updated:** 2026-08-17 (3.4.a)
 
 ## Sub-stages
 
@@ -20,10 +20,11 @@
 | 3.3.a-b | logging (slog+trace correlation) + OTel init | done | 2c52231 |
 | 3.3.c-d | chi middleware stack + shared types (Money/IDs) | done | b85d10f   |
 | 3.3.e-f | events envelope (franz-go) + typed errors | done | 823d267   |
+| 3.4.a | Order Service skeleton (cmd/order, internal package dirs, migrations) | done | 9ffb1cc |
 
 ## Next up
 
-- 3.4.a order service skeleton
+- 3.4.b Order domain aggregate + state machine
 
 ## Notes
 
@@ -40,3 +41,14 @@
   uses `math.Round` (spec comment said "bankers' rounding" but the
   literal impl would fail `TestMoney_FromMajor` for 19.99 due to float
   precision); (c) dropped unused `time` import from `types.go`.
+- 3.4.a deviation from spec: spec listed `github.com/twmb/franz-go/pkg/kgo v1.21.6`
+  as a require, but `pkg/kgo` is not a separate Go module at v1.21.6
+  (it's a subpackage of the root `github.com/twmb/franz-go v1.21.6`
+  module, which has no `pkg/kgo/go.mod`). Substituted the root module
+  per pkg/platform convention. Subsequent sub-stages that import
+  `github.com/twmb/franz-go/pkg/kgo` will resolve under this require.
+  Spec's other requires (chi, pgx, goose, uuid, otelhttp) are declared
+  as direct but unused by `cmd/order/main.go` — `go mod tidy` would
+  strip them, so requires were re-added post-tidy to match the spec
+  exactly; future sub-stages that actually import these packages will
+  lock them in via their own tidy runs.
