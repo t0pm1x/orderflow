@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.3.c-d)
+**Last updated:** 2026-08-17 (3.3.e-f)
 
 ## Sub-stages
 
@@ -18,12 +18,12 @@
 | 3.2.e-h | observability configs (prom/tempo/otel/grafana) | done | d11b36b |
 | 3.2.i | k8s base manifests (namespace, rbac, netpol, kustomize) | done | 47b170d |
 | 3.3.a-b | logging (slog+trace correlation) + OTel init | done | 2c52231 |
-| 3.3.c-d | chi middleware stack + shared types (Money/IDs) | done | b85d10f |
+| 3.3.c-d | chi middleware stack + shared types (Money/IDs) | done | b85d10f   |
+| 3.3.e-f | events envelope (franz-go) + typed errors | done | 823d267   |
 
 ## Next up
 
-- 3.3.e events (publish/consume helpers, Kafka wrapper)
-- 3.3.f errors (typed errors, HTTP mapping)
+- 3.4.a order service skeleton
 
 ## Notes
 
