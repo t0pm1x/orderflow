@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.3.a-b)
+**Last updated:** 2026-08-17 (3.3.c-d)
 
 ## Sub-stages
 
@@ -18,10 +18,12 @@
 | 3.2.e-h | observability configs (prom/tempo/otel/grafana) | done | d11b36b |
 | 3.2.i | k8s base manifests (namespace, rbac, netpol, kustomize) | done | 47b170d |
 | 3.3.a-b | logging (slog+trace correlation) + OTel init | done | 2c52231 |
+| 3.3.c-d | chi middleware stack + shared types (Money/IDs) | done | b85d10f |
 
 ## Next up
 
-- 3.3.c OTel HTTP/gRPC middleware
+- 3.3.e events (publish/consume helpers, Kafka wrapper)
+- 3.3.f errors (typed errors, HTTP mapping)
 
 ## Notes
 
@@ -32,3 +34,9 @@
 - 3.1.h: 11 events + 1 EventEnvelope + 1 shared OrderItem struct,
   all 13 Go code blocks compile under `go vet`. All 11 JSON examples
   parse as valid JSON.
+- 3.3.c-d deviations from spec: (a) test file `types/middleware_test.go`
+  in spec was mislabeled — placed at `middleware/middleware_test.go`
+  because it tests the middleware package; (b) `NewMoneyFromMajor` now
+  uses `math.Round` (spec comment said "bankers' rounding" but the
+  literal impl would fail `TestMoney_FromMajor` for 19.99 due to float
+  precision); (c) dropped unused `time` import from `types.go`.
