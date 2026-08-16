@@ -1,0 +1,26 @@
+{
+  "title": "orderflow",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "title": "Orders RPS",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(http_requests_total{service=\"order\"}[1m]))"}]
+    },
+    {
+      "title": "Saga success rate",
+      "type": "stat",
+      "targets": [{"expr": "sum(rate(saga_completed_total[5m])) / sum(rate(saga_started_total[5m]))"}]
+    },
+    {
+      "title": "Event lag (outbox)",
+      "type": "timeseries",
+      "targets": [{"expr": "outbox_pending_events"}]
+    },
+    {
+      "title": "Consumer lag (Kafka)",
+      "type": "timeseries",
+      "targets": [{"expr": "kafka_consumer_lag"}]
+    }
+  ]
+}
