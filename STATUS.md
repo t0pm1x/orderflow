@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.4.a)
+**Last updated:** 2026-08-17 (3.5.a)
 
 ## Sub-stages
 
@@ -21,10 +21,11 @@
 | 3.3.c-d | chi middleware stack + shared types (Money/IDs) | done | b85d10f   |
 | 3.3.e-f | events envelope (franz-go) + typed errors | done | 823d267   |
 | 3.4.a | Order Service skeleton (cmd/order, internal package dirs, migrations) | done | 9ffb1cc |
+| 3.5.a | Payment Service skeleton (cmd/payment, provider/idempotency/webhook/consumer/outbox stubs) | done | (this commit) |
 
 ## Next up
 
-- 3.4.b Order domain aggregate + state machine
+- 3.5.b Payment domain (Payment aggregate, provider mock with 0000/0001 rule, idempotency store)
 
 ## Notes
 
