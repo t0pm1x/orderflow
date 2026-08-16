@@ -2,6 +2,7 @@
 package errors
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -55,4 +56,26 @@ func Code(err error) string {
 		return api.Code
 	}
 	return "INTERNAL"
+}
+
+// errorBody is the JSON shape returned by WriteError.
+type errorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// WriteError serializes an error to the response writer as JSON.
+// For *APIError it uses Status/Code/Message; for any other error it
+// returns 500 with code "INTERNAL".
+func WriteError(w http.ResponseWriter, err error) {
+	var api *APIError
+	if errors.As(err, &api) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(api.Status)
+		_ = json.NewEncoder(w).Encode(errorBody{Code: api.Code, Message: api.Message})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	_ = json.NewEncoder(w).Encode(errorBody{Code: "INTERNAL", Message: err.Error()})
 }
