@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.6.a)
+**Last updated:** 2026-08-17 (3.4.b)
 
 ## Sub-stages
 
@@ -21,11 +21,15 @@
 | 3.3.c-d | chi middleware stack + shared types (Money/IDs) | done | b85d10f   |
 | 3.3.e-f | events envelope (franz-go) + typed errors | done | 823d267   |
 | 3.4.a | Order Service skeleton (cmd/order, internal package dirs, migrations) | done | 9ffb1cc |
+| 3.4.b | Order Domain (state machine + Order aggregate + InvalidTransitionError) | done | cec01b9 |
 | 3.5.a | Payment Service skeleton (cmd/payment, provider/idempotency/webhook/consumer/outbox stubs) | done | 67c399f |
 | 3.6.a | Inventory Service skeleton (cmd/inventory, model/lock/redis/api/consumer/outbox stubs) | done | 65ec9cf |
 
 ## Next up
 
+- 3.4.c Order domain: domain events emitted on state transitions
+  (OrderCreated / OrderReserved / OrderConfirmed / OrderCancelled /
+  OrderFailed), outbox record helpers
 - 3.6.b Inventory domain (Stock aggregate with version column, optimistic lock SQL)
 
 ## Notes
