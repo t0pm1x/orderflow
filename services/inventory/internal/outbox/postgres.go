@@ -1,0 +1,52 @@
+// Package outbox contains the Inventory Service transactional
+// outbox writer. Append is called within the same pgx.Tx that
+// updates the stock_items row, so the outbox row commits/rolls
+// back with the business state change (atomicity).
+//
+// Inventory emits StockReserved, StockReservationFailed,
+// StockReleased, StockConfirmed events.
+package outbox
+
+import (
+	"context"
+	_ "embed"
+
+	"github.com/t0pm1x/orderflow/platform/outbox"
+)
+
+// Table is the Inventory Service outbox table name. The schema lives
+// in services/inventory/migrations/0001_init.sql (sub-stage 3.6.e)
+// and matches what Append writes here.
+const Table = "inventory_outbox"
+
+// insertSQL is the canonical INSERT used by Append.
+//
+//go:embed insert.sql
+var insertSQL string
+
+// PGWriter is the Inventory Service implementation of outbox.Writer.
+// Stateless — the tx comes from the caller.
+type PGWriter struct{}
+
+// NewPGWriter constructs a PGWriter.
+func NewPGWriter() *PGWriter { return &PGWriter{} }
+
+// Append inserts r into the inventory_outbox table using tx. The
+// row's status starts at PENDING; the poller (sub-stage 3.7) will
+// transition it to SENT after Kafka confirms the publish.
+func (w *PGWriter) Append(ctx context.Context, tx outbox.DBTX, r outbox.Record) error {
+	_, err := tx.Exec(ctx, insertSQL,
+		r.EventID,
+		r.EventType,
+		r.AggregateID,
+		r.AggregateType,
+		r.SchemaVersion,
+		r.Topic,
+		r.Payload,
+		outbox.StatusPending,
+	)
+	return err
+}
+
+// Compile-time interface check.
+var _ outbox.Writer = (*PGWriter)(nil)
