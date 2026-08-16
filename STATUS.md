@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.2.i)
+**Last updated:** 2026-08-17 (3.3.a-b)
 
 ## Sub-stages
 
@@ -17,10 +17,11 @@
 | 3.2.c | Postgres per-service init  | done     | 071bbeb   |
 | 3.2.e-h | observability configs (prom/tempo/otel/grafana) | done | d11b36b |
 | 3.2.i | k8s base manifests (namespace, rbac, netpol, kustomize) | done | 47b170d |
+| 3.3.a-b | logging (slog+trace correlation) + OTel init | done | 2c52231 |
 
 ## Next up
 
-- 3.2.d Redis config
+- 3.3.c OTel HTTP/gRPC middleware
 
 ## Notes
 
