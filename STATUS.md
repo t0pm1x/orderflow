@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (3.4.c)
+**Last updated:** 2026-08-17 (v0.1.0-MVP)
 
 ## Sub-stages
 
@@ -27,6 +27,7 @@
 | 3.5.b | Payment mock provider (deterministic Charge/Refund by last-4) | done | e7a0a3f |
 | 3.6.a | Inventory Service skeleton (cmd/inventory, model/lock/redis/api/consumer/outbox stubs) | done | 65ec9cf |
 | 3.6.b | Inventory Stock model (version optimistic-lock token) + Reservation | done | ef156cc |
+| v0.1.0-MVP | README + CHANGELOG (this release) | done | cd8b2f5 |
 
 ## Next up
 
