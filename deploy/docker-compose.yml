@@ -86,25 +86,14 @@ services:
       retries: 10
 
   kafka-init:
-    image: confluentinc/cp-kafka:7.5.0
+    image: redpandadata/redpanda:v24.2.7
     depends_on:
       redpanda:
         condition: service_healthy
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: redpanda:9092
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      "
-      # Wait for redpanda
-      sleep 10
-
-      # Create topics
-      kafka-topics --bootstrap-server redpanda:9092 --create --if-not-exists --topic order-events --partitions 3 --replication-factor 1
-      kafka-topics --bootstrap-server redpanda:9092 --create --if-not-exists --topic payment-events --partitions 3 --replication-factor 1
-      kafka-topics --bootstrap-server redpanda:9092 --create --if-not-exists --topic inventory-events --partitions 3 --replication-factor 1
-      kafka-topics --bootstrap-server redpanda:9092 --create --if-not-exists --topic orderflow-dlq --partitions 1 --replication-factor 1
-      "
+    volumes:
+      - ./kafka/create-topics.sh:/create-topics.sh:ro
+    entrypoint: ["/bin/sh", "/create-topics.sh"]
+    restart: "no"
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.107.0
