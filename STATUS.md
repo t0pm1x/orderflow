@@ -13,6 +13,7 @@
 | 3.1.g | OpenAPI spec               | done     | b7e1006   |
 | 3.1.h | Domain events spec         | done     | b7e1006   |
 | 3.2.a | docker-compose full stack  | done     | 267216b   |
+| 3.2.e-h | observability configs (prom/tempo/otel/grafana) | done | d11b36b |
 
 ## Next up
 
