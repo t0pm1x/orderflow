@@ -37,6 +37,14 @@
 - 3.6.c Inventory optimistic lock (lock.Upsert with `UPDATE ... WHERE
   version = $2`, returns ErrStaleVersion on 0 rows affected)
 
+## Session handoff
+
+A compact session-resume document lives at
+`docs/superpowers/portfolio/orderflow-checkpoint.md`. Read it before
+dispatching the next sub-stage — it lists the resumption point (3.5.c),
+the inter-stage contracts, the open issues (gofmt, untracked idempotency
+files, uncommitted `go.work sync` drift), and the quickstart commands.
+
 ## Notes
 
 - 3.1.g extended the prompt's "5 endpoints" surface slightly: spec covers
