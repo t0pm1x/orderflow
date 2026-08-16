@@ -1,0 +1,31 @@
+# orderflow — Status
+
+**Last updated:** 2026-08-17
+
+## Sub-stages
+
+| Stage | Title                      | Status   | Commit    |
+|-------|----------------------------|----------|-----------|
+| 3.0   | Bootstrap monorepo         | done     | 9c0b11e   |
+| 3.0.b | pkg/platform initial module | done    | 28aca48   |
+| 3.1.a-c | C4 architecture diagrams  | done     | 2cfc06a   |
+| 3.1.d-f | ADRs (saga/outbox/REST-gRPC) | done  | 4c9e396   |
+| 3.1.g | OpenAPI spec               | done     | b7e1006   |
+| 3.1.h | Domain events spec         | done     | b7e1006   |
+
+## Next up
+
+- 3.2.a docker-compose base
+- 3.2.b Redpanda config
+- 3.2.c Postgres per-service init
+- 3.2.d Redis config
+
+## Notes
+
+- 3.1.g extended the prompt's "5 endpoints" surface slightly: spec covers
+  POST/GET/DELETE on `/v1/orders`, GET `/v1/orders` (list), POST
+  `/v1/payments/webhook`, POST `/v1/inventory/reserve`, plus
+  `/healthz` and `/readyz`. Total: 8 endpoints across 3 services.
+- 3.1.h: 11 events + 1 EventEnvelope + 1 shared OrderItem struct,
+  all 13 Go code blocks compile under `go vet`. All 11 JSON examples
+  parse as valid JSON.
