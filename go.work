@@ -1,0 +1,13 @@
+go 1.25.13
+
+use (
+	./cmd/inventory
+	./cmd/order
+	./cmd/payment
+	./cmd/saga
+	./pkg/platform
+	./services/inventory
+	./services/order
+	./services/payment
+	./services/saga
+)

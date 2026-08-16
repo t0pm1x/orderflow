@@ -1,0 +1,23 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - gosimple
+    - gocritic
+    - revive
+    - gofmt
+    - goimports
+
+  settings:
+    unused:
+      # Enable unused linter for whole module (Go 1.25 default behavior).
+      # No per-package opt-in required.
+      exported-fields-are-used: false

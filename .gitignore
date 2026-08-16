@@ -1,0 +1,32 @@
+# Binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries / profiles
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Workspace lockfiles (workspace file go.work is committed)
+go.work.sum
+
+# Local overrides
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+
+# Build cache
+.cache/
+
+# OS
+Thumbs.db
