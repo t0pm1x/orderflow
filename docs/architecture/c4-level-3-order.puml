@@ -1,0 +1,19 @@
+@startuml c4-level-3-order
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+Container_Boundary(order, "Order Service") {
+    Component(order_handler, "Order HTTP Handler", "chi handler", "POST /v1/orders, GET /v1/orders/{id}")
+    Component(order_domain, "Order Domain", "Go struct + state machine", "pending → reserved → confirmed")
+    Component(outbox_writer, "Outbox Writer", "Go", "Inserts event in same DB tx")
+    Component(outbox_poller, "Outbox Poller", "Go", "Polls outbox table, publishes to Kafka")
+    Component(consumer, "Order Consumer", "Go", "Consumes StockReserved, PaymentCompleted")
+    Component(saga_handler, "Saga Event Handler", "Go", "Updates order on saga events")
+}
+
+Rel(order_handler, order_domain, "Creates")
+Rel(order_handler, outbox_writer, "Inserts event")
+Rel(outbox_poller, order_domain, "Reads events for outbox")
+Rel(consumer, saga_handler, "Updates state")
+Rel(saga_handler, order_domain, "Transitions")
+
+@enduml

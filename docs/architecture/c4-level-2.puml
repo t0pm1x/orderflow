@@ -1,0 +1,52 @@
+@startuml c4-level-2
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+Person(client, "Client")
+
+System_Boundary(orderflow, "orderflow") {
+    Container(order_api, "Order API", "Go + chi", "REST API + outbox writer")
+    Container(order_consumer, "Order Consumer", "Go", "Consumes events from saga")
+    Container(payment_api, "Payment API", "Go + chi", "Webhook ingestor")
+    Container(payment_consumer, "Payment Consumer", "Go", "Processes PaymentRequested")
+    Container(inventory_api, "Inventory API", "Go + chi", "Stock reserve/release")
+    Container(inventory_consumer, "Inventory Consumer", "Go", "Processes inventory events")
+    Container(saga, "Saga Orchestrator", "Go", "Coordinates Order saga")
+
+    ContainerDb(order_db, "Order DB", "PostgreSQL", "orders + outbox tables")
+    ContainerDb(payment_db, "Payment DB", "PostgreSQL", "payments + idempotency")
+    ContainerDb(inventory_db, "Inventory DB", "PostgreSQL", "stock + reservations")
+    ContainerDb(redis, "Redis", "in-memory store", "TTL reservations")
+
+    ContainerQueue(kafka, "Kafka", "Redpanda", "3 topics: order-events, payment-events, inventory-events")
+    Container(observability, "Observability", "Prometheus + Tempo + Grafana", "metrics, traces, dashboards")
+}
+
+System_Ext(provider, "Mock Payment Provider")
+
+Rel(client, order_api, "POST /v1/orders", "HTTPS")
+Rel(client, order_api, "GET /v1/orders/{id}", "HTTPS")
+
+Rel(order_api, order_db, "Reads/writes", "SQL")
+Rel(order_api, kafka, "Outbox poller publishes", "Kafka protocol")
+Rel(order_consumer, kafka, "Consumes", "Kafka protocol")
+Rel(order_consumer, order_db, "Updates state", "SQL")
+
+Rel(saga, kafka, "Reads events", "Kafka protocol")
+Rel(saga, order_db, "Persists saga state", "SQL")
+
+Rel(payment_api, payment_db, "Reads/writes", "SQL")
+Rel(payment_api, redis, "Idempotency cache", "RESP")
+Rel(payment_consumer, kafka, "Consumes", "Kafka protocol")
+Rel(payment_consumer, provider, "Charge", "HTTPS")
+Rel(payment_api, provider, "Webhook", "HTTPS")
+
+Rel(inventory_api, inventory_db, "Reads/writes stock", "SQL")
+Rel(inventory_api, redis, "Reservations with TTL", "RESP")
+Rel(inventory_consumer, kafka, "Consumes", "Kafka protocol")
+
+Rel_U(order_api, observability, "exports traces/metrics", "OTLP/HTTP")
+Rel_U(payment_api, observability, "exports traces/metrics", "OTLP/HTTP")
+Rel_U(inventory_api, observability, "exports traces/metrics", "OTLP/HTTP")
+Rel_U(saga, observability, "exports traces/metrics", "OTLP/HTTP")
+
+@enduml

@@ -1,0 +1,13 @@
+@startuml c4-level-1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+Person(client, "Client", "Web/mobile app or curl")
+
+System(orderflow, "orderflow", "Event-driven order processing platform")
+
+System_Ext(payment_provider, "Mock Payment Provider", "Card processor (simulated)")
+
+Rel(client, orderflow, "POST /v1/orders", "HTTPS/JSON")
+Rel(orderflow, payment_provider, "Charge/refund", "HTTPS/webhook")
+
+@enduml

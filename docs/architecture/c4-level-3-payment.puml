@@ -1,0 +1,16 @@
+@startuml c4-level-3-payment
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+Container_Boundary(payment, "Payment Service") {
+    Component(payment_handler, "Payment Webhook", "chi handler", "POST /v1/payments/webhook")
+    Component(provider, "Mock Provider", "Go", "Deterministic success/fail")
+    Component(idempotency, "Idempotency", "Go", "Redis-backed dedupe")
+    Component(outbox_poller, "Outbox Poller", "Go", "Publishes payment events")
+    Component(consumer, "Payment Consumer", "Go", "Consumes PaymentRequested")
+}
+
+Rel(consumer, provider, "Charges")
+Rel(provider, idempotency, "Dedupe check")
+Rel(payment_handler, idempotency, "Dedupe check")
+
+@enduml
