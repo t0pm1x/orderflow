@@ -25,6 +25,7 @@
 | 3.4.c | Order REST API (POST/GET/List /v1/orders, Repository interface, mockRepo tests) | done | c63785b |
 | 3.5.a | Payment Service skeleton (cmd/payment, provider/idempotency/webhook/consumer/outbox stubs) | done | 67c399f |
 | 3.5.b | Payment mock provider (deterministic Charge/Refund by last-4) | done | e7a0a3f |
+| 3.5.c | Payment idempotency middleware (Redis-backed dedupe via Idempotency-Key header, Begin/Complete/Release, chi middleware) | done | _pending_ |
 | 3.6.a | Inventory Service skeleton (cmd/inventory, model/lock/redis/api/consumer/outbox stubs) | done | 65ec9cf |
 | 3.6.b | Inventory Stock model (version optimistic-lock token) + Reservation | done | ef156cc |
 | v0.1.0-MVP | README + CHANGELOG (this release) | done | cd8b2f5 |
@@ -33,9 +34,10 @@
 
 - 3.4.d Order outbox (DB-backed, INSERT … RETURNING outbox_id, status
   PENDING → SENT, poller reads by PENDING + created_at ASC batched)
-- 3.5.c Payment idempotency (DB-backed key, race-safe via INSERT ON CONFLICT)
 - 3.6.c Inventory optimistic lock (lock.Upsert with `UPDATE ... WHERE
   version = $2`, returns ErrStaleVersion on 0 rows affected)
+- 3.4.e/3.5.e/3.6.e — DB migrations
+- 3.4.f/3.5.f/3.6.f — tests
 
 ## Session handoff
 
@@ -75,6 +77,16 @@ files, uncommitted `go.work sync` drift), and the quickstart commands.
   of `provider.go` but no `strings.*` function is actually used in the
   body (`Charge` only does length/slicing on `lastFour`). Dropped the
   import to keep `go vet` clean.
+- 3.5.c deviation from spec: spec mentions "idempotency-key table"
+  (DB-backed) but the architecture documents (`docs/architecture/c4-level-3-payment.puml`)
+  and the checkpoint both specify Redis-backed dedupe, so the Store is
+  Redis-backed (`SETNX` + `SET`/`DEL`). Added `chi.Middleware` that
+  requires `Idempotency-Key`, replays cached bodies on duplicate, and
+  releases the reservation on handler status ≥ 500. Added
+  `alicebob/miniredis/v2` as a test dep so middleware tests run with
+  `-short`. Refactored `Store.Complete` to take `[]byte` directly
+  instead of `any` so callers don't have to pre-decode/re-encode the
+  cached response body (matches the byte-oriented `ErrDuplicate.CachedResponse` contract).
 - 3.6.b deviations from spec: (a) dropped the
   `github.com/t0pm1x/orderflow/platform/types` import from `stock.go` —
   there is no `types.SKU`/quantity type, so `SKU string` leaves the

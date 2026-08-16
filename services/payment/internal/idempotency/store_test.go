@@ -40,7 +40,7 @@ func TestStore_BeginAndComplete(t *testing.T) {
 	}
 
 	// Complete stores the response under the key.
-	if err := s.Complete(ctx, res, map[string]string{"status": "ok"}); err != nil {
+	if err := s.Complete(ctx, res, []byte(`{"status":"ok"}`)); err != nil {
 		t.Fatal(err)
 	}
 

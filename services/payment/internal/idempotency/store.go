@@ -4,7 +4,6 @@ package idempotency
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -72,13 +71,12 @@ func (s *Store) Begin(ctx context.Context, idempotencyKey string) (*Reservation,
 	return &Reservation{Key: idempotencyKey, Token: uuid.NewString()}, nil
 }
 
-// Complete stores the response body under the reservation key,
-// replacing the in-flight marker.
-func (s *Store) Complete(ctx context.Context, res *Reservation, response any) error {
-	body, err := json.Marshal(response)
-	if err != nil {
-		return err
-	}
+// Complete stores the raw response body bytes under the reservation
+// key, replacing the in-flight marker. The bytes are what will be
+// returned on duplicate replay (see ErrDuplicate.CachedResponse), so
+// the caller is responsible for any encoding (e.g. JSON) before
+// passing them in.
+func (s *Store) Complete(ctx context.Context, res *Reservation, body []byte) error {
 	return s.client.Set(ctx, s.key(res.Key), body, s.ttl).Err()
 }
 
