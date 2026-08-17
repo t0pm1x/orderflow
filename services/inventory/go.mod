@@ -3,6 +3,7 @@ module github.com/t0pm1x/orderflow/services/inventory
 go 1.25.13
 
 require (
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/t0pm1x/orderflow/consumer v0.0.0-00010101000000-000000000000

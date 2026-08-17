@@ -5,20 +5,24 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
 	"github.com/t0pm1x/orderflow/platform/events"
+	mw "github.com/t0pm1x/orderflow/platform/middleware"
 
 	svcconsumer "github.com/t0pm1x/orderflow/services/inventory/internal/consumer"
 	svcoutbox "github.com/t0pm1x/orderflow/services/inventory/internal/outbox"
@@ -27,6 +31,16 @@ import (
 const TableName = "inventory_outbox"
 
 var Version = "0.0.0-dev"
+
+// boundAddr is the actual listen address Run is bound to when
+// HTTP_ADDR is a ":0" form. Tests poll ListenAddr() after starting
+// Run in a goroutine to discover the OS-picked port.
+var boundAddr atomic.Value
+
+func ListenAddr() string {
+	v, _ := boundAddr.Load().(string)
+	return v
+}
 
 func Run(ctx context.Context) error {
 	logger := slog.Default()
@@ -60,61 +74,84 @@ func Run(ctx context.Context) error {
 }
 
 func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAddr string) (func(context.Context) error, error) {
-	if dbURL == "" || broker == "" {
-		logger.Info("outbox disabled: DATABASE_URL or KAFKA_BROKER not set")
-		return func(context.Context) error { return nil }, nil
-	}
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		return nil, fmt.Errorf("pgxpool: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("postgres ping: %w", err)
-	}
-	kafkaClient, err := events.NewClient(strings.Split(broker, ","), "inventory")
-	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("kafka client: %w", err)
-	}
-	src := svcoutbox.NewPGSource(pool)
-	pub := pkgoutbox.NewKafkaPublisher(kafkaClient)
-	dlq := pkgoutbox.NewKafkaDLQ(kafkaClient)
-	metrics := pkgoutbox.NewPrometheusMetrics(TableName, prometheus.DefaultRegisterer)
-	poller := pkgoutbox.New(pkgoutbox.PollerConfig{
-		Table:       TableName,
-		BatchSize:   100,
-		Interval:    100 * time.Millisecond,
-		MaxAttempts: 5,
-	}, src, pub, dlq, metrics)
+	var (
+		wg       sync.WaitGroup
+		httpSrv  *http.Server
+		ln       net.Listener
+		pool     *pgxpool.Pool
+		poller   *pkgoutbox.Poller
+		outboxOn = dbURL != "" && broker != ""
+	)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := poller.Run(ctx); err != nil {
-			logger.Error("poller exited", "err", err)
+	if outboxOn {
+		var err error
+		pool, err = pgxpool.New(ctx, dbURL)
+		if err != nil {
+			return nil, fmt.Errorf("pgxpool: %w", err)
 		}
-	}()
-	var httpSrv *http.Server
-	if httpAddr != "" {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-		})
-		httpSrv = &http.Server{Addr: httpAddr, Handler: mux}
+		if err := pool.Ping(ctx); err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("postgres ping: %w", err)
+		}
+		var kafkaClient *events.Client
+		kafkaClient, err = events.NewClient(strings.Split(broker, ","), "inventory")
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("kafka client: %w", err)
+		}
+		src := svcoutbox.NewPGSource(pool)
+		pub := pkgoutbox.NewKafkaPublisher(kafkaClient)
+		dlq := pkgoutbox.NewKafkaDLQ(kafkaClient)
+		metrics := pkgoutbox.NewPrometheusMetrics(TableName, prometheus.DefaultRegisterer)
+		poller = pkgoutbox.New(pkgoutbox.PollerConfig{
+			Table:       TableName,
+			BatchSize:   100,
+			Interval:    100 * time.Millisecond,
+			MaxAttempts: 5,
+		}, src, pub, dlq, metrics)
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := poller.Run(ctx); err != nil {
+				logger.Error("poller exited", "err", err)
+			}
+		}()
+	} else {
+		logger.Info("outbox disabled: DATABASE_URL or KAFKA_BROKER not set")
+	}
+
+	if httpAddr != "" {
+		r := chi.NewRouter()
+		r.Use(mw.Stack(TableName, logger)...)
+		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		})
+		r.Handle("/metrics", promhttp.Handler())
+
+		var err error
+		ln, err = net.Listen("tcp", httpAddr)
+		if err != nil {
+			if pool != nil {
+				pool.Close()
+			}
+			return nil, fmt.Errorf("listen %s: %w", httpAddr, err)
+		}
+		boundAddr.Store(ln.Addr().String())
+		httpSrv = &http.Server{Handler: r}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 				logger.Error("metrics http exited", "err", err)
 			}
 		}()
 	}
 	return func(shutdownCtx context.Context) error {
-		poller.Stop()
+		if poller != nil {
+			poller.Stop()
+		}
 		if httpSrv != nil {
 			_ = httpSrv.Shutdown(shutdownCtx)
 		}
@@ -125,7 +162,9 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 		case <-shutdownCtx.Done():
 			return shutdownCtx.Err()
 		}
-		pool.Close()
+		if pool != nil {
+			pool.Close()
+		}
 		return nil
 	}, nil
 }
