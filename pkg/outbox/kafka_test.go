@@ -7,6 +7,13 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/t0pm1x/orderflow/platform/events"
 	"github.com/t0pm1x/orderflow/platform/outbox"
 )
 
@@ -19,18 +26,19 @@ type fakeKafka struct {
 }
 
 type fakeKafkaCall struct {
-	topic string
-	key   string
-	body  []byte
+	topic   string
+	key     string
+	body    []byte
+	headers map[string]string
 }
 
-func (f *fakeKafka) PublishRaw(ctx context.Context, topic, key string, body []byte) error {
+func (f *fakeKafka) PublishRaw(ctx context.Context, topic, key string, body []byte, headers map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err, ok := f.errByKey[key]; ok && err != nil {
 		return err
 	}
-	f.calls = append(f.calls, fakeKafkaCall{topic: topic, key: key, body: append([]byte(nil), body...)})
+	f.calls = append(f.calls, fakeKafkaCall{topic: topic, key: key, body: append([]byte(nil), body...), headers: headers})
 	return nil
 }
 
@@ -97,5 +105,79 @@ func TestKafkaDLQ_SendsToDLQTopic(t *testing.T) {
 	}
 	if env["event_type"] != "OrderCreated.DLQ" {
 		t.Errorf("event_type: got %v want OrderCreated.DLQ", env["event_type"])
+	}
+}
+
+// withTestTracer installs an in-memory SDK TracerProvider + the
+// W3C TraceContext propagator for the duration of a test, and
+// restores whatever the caller had set up on cleanup. Returns the
+// recorder so callers can inspect emitted spans.
+func withTestTracer(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+	return rec
+}
+
+// TestRecordToEnvelope_PropagatesActiveSpan asserts that an active
+// OTel span on ctx flows into the emitted Envelope's TraceID/SpanID
+// (sub-stage 3.10.b).
+func TestRecordToEnvelope_PropagatesActiveSpan(t *testing.T) {
+	withTestTracer(t)
+	ctx, span := otel.Tracer("test").Start(context.Background(), "op")
+	defer span.End()
+
+	env, err := recordToEnvelope(ctx, outbox.Record{})
+	if err != nil {
+		t.Fatalf("recordToEnvelope: %v", err)
+	}
+	sc := span.SpanContext()
+	if env.TraceID != sc.TraceID().String() {
+		t.Errorf("trace_id mismatch: got %q want %q", env.TraceID, sc.TraceID().String())
+	}
+	if env.SpanID != sc.SpanID().String() {
+		t.Errorf("span_id mismatch: got %q want %q", env.SpanID, sc.SpanID().String())
+	}
+	// Sanity: the JSON wire format must emit 32-hex trace_id and
+	// 16-hex span_id (32+16=48 hex chars total in the body).
+	body, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var roundTripped events.Envelope
+	if err := json.Unmarshal(body, &roundTripped); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(roundTripped.TraceID) != 32 {
+		t.Errorf("trace_id length: got %d want 32", len(roundTripped.TraceID))
+	}
+	if len(roundTripped.SpanID) != 16 {
+		t.Errorf("span_id length: got %d want 16", len(roundTripped.SpanID))
+	}
+}
+
+// TestRecordToEnvelope_NoSpan_LeavesIDsEmpty ensures the function
+// is a no-op on the trace fields when no span is active (e.g. a
+// tests that doesn't wire OpenTelemetry).
+func TestRecordToEnvelope_NoSpan_LeavesIDsEmpty(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	otel.SetTracerProvider(trace.NewNoopTracerProvider())
+	t.Cleanup(func() { otel.SetTracerProvider(prevTP) })
+
+	env, err := recordToEnvelope(context.Background(), outbox.Record{})
+	if err != nil {
+		t.Fatalf("recordToEnvelope: %v", err)
+	}
+	if env.TraceID != "" || env.SpanID != "" {
+		t.Errorf("expected empty trace_id/span_id, got %q/%q", env.TraceID, env.SpanID)
 	}
 }

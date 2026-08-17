@@ -69,19 +69,34 @@ func (c *Client) Publish(topic string, env *Envelope) error {
 	if err != nil {
 		return err
 	}
-	return c.PublishRaw(nil, topic, env.AggregateID, body)
+	return c.PublishRaw(context.Background(), topic, env.AggregateID, body, nil)
 }
 
-// PublishRaw sends a pre-marshalled JSON body to topic with key.
-// Used by the outbox poller (3.7.b) which has the wire format
-// already from the outbox row.
-func (c *Client) PublishRaw(ctx context.Context, topic, key string, body []byte) error {
+// PublishRaw sends a pre-marshalled JSON body to topic with key,
+// optionally attaching the given string-string headers as Kafka
+// record headers. Used by the outbox poller (3.7.b) which has the
+// wire format already from the outbox row.
+func (c *Client) PublishRaw(ctx context.Context, topic, key string, body []byte, headers map[string]string) error {
 	record := &kgo.Record{
-		Topic: topic,
-		Key:   []byte(key),
-		Value: body,
+		Topic:   topic,
+		Key:     []byte(key),
+		Value:   body,
+		Headers: headersToRecord(headers),
 	}
 	return c.kgo.ProduceSync(ctx, record).FirstErr()
+}
+
+// headersToRecord converts a string-string header map to the
+// []kgo.RecordHeader shape franz-go expects on a Produce call.
+func headersToRecord(headers map[string]string) []kgo.RecordHeader {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make([]kgo.RecordHeader, 0, len(headers))
+	for k, v := range headers {
+		out = append(out, kgo.RecordHeader{Key: k, Value: []byte(v)})
+	}
+	return out
 }
 
 // Close shuts down the client.

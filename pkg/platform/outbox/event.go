@@ -32,7 +32,9 @@ const (
 //
 // EventID, EventType, AggregateID, AggregateType, SchemaVersion, and
 // Payload mirror the Envelope fields 1:1. Topic is which Kafka topic
-// the poller should publish to.
+// the poller should publish to. Headers carries W3C traceparent and
+// other per-record Kafka headers (sub-stage 3.10.b — propagated into
+// the Envelope and attached to the outgoing Kafka record).
 type Record struct {
 	EventID       string
 	EventType     string
@@ -41,6 +43,7 @@ type Record struct {
 	SchemaVersion string
 	Topic         string
 	Payload       []byte // pre-marshalled JSON
+	Headers       map[string]string
 }
 
 // OccurredAtOrNow returns the record's OccurredAt if non-zero,

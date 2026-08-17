@@ -7,8 +7,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"github.com/t0pm1x/orderflow/platform/outbox"
 )
+
+// publishTracer is the package-local tracer for the per-batch span
+// the poller opens around each pub.Publish call. The span is
+// inherited by KafkaPublisher.recordToEnvelope, which lifts it into
+// the Envelope's TraceID/SpanID fields (sub-stage 3.10.b).
+var publishTracer = otel.Tracer("github.com/t0pm1x/orderflow/outbox")
 
 // PollerConfig tunes the Poller.
 type PollerConfig struct {
@@ -119,7 +127,7 @@ func (p *Poller) Run(ctx context.Context) error {
 			continue
 		}
 
-		if err := p.pub.Publish(ctx, recs); err != nil {
+		if err := p.publishBatch(ctx, recs); err != nil {
 			p.metrics.ObservePublish(ctx, len(recs), err)
 			p.handlePublishFailure(ctx, recs, err)
 			if !p.sleep(ctx) {
@@ -147,6 +155,16 @@ func (p *Poller) Run(ctx context.Context) error {
 // resetAttemptsForTest is exposed for tests; in production it's a
 // no-op via defer.
 func (p *Poller) resetAttemptsForTest() {}
+
+// publishBatch opens an "outbox.publish" span on ctx and calls
+// Publisher.Publish. The span's context is inherited by
+// KafkaPublisher.recordToEnvelope (sub-stage 3.10.b) which lifts
+// it into each emitted Envelope's TraceID/SpanID.
+func (p *Poller) publishBatch(ctx context.Context, recs []outbox.Record) error {
+	ctx, span := publishTracer.Start(ctx, "outbox.publish")
+	defer span.End()
+	return p.pub.Publish(ctx, recs)
+}
 
 // sleep waits cfg.Interval or until ctx is cancelled / stop is called.
 // Returns false if the poller should exit.
