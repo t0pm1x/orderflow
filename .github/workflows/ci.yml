@@ -23,16 +23,50 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          args: --timeout=5m
-
       - name: Test
         run: make test
 
       - name: Build
         run: make build
+
+  detect-modules:
+    name: detect-modules
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.set-modules.outputs.modules }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - id: set-modules
+        run: |
+          modules=$(go list -m -f '{{.Dir}}' | jq -R -s 'split("\n") | map(select(. != ""))')
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: lint (${{ matrix.module }})
+    needs: detect-modules
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.detect-modules.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          working-directory: ${{ matrix.module }}
+          args: --path-mode=abs --timeout=5m
 
   e2e:
     name: e2e (ubuntu)
