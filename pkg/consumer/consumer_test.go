@@ -201,8 +201,8 @@ func TestDispatch_RestoresSpanFromEnvelope(t *testing.T) {
 	env := events.Envelope{
 		EventID: "id-1", EventType: "OrderCreated",
 		AggregateID: "agg-1", AggregateType: "Order",
-		TraceID: origSpan.SpanContext().TraceID().String(),
-		SpanID:  origSpan.SpanContext().SpanID().String(),
+		TraceID:       origSpan.SpanContext().TraceID().String(),
+		SpanID:        origSpan.SpanContext().SpanID().String(),
 		SchemaVersion: "1.0", Payload: json.RawMessage(`{}`),
 	}
 	var seenParent trace.SpanContext
