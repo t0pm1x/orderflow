@@ -4,6 +4,7 @@ go 1.25.13
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/prometheus/client_golang v1.24.1
