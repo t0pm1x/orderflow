@@ -24,7 +24,7 @@ func newTestClient(t *testing.T) *redis.Client {
 
 func TestStore_BeginAndComplete(t *testing.T) {
 	client := newTestClient(t)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	s := NewStore(client)
 	ctx := context.Background()

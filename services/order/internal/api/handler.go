@@ -44,10 +44,14 @@ type Repository interface {
 	List(state domain.OrderState, limit int) ([]*domain.Order, error)
 }
 
+// Handler serves the Order Service REST routes. It validates input,
+// calls the Repository to insert orders (tx-wrapped with outbox
+// writes via Repository.Insert) and reads them back.
 type Handler struct {
 	repo Repository
 }
 
+// NewHandler constructs a Handler backed by the given Repository.
 func NewHandler(repo Repository) *Handler {
 	return &Handler{repo: repo}
 }

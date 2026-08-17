@@ -1,6 +1,6 @@
-// Package outbox: PGSource implements pkg/outbox.Source against
-// the payment_outbox table. See services/order/internal/outbox for
-// the canonical pattern; this is its mirror.
+// Package outbox implements pkg/outbox.Source against the
+// payment_outbox table. See services/order/internal/outbox for the
+// canonical pattern; this is its mirror.
 package outbox
 
 import (

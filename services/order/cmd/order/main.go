@@ -30,10 +30,10 @@ import (
 	"github.com/t0pm1x/orderflow/platform/events"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
 
+	svchttp "github.com/t0pm1x/orderflow/services/order/internal/api"
 	svcconsumer "github.com/t0pm1x/orderflow/services/order/internal/consumer"
 	svcoutbox "github.com/t0pm1x/orderflow/services/order/internal/outbox"
 	svcrepo "github.com/t0pm1x/orderflow/services/order/internal/repository"
-	svchttp "github.com/t0pm1x/orderflow/services/order/internal/api"
 )
 
 // TableName is exported so the cmd/order top-level binary and any
@@ -227,8 +227,9 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 // signal-aware context lifecycle.
 func Main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	if err := Run(ctx); err != nil {
+	err := Run(ctx)
+	cancel()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "order service: %v\n", err)
 		os.Exit(1)
 	}

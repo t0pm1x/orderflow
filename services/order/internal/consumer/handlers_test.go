@@ -58,11 +58,11 @@ func TestRegistry_HandlersReturnErrorOnNilPool(t *testing.T) {
 // returns no-op close + nil.
 func TestStart_DisabledWhenNoEnv(t *testing.T) {
 	ctx := context.Background()
-	close, err := Start(ctx, slog.Default(), "", "", nil)
+	closer, err := Start(ctx, slog.Default(), "", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := close(ctx); err != nil {
+	if err := closer(ctx); err != nil {
 		t.Errorf("close: %v", err)
 	}
 }
@@ -72,7 +72,7 @@ func TestStart_DisabledWhenNoEnv(t *testing.T) {
 // (franz-go is lazy) — so this test just verifies Start doesn't
 // panic on a malformed broker list. The actual connection check
 // happens at the first PollFetches call.
-func TestStart_InvalidBrokerFails(t *testing.T) {
+func TestStart_InvalidBrokerFails(_ *testing.T) {
 	_ = http.StatusOK // keep imports stable
 	_ = httptest.NewRecorder()
 }

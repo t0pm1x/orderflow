@@ -18,12 +18,16 @@ import (
 	"github.com/t0pm1x/orderflow/services/order/internal/repository"
 )
 
+// Handler implements the Order Service's consumer-side event handling.
+// Each method updates the orders.state column in response to a saga
+// or inventory event.
 type Handler struct {
 	pool   *pgxpool.Pool
 	repo   *repository.PGRepo
 	logger *slog.Logger
 }
 
+// NewHandler constructs a Handler that owns its own PGRepo over pool.
 func NewHandler(pool *pgxpool.Pool, logger *slog.Logger) *Handler {
 	return &Handler{
 		pool:   pool,
@@ -45,6 +49,8 @@ func (h *Handler) Registry() pkgconsumer.HandlerRegistry {
 	}
 }
 
+// StockReserved handles StockReserved events by transitioning the
+// referenced order to the reserved state.
 func (h *Handler) StockReserved(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -55,6 +61,8 @@ func (h *Handler) StockReserved(ctx context.Context, env *events.Envelope) error
 	return h.updateState(ctx, p.OrderID, domain.OrderState("reserved"))
 }
 
+// StockReservationFailed handles StockReservationFailed events by
+// transitioning the referenced order to the cancelled state.
 func (h *Handler) StockReservationFailed(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -65,6 +73,8 @@ func (h *Handler) StockReservationFailed(ctx context.Context, env *events.Envelo
 	return h.updateState(ctx, p.OrderID, domain.OrderState("cancelled"))
 }
 
+// OrderConfirmed handles OrderConfirmed events by transitioning the
+// referenced order to the confirmed state.
 func (h *Handler) OrderConfirmed(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -75,6 +85,8 @@ func (h *Handler) OrderConfirmed(ctx context.Context, env *events.Envelope) erro
 	return h.updateState(ctx, p.OrderID, domain.OrderState("confirmed"))
 }
 
+// OrderCancelled handles OrderCancelled events by transitioning the
+// referenced order to the cancelled state.
 func (h *Handler) OrderCancelled(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -85,6 +97,8 @@ func (h *Handler) OrderCancelled(ctx context.Context, env *events.Envelope) erro
 	return h.updateState(ctx, p.OrderID, domain.OrderState("cancelled"))
 }
 
+// PaymentFailed handles PaymentFailed events by transitioning the
+// referenced order to the cancelled state.
 func (h *Handler) PaymentFailed(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`

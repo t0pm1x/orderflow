@@ -6,12 +6,17 @@ import (
 	"github.com/t0pm1x/orderflow/platform/types"
 )
 
+// OrderItem is a single line item on an Order: SKU, quantity, and
+// unit price in cents. Total cost is derived from these fields when
+// the order is constructed.
 type OrderItem struct {
 	SKU            string `json:"sku"`
 	Quantity       int    `json:"quantity"`
 	UnitPriceCents int64  `json:"unit_price_cents"`
 }
 
+// Order is the Order aggregate root. Its lifecycle is driven by
+// the saga via the events consumed in services/order/internal/consumer.
 type Order struct {
 	ID          types.OrderID    `json:"id"`
 	CustomerID  types.CustomerID `json:"customer_id"`

@@ -25,7 +25,7 @@ func newMiniredisStore(t *testing.T) (*Store, *miniredis.Miniredis) {
 
 // okHandler always returns 200 with body "ok".
 func okHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -75,7 +75,7 @@ func TestMiddleware_DuplicateReplaysCachedBody(t *testing.T) {
 
 	// Second call: should replay without invoking the handler.
 	called := false
-	spy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	spy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusTeapot)
 	})
@@ -102,7 +102,7 @@ func TestMiddleware_ReleaseOn5xx(t *testing.T) {
 	s, _ := newMiniredisStore(t)
 	mw := Middleware(s)
 
-	failingHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failingHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("boom"))
 	})
@@ -118,7 +118,7 @@ func TestMiddleware_ReleaseOn5xx(t *testing.T) {
 
 	// Second call: should hit the handler again, not replay.
 	called := false
-	spy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	spy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("recovered"))
@@ -140,7 +140,7 @@ func TestMiddleware_4xxIsCached(t *testing.T) {
 	s, _ := newMiniredisStore(t)
 	mw := Middleware(s)
 
-	clientErrHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	clientErrHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"err":"bad card"}`))
 	})

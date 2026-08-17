@@ -29,7 +29,7 @@ func TestDuplicateWebhook_DifferentBodies(t *testing.T) {
 	mw := idempotency.Middleware(store)
 
 	calls := 0
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if calls == 1 {
 			w.WriteHeader(http.StatusOK)

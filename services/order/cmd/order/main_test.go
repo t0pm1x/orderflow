@@ -86,21 +86,21 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 // TestEnvOrDefault_NotExported is a placeholder reminding future
 // readers that envOrDefault is intentionally unexported: env wiring
 // lives in this package and shouldn't leak.
-func TestEnvOrDefault_NotExported(t *testing.T) {
+func TestEnvOrDefault_NotExported(_ *testing.T) {
 	// Compile-time reminder: if envOrDefault is exported, this
 	// test (and only this test) can be replaced by an external
 	// caller. Keeping it unexported keeps the surface tight.
 }
 
-func waitForAddr(t *testing.T, max time.Duration) string {
+func waitForAddr(t *testing.T, maxWait time.Duration) string {
 	t.Helper()
-	deadline := time.Now().Add(max)
+	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
 		if a := order.ListenAddr(); a != "" {
 			return a
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("server did not bind within %s", max)
+	t.Fatalf("server did not bind within %s", maxWait)
 	return ""
 }

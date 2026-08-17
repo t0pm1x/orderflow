@@ -1,8 +1,8 @@
-// Package idempotency: HTTP middleware that uses the Store to dedupe
-// requests by Idempotency-Key header. On first sight, reserves the
-// key, runs the handler, and caches the response. On duplicate
-// replays the cached body. On handler error (>=500) releases the
-// reservation so a retry can succeed.
+// Package idempotency provides an HTTP middleware that uses the Store
+// to dedupe requests by Idempotency-Key header. On first sight, it
+// reserves the key, runs the handler, and caches the response. On
+// duplicate it replays the cached body. On handler error (>=500) it
+// releases the reservation so a retry can succeed.
 package idempotency
 
 import (

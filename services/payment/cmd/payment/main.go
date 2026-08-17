@@ -33,8 +33,12 @@ import (
 	svcwebhook "github.com/t0pm1x/orderflow/services/payment/internal/webhook"
 )
 
+// TableName is the outbox table the Payment Service owns. Exported
+// so the cmd/payment top-level binary and any tests can agree on the
+// table identifier.
 const TableName = "payment_outbox"
 
+// Version is the binary version (overridden at build via -ldflags).
 var Version = "0.0.0-dev"
 
 // boundAddr is the actual listen address Run is bound to when
@@ -42,11 +46,15 @@ var Version = "0.0.0-dev"
 // Run in a goroutine to discover the OS-picked port.
 var boundAddr atomic.Value
 
+// ListenAddr returns the address the embedded HTTP server is
+// currently bound to, or "" if Run has not started yet. Test-only.
 func ListenAddr() string {
 	v, _ := boundAddr.Load().(string)
 	return v
 }
 
+// Run blocks until ctx is cancelled (SIGTERM/SIGINT). Returns nil
+// on clean shutdown.
 func Run(ctx context.Context) error {
 	logger := slog.Default()
 	dbURL := envOrDefault("DATABASE_URL", "")
@@ -209,10 +217,13 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 	}, nil
 }
 
+// Main is the function called by cmd/payment/main.go; it owns the
+// signal-aware context lifecycle.
 func Main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	if err := Run(ctx); err != nil {
+	err := Run(ctx)
+	cancel()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "payment service: %v\n", err)
 		os.Exit(1)
 	}

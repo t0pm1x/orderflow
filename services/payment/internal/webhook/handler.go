@@ -33,9 +33,9 @@ var ErrPaymentNotFound = errors.New("payment not found")
 type PaymentStatus string
 
 const (
-	// StatusCaptured: the provider confirmed the charge.
+	// StatusCaptured is the payments row state when the provider confirmed the charge.
 	StatusCaptured PaymentStatus = "captured"
-	// StatusFailed: the provider declined or errored.
+	// StatusFailed is the payments row state when the provider declined or errored.
 	StatusFailed PaymentStatus = "failed"
 )
 

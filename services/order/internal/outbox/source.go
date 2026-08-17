@@ -1,6 +1,6 @@
-// Package outbox: PGSource implements pkg/outbox.Source against
-// the order_outbox table. The poller (3.7.a) calls FetchPending on
-// a timer, hands the batch to KafkaPublisher (3.7.b), and then
+// Package outbox implements pkg/outbox.Source against the
+// order_outbox table. The poller (3.7.a) calls FetchPending on a
+// timer, hands the batch to KafkaPublisher (3.7.b), and then
 // MarkSent / MarkFailed the returned event_ids.
 package outbox
 

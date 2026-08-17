@@ -25,10 +25,12 @@ type Result struct {
 // ErrProviderTimeout is returned when the mock simulates a timeout.
 var ErrProviderTimeout = errors.New("provider: timeout")
 
-// Charge attempts to charge `amountCents` to the card identified by
-// lastFour. Returns Result (with Status="failed" + ErrorCode on soft
+// Charge attempts to charge the card identified by lastFour.
+// amountCents is accepted to match the production provider signature
+// but is unused in the mock (the outcome derives purely from
+// lastFour). Returns Result (with Status="failed" + ErrorCode on soft
 // declines) or an error (network/timeout).
-func Charge(ctx context.Context, paymentID string, amountCents int64, lastFour string) (*Result, error) {
+func Charge(ctx context.Context, paymentID string, _ int64, lastFour string) (*Result, error) {
 	if len(lastFour) < 4 {
 		return nil, fmt.Errorf("provider: invalid card number (need last 4)")
 	}
@@ -52,7 +54,9 @@ func Charge(ctx context.Context, paymentID string, amountCents int64, lastFour s
 	}
 }
 
-// Refund reverses a charge. Always succeeds in the mock.
-func Refund(ctx context.Context, paymentID string, amountCents int64) (*Result, error) {
+// Refund reverses a charge. Always succeeds in the mock. ctx and
+// amountCents are accepted to match the production provider signature
+// but are unused here.
+func Refund(_ context.Context, paymentID string, _ int64) (*Result, error) {
 	return &Result{PaymentID: paymentID, Status: "succeeded"}, nil
 }

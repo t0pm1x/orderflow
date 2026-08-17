@@ -41,7 +41,7 @@ func (m *mockRepo) Get(id types.OrderID) (*domain.Order, error) {
 	return o, nil
 }
 
-func (m *mockRepo) List(state domain.OrderState, limit int) ([]*domain.Order, error) {
+func (m *mockRepo) List(state domain.OrderState, _ int) ([]*domain.Order, error) {
 	var out []*domain.Order
 	for _, o := range m.orders {
 		if state == "" || o.State == state {
@@ -119,7 +119,9 @@ func TestSubmit_EmitsOrderCreatedEvent(t *testing.T) {
 func TestGet_OK(t *testing.T) {
 	repo := newMockRepo()
 	o := domain.NewOrder(types.NewCustomerID(), []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 100}})
-	repo.Insert(o)
+	if err := repo.Insert(o); err != nil {
+		t.Fatalf("mockRepo.Insert: %v", err)
+	}
 
 	h := NewHandler(repo)
 	req := httptest.NewRequest("GET", "/v1/orders/"+o.ID.String(), nil)
