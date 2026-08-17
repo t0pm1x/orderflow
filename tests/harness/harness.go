@@ -19,10 +19,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -118,6 +120,53 @@ func New(t *testing.T, opts ...Option) *Harness {
 	})
 
 	return h
+}
+
+// StartService launches one of the orderflow service binaries as a
+// child process. The harness takes care of env wiring (DATABASE_URL,
+// KAFKA_BROKER, REDIS_URL where applicable, HTTP_ADDR). Returns a
+// stop function that gracefully terminates the process.
+//
+// binName is the binary base name without `.exe` — the function picks
+// the correct extension for the current OS via runtime.GOOS.
+func (h *Harness) StartService(t *testing.T, name, binName string, env map[string]string) (stop func()) {
+	t.Helper()
+	bin := binName
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	root, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("harness: findRepoRoot: %v", err)
+	}
+	binPath := filepath.Join(root, "bin", bin)
+
+	cmd := exec.Command(binPath)
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+	// Default OTLP exporter to stdout so child processes don't try to
+	// dial otel-collector:4317 (which is unreachable from this box).
+	cmd.Env = append(cmd.Env, "OTEL_EXPORTER=stdout")
+	logDir := filepath.Join(root, "tests", "logs")
+	_ = os.MkdirAll(logDir, 0o755)
+	logPath := filepath.Join(logDir, name+".log")
+	logFile, ferr := os.Create(logPath)
+	if ferr != nil {
+		t.Fatalf("harness: create log file %s: %v", logPath, ferr)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		t.Fatalf("harness: start %s (%s): %v", name, binPath, err)
+	}
+	return func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_, _ = cmd.Process.Wait()
+		logFile.Close()
+	}
 }
 
 // WaitForOrderState polls the order service until the order reaches
