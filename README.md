@@ -40,6 +40,14 @@ make smoke-k8s
 make record
 ```
 
+### Local verification (pre-push)
+
+Run the same checks CI runs, locally:
+
+    make verify
+
+Runs `tidy` (go mod tidy per-module), `build` (4 binaries with version injection), `test` (all 13 workspace modules), and `lint` (golangci-lint, requires v2.x locally — matches the GitHub Actions version). Catches most issues before pushing.
+
 ### ⬜ Deferred to v1.1
 - Full outbox-retry chaos assertion (services cache `KAFKA_BROKER`)
 - kind smoke: actual image loading into cluster (currently validates Helm rendering only)

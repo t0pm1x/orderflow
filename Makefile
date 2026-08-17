@@ -109,3 +109,8 @@ smoke-k8s:
 
 record:
 	bash docs/demo/record.sh
+
+# --- pre-push verification (runs what CI runs, locally) ---
+.PHONY: verify
+
+verify: tidy build test lint
