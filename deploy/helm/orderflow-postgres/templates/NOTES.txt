@@ -1,0 +1,18 @@
+orderflow-postgres has been deployed!
+
+PostgreSQL is available at:
+  {{ include "orderflow-postgres.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+Databases created on first boot:
+{{- range .Values.databases }}
+  - {{ .name }}
+{{- end }}
+
+Extensions enabled in each database:
+  - pgcrypto
+  - uuid-ossp
+
+WARNING: The default password "{{ .Values.auth.password }}" is for LOCAL DEVELOPMENT ONLY.
+In production, override with one of:
+  --set auth.password=<secret>
+  - or use a Kubernetes Secret and template env from secretKeyRef.

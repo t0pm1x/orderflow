@@ -1,0 +1,22 @@
+image:
+  repository: redis
+  tag: "7-alpine"
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+storage:
+  size: 2Gi
+  accessModes:
+    - ReadWriteOnce
+
+service:
+  port: 6379
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

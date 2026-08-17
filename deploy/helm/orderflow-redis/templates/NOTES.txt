@@ -1,0 +1,8 @@
+orderflow-redis has been deployed!
+
+Redis is available at:
+  {{ include "orderflow-redis.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+NOTE: This chart uses a Deployment + PVC for dev simplicity.
+For production, switch to a StatefulSet (stable network identity, ordered rollout) and
+front with Redis Sentinel or use a managed Redis service.

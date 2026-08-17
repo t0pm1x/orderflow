@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "orderflow-redpanda.fullname" . }}
+  labels:
+    {{- include "orderflow-redpanda.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "orderflow-redpanda.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orderflow-redpanda.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: redpanda
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["redpanda"]
+          args:
+            - start
+            - --check-dependencies
+            - --overprovisioned
+            - --smp
+            - "1"
+            - --memory
+            - 512M
+            - --reserve-memory
+            - 0M
+            - --node-id
+            - "0"
+            - --check=false
+            - --mode
+            - dev-container
+            - --config
+            - /etc/redpanda/redpanda.yaml
+          ports:
+            {{- range .Values.service.ports }}
+            - name: {{ .name }}
+              containerPort: {{ .port }}
+              protocol: TCP
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/redpanda/data
+            - name: config
+              mountPath: /etc/redpanda
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "orderflow-redpanda.fullname" . }}-data
+        - name: config
+          configMap:
+            name: {{ include "orderflow-redpanda.fullname" . }}-config

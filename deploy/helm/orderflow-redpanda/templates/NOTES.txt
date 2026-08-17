@@ -1,0 +1,12 @@
+orderflow-redpanda has been deployed!
+
+Single-broker Redpanda (KRaft, dev mode) is available at:
+  {{ include "orderflow-redpanda.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+
+Kafka API:    port 9092
+Admin API:    port 9644
+RPC:          port 33145
+
+WARNING: This is a SINGLE-BROKER dev setup. It is NOT suitable for production.
+For production, deploy a 3+ broker cluster with proper rack awareness and
+remove `developer_mode: true` from .Values.config.redpanda.

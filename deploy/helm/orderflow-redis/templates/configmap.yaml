@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "orderflow-redis.fullname" . }}-config
+  labels:
+    {{- include "orderflow-redis.labels" . | nindent 4 }}
+data:
+  redis.conf: |
+    appendonly yes
+    save ""
+    bind 0.0.0.0
+    protected-mode no

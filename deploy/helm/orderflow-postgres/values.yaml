@@ -1,0 +1,35 @@
+image:
+  repository: postgres
+  tag: "16-alpine"
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+storage:
+  size: 8Gi
+  accessModes:
+    - ReadWriteOnce
+
+auth:
+  username: orderflow
+  password: orderflow
+  database: orderflow
+
+databases:
+  - name: order_order
+    owner: orderflow
+  - name: payment_payment
+    owner: orderflow
+  - name: inventory_inventory
+    owner: orderflow
+
+service:
+  port: 5432
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
