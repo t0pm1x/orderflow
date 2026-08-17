@@ -153,7 +153,9 @@ func Run(ctx context.Context) error {
 
 	ln, err = net.Listen("tcp", httpAddr)
 	if err != nil {
-		wgWait(ctx, &wg, pool, consumerClose, outboxClose, nil)
+		listenShutdownCtx, listenCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		wgWait(listenShutdownCtx, &wg, pool, consumerClose, outboxClose, nil)
+		listenCancel()
 		return fmt.Errorf("listen %s: %w", httpAddr, err)
 	}
 	boundAddr.Store(ln.Addr().String())
