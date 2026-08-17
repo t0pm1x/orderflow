@@ -144,6 +144,15 @@ orderflow/
 - [0002-outbox-pattern.md](docs/adr/0002-outbox-pattern.md) — Transactional outbox + Kafka EOS
 - [0003-rest-vs-grpc.md](docs/adr/0003-rest-vs-grpc.md) — REST external + gRPC internal
 
+## Decision log
+
+| #    | Title                                | Status   | Date       |
+|------|--------------------------------------|----------|------------|
+| 0001 | Saga vs choreography                 | Accepted | 2026-08-17 |
+| 0002 | Outbox pattern                       | Accepted | 2026-08-17 |
+| 0003 | REST vs gRPC                         | Accepted | 2026-08-17 |
+| 0004 | W3C tracecontext through Kafka       | Accepted | 2026-08-17 |
+
 ## License
 
 MIT
