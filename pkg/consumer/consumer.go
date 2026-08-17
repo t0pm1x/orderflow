@@ -157,7 +157,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 		fetches.EachRecord(func(rec *kgo.Record) {
 			c.dispatch(ctx, rec)
 		})
-		c.client.CommitMarkedOffsets(ctx)
+		// Best-effort commit; ctx cancellation during shutdown is the
+		// common failure mode and the next session rebalances offsets.
+		_ = c.client.CommitMarkedOffsets(ctx)
 	}
 }
 

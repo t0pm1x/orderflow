@@ -36,7 +36,7 @@ func (d *KafkaDLQ) Send(ctx context.Context, env *events.Envelope, reason string
 		return fmt.Errorf("dlq: nil envelope")
 	}
 	envelope := *env
-	envelope.EventType = envelope.EventType + ".DLQ"
+	envelope.EventType += ".DLQ"
 	// Reuse the payload field to carry failure metadata so the DLQ
 	// consumer can route without parsing log lines.
 	payload := map[string]any{

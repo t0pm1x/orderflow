@@ -1,3 +1,7 @@
+// Package kafkaprop bridges Kafka record headers with OpenTelemetry
+// trace context. It exposes Inject / Extract for W3C traceparent
+// propagation and SpanFromEnvelope for reconstructing a SpanContext
+// from a deserialized orderflow event envelope.
 package kafkaprop
 
 import (

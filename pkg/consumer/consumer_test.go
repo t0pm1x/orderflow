@@ -66,7 +66,7 @@ func TestDispatch_DedupSkipsHandler(t *testing.T) {
 	c.dispatch(context.Background(), orderCreatedRecord())
 }
 
-func TestDispatch_UnknownEventTypeSkipped(t *testing.T) {
+func TestDispatch_UnknownEventTypeSkipped(_ *testing.T) {
 	rec := &kgo.Record{
 		Key:   []byte("o1"),
 		Value: []byte(`{"event_id":"e1","event_type":"NeverHeardOfIt","aggregate_id":"o1","aggregate_type":"Order","schema_version":"1.0","payload":{}}`),
