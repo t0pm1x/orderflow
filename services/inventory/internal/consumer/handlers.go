@@ -116,6 +116,9 @@ func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 		if errors.Is(err, repository.ErrInsufficientStock) {
 			return emitStockReservationFailed(ctx, p.OrderID, p.SKU, "insufficient_stock", logger)
 		}
+		if errors.Is(err, repository.ErrNotFound) {
+			return emitStockReservationFailed(ctx, p.OrderID, p.SKU, "sku_not_found", logger)
+		}
 		return err
 	}
 }

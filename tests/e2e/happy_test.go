@@ -58,7 +58,7 @@ func TestE2E_HappyPath_OrderConfirmed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/orders: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST /v1/orders: status=%d body=%s", resp.StatusCode, b)
@@ -99,7 +99,7 @@ func waitForHealth(t *testing.T, url string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(url)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == 200 {
 				return
 			}

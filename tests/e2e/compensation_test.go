@@ -57,7 +57,7 @@ func TestE2E_Compensation_PaymentDeclined_CancelsOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/orders: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST /v1/orders: status=%d body=%s", resp.StatusCode, b)
