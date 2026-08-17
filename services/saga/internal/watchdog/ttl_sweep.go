@@ -16,6 +16,7 @@ package watchdog
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -107,8 +108,26 @@ func (t *TTLSweep) RunOnce(ctx context.Context) {
 // marks the order cancelled). All three writes happen in one tx so
 // the saga state and its events commit/rollback atomically —
 // preventing the half-state of "compensated with no events
-// emitted" that would leave stock stranded.
+// emitted" that would leave stock stranded. Marshal errors are
+// returned (not panicked) so a malformed payload aborts the tx
+// cleanly instead of crashing the whole saga service mid-tx.
 func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
+	releasePayload, err := json.Marshal(sagaev.StockReleaseRequestedPayload{
+		OrderID:       s.OrderID,
+		ReservationID: s.ReservationID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal StockReleaseRequested: %w", err)
+	}
+	cancelPayload, err := json.Marshal(sagaev.OrderCancelledPayload{
+		OrderID: s.OrderID,
+		Reason:  "timeout",
+		Source:  "saga",
+	})
+	if err != nil {
+		return fmt.Errorf("marshal OrderCancelled: %w", err)
+	}
+
 	return pgx.BeginFunc(ctx, t.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE order_sagas
@@ -123,11 +142,8 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 			EventType:     "StockReleaseRequested",
 			SchemaVersion: "1.0",
 			Topic:         sagaoutbox.Topic,
-			Payload: mustMarshal(sagaev.StockReleaseRequestedPayload{
-				OrderID:       s.OrderID,
-				ReservationID: s.ReservationID,
-			}),
-			Headers: map[string]string{},
+			Payload:       releasePayload,
+			Headers:       map[string]string{},
 		}
 		if err := t.writer.Append(ctx, tx, releaseRec); err != nil {
 			return err
@@ -139,27 +155,9 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 			EventType:     "OrderCancelled",
 			SchemaVersion: "1.0",
 			Topic:         sagaoutbox.Topic,
-			Payload: mustMarshal(sagaev.OrderCancelledPayload{
-				OrderID: s.OrderID,
-				Reason:  "timeout",
-				Source:  "saga",
-			}),
-			Headers: map[string]string{},
+			Payload:       cancelPayload,
+			Headers:       map[string]string{},
 		}
 		return t.writer.Append(ctx, tx, cancelRec)
 	})
-}
-
-// mustMarshal marshals v to JSON, panicking on error. The payloads
-// in this file are local structs with primitive fields — a marshal
-// failure would indicate a programmer error, not a runtime one,
-// so panic is appropriate (and the alternative of threading an
-// error through here would obscure the tx commit/rollback
-// semantics that matter more).
-func mustMarshal(v any) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return b
 }
