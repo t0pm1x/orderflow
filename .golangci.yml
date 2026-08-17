@@ -10,14 +10,16 @@ linters:
     - staticcheck
     - unused
     - errcheck
-    - gosimple
     - gocritic
     - revive
-    - gofmt
-    - goimports
 
   settings:
     unused:
       # Enable unused linter for whole module (Go 1.25 default behavior).
       # No per-package opt-in required.
       exported-fields-are-used: false
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
