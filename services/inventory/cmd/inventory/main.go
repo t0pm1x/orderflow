@@ -3,6 +3,7 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,11 +23,13 @@ import (
 
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
 	"github.com/t0pm1x/orderflow/platform"
+	apierrors "github.com/t0pm1x/orderflow/platform/errors"
 	"github.com/t0pm1x/orderflow/platform/events"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
 
 	svcconsumer "github.com/t0pm1x/orderflow/services/inventory/internal/consumer"
 	svcoutbox "github.com/t0pm1x/orderflow/services/inventory/internal/outbox"
+	inventoryrepo "github.com/t0pm1x/orderflow/services/inventory/internal/repository"
 )
 
 const TableName = "inventory_outbox"
@@ -142,6 +145,25 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		})
 		r.Handle("/metrics", promhttp.Handler())
+
+		// Mount the Inventory REST stock endpoint only when the DB
+		// pool is wired (i.e. DATABASE_URL was set). When the outbox
+		// is disabled the pool is nil and PGRepo would have no DB to
+		// talk to; the route is intentionally absent so /healthz and
+		// /metrics still respond without a DB.
+		if pool != nil {
+			repo := inventoryrepo.NewPGRepo(pool)
+			r.Get("/v1/inventory/stock/{sku}", func(w http.ResponseWriter, req *http.Request) {
+				sku := chi.URLParam(req, "sku")
+				s, err := repo.GetStock(req.Context(), sku)
+				if err != nil {
+					apierrors.WriteError(w, &apierrors.APIError{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(s)
+			})
+		}
 
 		var err error
 		ln, err = net.Listen("tcp", httpAddr)
