@@ -56,3 +56,9 @@ kind-load:
 
 kind-status:
 	$(KIND) get clusters
+
+# --- load test (k6-driven, 100 RPS for 60s) ---
+.PHONY: load
+
+load:
+	go test ./tests/load/... -v -timeout 10m
