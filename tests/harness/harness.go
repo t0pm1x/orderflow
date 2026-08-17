@@ -188,6 +188,26 @@ func (h *Harness) KafkaContainer() testcontainers.Container {
 	return h.kafkaContainer
 }
 
+// RestartKafka terminates the current Kafka container and starts a
+// fresh one. Updates h.KafkaBrokers with the new address. Used by
+// chaos tests to verify outbox retry recovery.
+//
+// Note: service binaries started via StartService capture
+// KAFKA_BROKER in their environment at startup; after a restart the
+// new broker lives at a different host:port that the already-running
+// processes cannot reach. Callers that want full end-to-end recovery
+// must also restart the dependent services.
+func (h *Harness) RestartKafka(ctx context.Context) error {
+	if h.kafkaContainer != nil {
+		_ = h.kafkaContainer.Terminate(ctx)
+		h.kafkaContainer = nil
+	}
+	kf := mustKafka(ctx, h.t)
+	h.kafkaContainer = kf.container
+	h.KafkaBrokers = kf.brokers
+	return nil
+}
+
 // pgHandle bundles a running Postgres container with its connection
 // string so cleanup and reporting have one value to pass around.
 type pgHandle struct {

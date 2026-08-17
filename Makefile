@@ -62,3 +62,17 @@ kind-status:
 
 load:
 	go test ./tests/load/... -v -timeout 10m
+
+# --- E2E suite aggregate ---
+.PHONY: e2e e2e-happy e2e-compensation e2e-chaos
+
+e2e: e2e-happy e2e-compensation e2e-chaos
+
+e2e-happy:
+	go test ./tests/e2e/... -run TestE2E_HappyPath -timeout 5m -v
+
+e2e-compensation:
+	go test ./tests/e2e/... -run TestE2E_Compensation -timeout 5m -v
+
+e2e-chaos:
+	go test ./tests/chaos/... -timeout 10m -v
