@@ -32,6 +32,8 @@ import (
 
 	svcconsumer "github.com/t0pm1x/orderflow/services/order/internal/consumer"
 	svcoutbox "github.com/t0pm1x/orderflow/services/order/internal/outbox"
+	svcrepo "github.com/t0pm1x/orderflow/services/order/internal/repository"
+	svchttp "github.com/t0pm1x/orderflow/services/order/internal/api"
 )
 
 // TableName is exported so the cmd/order top-level binary and any
@@ -162,6 +164,16 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		})
 		r.Handle("/metrics", promhttp.Handler())
+
+		// Mount the Order REST handler only when the DB pool is
+		// wired (i.e. DATABASE_URL was set). When the outbox is
+		// disabled the pool is nil and PGRepo would have no DB to
+		// talk to; the handler is intentionally absent so /healthz
+		// and /metrics still respond without a DB.
+		if pool != nil {
+			repo := svcrepo.NewPGRepo(pool)
+			r.Mount("/", svchttp.NewHandler(repo).Routes())
+		}
 
 		var err error
 		ln, err = net.Listen("tcp", httpAddr)
