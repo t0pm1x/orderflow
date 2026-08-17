@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -59,6 +60,29 @@ func TestSubmit_OK(t *testing.T) {
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Regression test for the e2e TestE2E_HappyPath_OrderConfirmed
+// failure: the response body must decode into a struct whose ID field
+// is a JSON string, not a 16-byte array.
+func TestSubmit_ResponseIDIsString(t *testing.T) {
+	h := NewHandler(newMockRepo())
+	body := `{"customer_id":"550e8400-e29b-41d4-a716-446655440000","items":[{"sku":"A","quantity":1,"unit_price_cents":100}]}`
+	req := httptest.NewRequest("POST", "/v1/orders", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode create response: %v (body=%s)", err, w.Body.String())
+	}
+	if got.ID == "" {
+		t.Errorf("empty order id in response: %s", w.Body.String())
 	}
 }
 
