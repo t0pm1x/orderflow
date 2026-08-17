@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-17
+
+### Added
+- **3.5.g** Payment Service complete: `POST /v1/payments/webhook` handler with `PaymentCompleted`/`PaymentFailed` event emission, `PGRepository` (tx-atomic UpdateStatus + outbox writer), wired into the payment binary's chi router at `/v1/payments/webhook` when DB+Redis wired. Idempotency middleware wraps the webhook when `REDIS_URL` is set (logs warning if not). 11 stdlib tests in `handler_test.go` cover happy path, status variants, error_code derivation from last-4 (matches `provider.Charge` table), 400/404/500 cases.
+- **3.6.g** Inventory Service: `PGRepository` with `GetStock/ReserveStock/ReleaseStock` (optimistic version check via `UPDATE ... WHERE version = $1`, tx-atomic outbox INSERT via `svcoutbox.PGWriter.Append`), `GET /v1/inventory/stock/{sku}` mounted in inventory binary. 3 stdlib tests (round-trip, outbox-event atomicity, state-filtered List) — verified against live `postgres:16-alpine` via Docker.
+- **3.11.polish** `make e2e` aggregate target + `e2e-happy`, `e2e-compensation`, `e2e-chaos` sub-targets. New `harness.RestartKafka(ctx)` helper for chaos recovery tests.
+
+### Deferred to v0.5.0
+- 3.12.f kind smoke test (`kind` binary not installed locally).
+- 3.13.d asciinema recording.
+- Full outbox-retry chaos assertion — services cache `KAFKA_BROKER` env at startup; restarting Kafka doesn't reconnect already-running service processes. Either the chaos test should restart services too, OR services should support dynamic broker discovery (separate concern).
+
 ## [0.3.0] - 2026-08-17
 
 ### Added

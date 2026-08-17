@@ -83,12 +83,15 @@
 | 3.11.f | CI job for E2E (ubuntu, needs:build) | done | b1411a5 |
 | 3.12.c | Kustomize overlays (dev/staging/prod) | done | ddf421b |
 | 3.12.d | ArgoCD Application manifests | done | bc142ce |
+| 3.5.g | Payment Service webhook handler + PGRepository + REST mount | done | 90dc049 |
+| 3.6.g | Inventory Service PGRepository + GET /v1/inventory/stock endpoint | done | 3d95b86 |
+| 3.11.polish | make e2e aggregate target + harness.RestartKafka helper | done | b3bc2c2 |
 
-## Deferred to v0.4.0
+## Deferred to v0.5.0
 
 - 3.12.f kind smoke test (requires `kind` binary installation)
 - 3.13.d asciinema recording (manual)
-- `RestartKafka` helper for full outbox-retry chaos assertion
+- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup — restarting Kafka doesn't reconnect running services)
 
 ## Session handoff
 

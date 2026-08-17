@@ -4,32 +4,32 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Status: v0.3.0
+## Status: v0.4.0
 
-This release adds Order Service PGRepository (3.4.g), E2E/chaos/load tests (3.11.b–e), CI job for them (3.11.f), Kustomize overlays (3.12.c), and ArgoCD manifests (3.12.d). v0.2.0 features remain.
+This release adds Payment Service webhook handler + PGRepository (3.5.g), Inventory Service PGRepository + REST stock endpoint (3.6.g), and `make e2e` aggregate target + harness.RestartKafka helper (3.11.polish). All 4 services now have PGRepositories. v0.3.0 features remain.
 
 ### ✅ What works
 - All 4 services (`order`, `payment`, `inventory`, `saga`) compile and produce binaries
 - `pkg/platform` library: logging (with OTel trace correlation), middleware, types (Money, IDs), events envelope, typed errors, W3C tracecontext propagation
-- Order Service: full domain, REST API, **PGRepository** (tx-atomic with outbox), outbox writer, PGSource, DB migrations
-- Payment Service: mock provider, outbox writer, Redis-backed idempotency, DB migrations
-- Inventory Service: Stock model with optimistic locking, outbox writer, DB migrations
+- Order Service: full domain, REST API (`POST /v1/orders`, `GET /v1/orders/{id}`, `GET /v1/orders`), **PGRepository** (tx-atomic with outbox), outbox writer, PGSource, DB migrations
+- Payment Service: mock provider, **`POST /v1/payments/webhook`** with idempotency middleware, **PGRepository** (tx-atomic UpdateStatus + outbox), outbox writer, DB migrations
+- Inventory Service: Stock model with optimistic locking, **`GET /v1/inventory/stock/{sku}`**, **PGRepository** (GetStock/ReserveStock/ReleaseStock), outbox writer, DB migrations
 - Saga Service: state machine, compensation, watchdog, DB migrations
 - Outbox poller + KafkaPublisher + KafkaDLQ + Prometheus metrics
 - Consumer base: franz-go, idempotent handler, DLQ on error, per-service handler registries
 - Docker-compose stack: 3 Postgres, Redis, Redpanda, OTel Collector, Prometheus, Tempo, Grafana
 - K8s base + Helm charts for all 4 services + 3 infra deps + values-dev overlays
-- **Kustomize overlays** (dev/staging/prod) with HPA + PDB for prod
-- **ArgoCD ApplicationSet** with AppProject RBAC
+- Kustomize overlays (dev/staging/prod) with HPA + PDB for prod
+- ArgoCD ApplicationSet with AppProject RBAC
 - 4 ADRs + 5 C4 diagrams
-- testcontainers-go harness + E2E tests (happy + compensation + chaos) + k6 load test
+- testcontainers-go harness + E2E tests (happy + compensation + chaos) + k6 load test + `make e2e` aggregate
 - kind cluster config + `make kind-up/down/load`
 - Demo script
 
-### ⬜ Deferred to v0.4.0
+### ⬜ Deferred to v0.5.0
 - kind smoke test (requires `kind` binary installation)
 - asciinema recording of the demo
-- Full outbox-retry chaos assertion (needs `RestartKafka` helper)
+- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup)
 
 ## Architecture
 
