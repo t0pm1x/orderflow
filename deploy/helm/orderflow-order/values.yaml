@@ -1,0 +1,35 @@
+image:
+  repository: ghcr.io/t0pm1x/orderflow-order
+  tag: "0.2.0"
+  pullPolicy: IfNotPresent
+replicas: 2
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8081
+env:
+  DATABASE_URL: ""
+  KAFKA_BROKER: ""
+  HTTP_ADDR: ":8081"
+  OTEL_EXPORTER: "otlp"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+  LOG_LEVEL: "info"
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readiness:
+    path: /healthz
+    initialDelaySeconds: 2
+    periodSeconds: 5
+serviceAccount:
+  create: true
+  name: ""
