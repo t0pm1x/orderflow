@@ -96,6 +96,7 @@
 | v1.0.kind | kind smoke test (cluster create + Helm template validation) | done | 5ce2be7 |
 | v1.0.demo | asciinema recording script + runbook | done | 19d5ec0 |
 | v1.0 | final CHANGELOG/README/tag | done | — |
+| v1.1.pre | Saga shutdown goroutine leak + `mustMarshal` panic fix | done | c8a396898d639defb4738793fedb1aaff0255b41 | this plan |
 
 ## Deferred to v1.1
 

@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0-pre] - 2026-08-17
+
+### Fixed
+- **Saga shutdown goroutine leak**: The saga binary's outbox poller, TTL sweep, and HTTP server goroutines were launched without `sync.WaitGroup` tracking. On SIGTERM, `Run()` returned before the goroutines had exited, allowing a rolling Kubernetes deploy to kill a poller iteration or TTL sweep mid-transaction. The saga service now mirrors the `order`/`payment`/`inventory` shutdown pattern: a `sync.WaitGroup` tracks every background goroutine, and the close path waits on a 5-second shutdown context before closing the DB pool.
+- **`mustMarshal` panic in TTL sweep compensation**: `services/saga/internal/watchdog/ttl_sweep.go` called `panic(err)` from a `json.Marshal` failure inside `pgx.BeginFunc`. A panic there could leave the surrounding transaction in an indeterminate state. The helper has been removed; `compensate` now uses inline `json.Marshal` and propagates errors through the function's normal `error` return.
+
+### Changed
+- `startSagaOutbox` signature now takes a `*sync.WaitGroup` so its poller goroutine is tracked alongside the TTL sweep and HTTP server.
+- New private helper `wgWait` consolidates the saga shutdown sequence (wait goroutines, close outbox, close consumer, shutdown HTTP, close pool).
+
 ## [1.0.0] - 2026-08-17
 
 ### Added — v1.0 release
