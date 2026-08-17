@@ -32,3 +32,27 @@ clean:
 
 tidy:
 	go mod tidy
+
+# --- kind cluster (local k8s dev) ---
+KIND         := kind
+KIND_CLUSTER := orderflow
+KIND_IMAGE   := kindest/node:v1.30.0
+
+.PHONY: kind-up kind-down kind-load kind-status
+
+kind-up:
+	@echo ">> ensuring kind is installed"
+	@command -v $(KIND) >/dev/null 2>&1 || { echo "ERROR: 'kind' not found in PATH. Install: winget install Kubernetes.kind (Windows) or brew install kind (macOS)"; exit 1; }
+	$(KIND) create cluster --name $(KIND_CLUSTER) --config deploy/kind/kind.yaml --image $(KIND_IMAGE)
+
+kind-down:
+	$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+kind-load:
+	$(KIND) load docker-image --name $(KIND_CLUSTER) ghcr.io/t0pm1x/orderflow-order:dev
+	$(KIND) load docker-image --name $(KIND_CLUSTER) ghcr.io/t0pm1x/orderflow-payment:dev
+	$(KIND) load docker-image --name $(KIND_CLUSTER) ghcr.io/t0pm1x/orderflow-inventory:dev
+	$(KIND) load docker-image --name $(KIND_CLUSTER) ghcr.io/t0pm1x/orderflow-saga:dev
+
+kind-status:
+	$(KIND) get clusters
