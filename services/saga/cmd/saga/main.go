@@ -56,6 +56,12 @@ func Run(ctx context.Context) error {
 	logger := slog.Default()
 	httpAddr := envOrDefault("HTTP_ADDR", ":8084")
 
+	// Seed OTLP defaults so pkg/platform/otel.go (which reads them via os.Getenv) dials otel-collector:4317 when no override is set; export OTEL_EXPORTER=stdout for local dev.
+	otelExporter := envOrDefault("OTEL_EXPORTER", "otlp")
+	otelEndpoint := envOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
+	_ = os.Setenv("OTEL_EXPORTER", otelExporter)
+	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otelEndpoint)
+
 	logger.Info("orderflow-saga starting",
 		"version", Version,
 		"http_addr", httpAddr,

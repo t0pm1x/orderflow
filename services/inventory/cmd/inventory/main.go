@@ -50,6 +50,12 @@ func Run(ctx context.Context) error {
 	groupID := envOrDefault("KAFKA_GROUP_ID", "orderflow-inventory")
 	httpAddr := envOrDefault("HTTP_ADDR", ":8083")
 
+	// Seed OTLP defaults so pkg/platform/otel.go (which reads them via os.Getenv) dials otel-collector:4317 when no override is set; export OTEL_EXPORTER=stdout for local dev.
+	otelExporter := envOrDefault("OTEL_EXPORTER", "otlp")
+	otelEndpoint := envOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
+	_ = os.Setenv("OTEL_EXPORTER", otelExporter)
+	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otelEndpoint)
+
 	logger.Info("orderflow-inventory starting",
 		"version", Version,
 		"database", redact(dbURL),

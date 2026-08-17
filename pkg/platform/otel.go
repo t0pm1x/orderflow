@@ -22,10 +22,25 @@ import (
 // OTLP exporter.
 type testResourceCtxKey struct{}
 
-// InitTracing sets up an OTLP gRPC exporter and returns a shutdown func.
-// Endpoint defaults to localhost:4317 (otel-collector).
-// Set OTEL_EXPORTER=stdout to use stdout exporter instead (for dev).
-// The version is attached as the service.version resource attribute.
+// InitTracing sets up an OTLP gRPC exporter and returns a shutdown
+// func. The version is attached as the service.version resource
+// attribute.
+//
+// Exporter selection via env vars (read by createExporter):
+//
+//	OTEL_EXPORTER            controls which exporter to use. Accepts
+//	                         "stdout" (dev/local) or "otlp" (prod);
+//	                         any non-"stdout" value selects OTLP gRPC.
+//	OTEL_EXPORTER_OTLP_ENDPOINT
+//	                         OTLP gRPC endpoint. Falls back to
+//	                         "localhost:4317" when unset.
+//
+// The service binaries under services/<svc>/cmd/<svc>/main.go set
+// process-level defaults ("otlp", "otel-collector:4317") before
+// calling InitTracing so that the docker-compose-based deployment
+// (which exposes the collector at otel-collector:4317) works out of
+// the box; set OTEL_EXPORTER=stdout in your shell to redirect spans
+// to stdout for local dev without docker-compose.
 func InitTracing(ctx context.Context, serviceName, version string) (func(context.Context) error, error) {
 	exporter, err := createExporter(ctx)
 	if err != nil {
