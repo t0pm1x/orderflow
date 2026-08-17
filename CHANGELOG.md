@@ -34,6 +34,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-17
+
+### Added — platform now actually works end-to-end
+
+The saga runtime and all consumer handlers are wired up. The platform can now process orders from `POST /v1/orders` through to `confirmed`.
+
+- **Saga runtime** (`v0.5.0.saga`): Consumer subscribes to `order-events`, handles `OrderCreated` (start saga → emit `StockReserveRequested`), `StockReserved` (advance → emit `PaymentRequested`), `PaymentCompleted` (advance → emit `OrderConfirmed`), `PaymentFailed` (compensate → emit `StockReleaseRequested` + `OrderCancelled`), `StockReleased` (cleanup), `StockReservationFailed` (cancel). `PGRepository` over `order_sagas` table + new `saga_outbox` table + outbox poller publishing to Kafka. Watchdog code present but cross-restart TTL sweep deferred.
+- **Inventory consumer** (`v0.5.0.inventory`): Real `StockReserveRequested` handler calls `repo.ReserveStock` and emits `StockReserved` (or `StockReservationFailed` on `ErrInsufficientStock`). Real `StockReleaseRequested` handler emits `StockReleased`. New `POST /v1/inventory/reserve` endpoint for synchronous reserve.
+- **Payment consumer** (`v0.5.0.payment`): Real `PaymentRequested` handler calls `provider.Charge` (mock — last-4 derived from order_id), persists `payments` row + outbox event in same tx. Emits `PaymentCompleted` on `succeeded`, `PaymentFailed` on `failed`.
+- **Order consumer** (`v0.5.0.order`): Real handlers for `StockReserved` (state=reserved), `StockReservationFailed` (state=cancelled), `OrderConfirmed` (state=confirmed), `OrderCancelled` (state=cancelled), `PaymentFailed` (state=cancelled). Order subscribes to all 3 topics (order-events, payment-events, inventory-events).
+
+### Housekeeping
+- `3.4.1` Committed missing `cmd/saga/go.sum` and `services/saga/go.sum` (existed since 3.10.d.saga but were untracked).
+- `3.4.2` LDFLAGS injection: `make build` now bakes `git describe --tags --always --dirty` into each binary's `main.Version` field. Binaries report real version (e.g. `v0.4.0-3-gcf3195d-dirty`) instead of `0.0.0-dev`.
+
+### Deferred to v0.6.0
+- 3.12.f kind smoke test.
+- 3.13.d asciinema recording.
+- Saga watchdog cross-restart TTL sweep.
+- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER`).
+
 ## [0.4.0] - 2026-08-17
 
 ### Added

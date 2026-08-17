@@ -4,31 +4,27 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Status: v0.4.0
+## Status: v0.5.0
 
-This release adds Payment Service webhook handler + PGRepository (3.5.g), Inventory Service PGRepository + REST stock endpoint (3.6.g), and `make e2e` aggregate target + harness.RestartKafka helper (3.11.polish). All 4 services now have PGRepositories. v0.3.0 features remain.
+This release wires up the **saga runtime** and all **consumer handlers** — the platform now actually processes orders end-to-end. Plus LDFLAGS injection (binaries report real git version) and saga go.sum housekeeping.
 
 ### ✅ What works
 - All 4 services (`order`, `payment`, `inventory`, `saga`) compile and produce binaries
-- `pkg/platform` library: logging (with OTel trace correlation), middleware, types (Money, IDs), events envelope, typed errors, W3C tracecontext propagation
-- Order Service: full domain, REST API (`POST /v1/orders`, `GET /v1/orders/{id}`, `GET /v1/orders`), **PGRepository** (tx-atomic with outbox), outbox writer, PGSource, DB migrations
-- Payment Service: mock provider, **`POST /v1/payments/webhook`** with idempotency middleware, **PGRepository** (tx-atomic UpdateStatus + outbox), outbox writer, DB migrations
-- Inventory Service: Stock model with optimistic locking, **`GET /v1/inventory/stock/{sku}`**, **PGRepository** (GetStock/ReserveStock/ReleaseStock), outbox writer, DB migrations
-- Saga Service: state machine, compensation, watchdog, DB migrations
+- **Full event flow**: `POST /v1/orders` → OrderCreated outbox → saga starts → StockReserveRequested → inventory reserves → StockReserved → saga → PaymentRequested → payment charges → PaymentCompleted → saga → OrderConfirmed → order state=confirmed
+- `pkg/platform` library: logging (with OTel trace correlation), middleware, types, events envelope, typed errors, W3C tracecontext propagation
+- All 4 services have PGRepository, REST API endpoints, real consumer handlers
+- Saga runtime: consumer + outbox + repository + state machine + compensation
 - Outbox poller + KafkaPublisher + KafkaDLQ + Prometheus metrics
-- Consumer base: franz-go, idempotent handler, DLQ on error, per-service handler registries
-- Docker-compose stack: 3 Postgres, Redis, Redpanda, OTel Collector, Prometheus, Tempo, Grafana
-- K8s base + Helm charts for all 4 services + 3 infra deps + values-dev overlays
-- Kustomize overlays (dev/staging/prod) with HPA + PDB for prod
-- ArgoCD ApplicationSet with AppProject RBAC
-- 4 ADRs + 5 C4 diagrams
-- testcontainers-go harness + E2E tests (happy + compensation + chaos) + k6 load test + `make e2e` aggregate
-- kind cluster config + `make kind-up/down/load`
-- Demo script
+- Consumer base: franz-go, idempotent handler, DLQ on error
+- Docker-compose stack + Helm charts + Kustomize overlays + ArgoCD manifests
+- testcontainers-go harness + E2E tests (happy + compensation + chaos) + k6 load test + `make e2e`
+- 4 ADRs + 5 C4 diagrams + demo script
+- Binaries report real version (LDFLAGS injection via `git describe`)
 
-### ⬜ Deferred to v0.5.0
+### ⬜ Deferred to v0.6.0
 - kind smoke test (requires `kind` binary installation)
 - asciinema recording of the demo
+- Saga watchdog cross-restart TTL sweep
 - Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup)
 
 ## Architecture

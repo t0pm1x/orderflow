@@ -86,12 +86,20 @@
 | 3.5.g | Payment Service webhook handler + PGRepository + REST mount | done | 90dc049 |
 | 3.6.g | Inventory Service PGRepository + GET /v1/inventory/stock endpoint | done | 3d95b86 |
 | 3.11.polish | make e2e aggregate target + harness.RestartKafka helper | done | b3bc2c2 |
+| 3.4.1 | commit missing saga go.sum files | done | 99ba4bc |
+| 3.4.2 | LDFLAGS injection for binary Version | done | cf3195d |
+| v0.5.0.saga | saga runtime — consumer + outbox + repository + watchdog | done | ae611b0 |
+| v0.5.0.inventory | real consumer handlers + POST /v1/inventory/reserve | done | a238e77 |
+| v0.5.0.payment | real PaymentRequested handler with mock provider | done | 1921628 |
+| v0.5.0.order | real consumer handlers (StockReserved/OrderConfirmed/etc) | done | f42f71e |
 
-## Deferred to v0.5.0
+## Deferred to v0.6.0
 
 - 3.12.f kind smoke test (requires `kind` binary installation)
 - 3.13.d asciinema recording (manual)
-- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup — restarting Kafka doesn't reconnect running services)
+- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup)
+- Saga watchdog TTL sweep (in-process watchdog exists but cross-restart sweep over `expires_at` not wired)
+- Order consumer subscribes to `order-events` topic in addition to `payment-events`/`inventory-events` (already done in v0.5.0.order)
 
 ## Session handoff
 
