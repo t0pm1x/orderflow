@@ -81,3 +81,9 @@ e2e-compensation:
 
 e2e-chaos:
 	go test ./tests/chaos/... -timeout 10m -v
+
+# --- record demo as asciinema cast ---
+.PHONY: record
+
+record:
+	bash docs/demo/record.sh
