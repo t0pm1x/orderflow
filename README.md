@@ -4,33 +4,32 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Status: v0.2.0
+## Status: v0.3.0
 
-This release closes stages 3.10 (tracing), 3.11.a (E2E harness), 3.12 (Helm + kind), 3.13 (docs + demo). Tracing, outbox, saga, and migrations from v0.1.0-MVP remain. E2E individual tests, Kustomize, ArgoCD, and asciinema deferred to v0.3.0.
+This release adds Order Service PGRepository (3.4.g), E2E/chaos/load tests (3.11.b–e), CI job for them (3.11.f), Kustomize overlays (3.12.c), and ArgoCD manifests (3.12.d). v0.2.0 features remain.
 
 ### ✅ What works
 - All 4 services (`order`, `payment`, `inventory`, `saga`) compile and produce binaries
 - `pkg/platform` library: logging (with OTel trace correlation), middleware, types (Money, IDs), events envelope, typed errors, W3C tracecontext propagation
-- Order Service: full domain (state machine: pending→reserved→confirmed/cancelled/failed), REST API (POST/GET/LIST), outbox writer, PGSource, DB migrations
-- Payment Service: mock provider with deterministic success/decline/insufficient-funds/timeout; outbox writer; Redis-backed idempotency; DB migrations
-- Inventory Service: Stock model with optimistic locking version column, reserve/release, outbox writer, DB migrations
-- Saga Service: state machine (initiated → stock_reserved → completed/compensated), compensation, watchdog, DB migrations
-- Outbox poller: FetchPending / MarkSent / MarkFailed with retry + per-topic DLQ + Prometheus metrics; KafkaPublisher and KafkaDLQ adapters
-- Consumer base: franz-go consumer group, idempotent handler wrapper (event_id dedupe), DLQ on error, per-service handler registries
-- Docker-compose stack: 3 Postgres, Redis, Redpanda (KRaft), OTel Collector, Prometheus, Tempo, Grafana
-- K8s base: namespace, RBAC, default-deny + intra-namespace NetworkPolicies
-- 4 ADRs (saga vs choreography, outbox pattern, REST vs gRPC, W3C tracecontext)
-- 4-level C4 architecture diagrams (System Context, Container, 3 Component diagrams + new Saga component diagram)
-- Helm charts for all 4 services + 3 infra deps (postgres/redis/redpanda), `values-dev.yaml` overlays
-- kind cluster config (`deploy/kind/kind.yaml`) + `make kind-up/down/load`
-- testcontainers-go E2E harness (3 Postgres + Redis + Kafka) at `tests/harness/`
-- End-to-end demo script at `docs/demo/demo.sh`
+- Order Service: full domain, REST API, **PGRepository** (tx-atomic with outbox), outbox writer, PGSource, DB migrations
+- Payment Service: mock provider, outbox writer, Redis-backed idempotency, DB migrations
+- Inventory Service: Stock model with optimistic locking, outbox writer, DB migrations
+- Saga Service: state machine, compensation, watchdog, DB migrations
+- Outbox poller + KafkaPublisher + KafkaDLQ + Prometheus metrics
+- Consumer base: franz-go, idempotent handler, DLQ on error, per-service handler registries
+- Docker-compose stack: 3 Postgres, Redis, Redpanda, OTel Collector, Prometheus, Tempo, Grafana
+- K8s base + Helm charts for all 4 services + 3 infra deps + values-dev overlays
+- **Kustomize overlays** (dev/staging/prod) with HPA + PDB for prod
+- **ArgoCD ApplicationSet** with AppProject RBAC
+- 4 ADRs + 5 C4 diagrams
+- testcontainers-go harness + E2E tests (happy + compensation + chaos) + k6 load test
+- kind cluster config + `make kind-up/down/load`
+- Demo script
 
-### ⬜ Deferred to v0.3.0
-- Individual E2E / chaos / load tests (harness ready, tests to be added)
-- Kustomize overlays + ArgoCD Application manifests
+### ⬜ Deferred to v0.4.0
 - kind smoke test (requires `kind` binary installation)
 - asciinema recording of the demo
+- Full outbox-retry chaos assertion (needs `RestartKafka` helper)
 
 ## Architecture
 

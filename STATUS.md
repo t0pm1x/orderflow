@@ -74,15 +74,21 @@
 | 3.13.e | sub-stages index doc (fixes README broken link) | done | c2b0598 |
 | 3.14 | final review + gofmt cleanup | done | 4fb1100 |
 | v0.2.0 | CHANGELOG + README + tag | done | — |
+| 3.4.g | Order Service PGRepository + wire REST handler | done | f67b33a |
+| 3.11.prep | harness.StartService helper | done | 50524d6 |
+| 3.11.b | E2E happy path test | done | a402cf2 |
+| 3.11.c | E2E compensation test (payment declined) | done | 1e0fd65 |
+| 3.11.d | chaos test — redpanda kill mid-order (simplified to order-survives assertion) | done | a651fc5 |
+| 3.11.e | load test — 100 RPS p95<1s via k6 | done | 3925070 |
+| 3.11.f | CI job for E2E (ubuntu, needs:build) | done | b1411a5 |
+| 3.12.c | Kustomize overlays (dev/staging/prod) | done | ddf421b |
+| 3.12.d | ArgoCD Application manifests | done | bc142ce |
 
-## Deferred to v0.3.0
+## Deferred to v0.4.0
 
-- 3.11.b–e E2E tests (happy / compensation / chaos / load) — harness at `tests/harness/`; individual tests to be added
-- 3.11.f E2E CI job
-- 3.12.c Kustomize overlays (depends on Helm charts — now ready)
-- 3.12.d ArgoCD Application manifests
 - 3.12.f kind smoke test (requires `kind` binary installation)
 - 3.13.d asciinema recording (manual)
+- `RestartKafka` helper for full outbox-retry chaos assertion
 
 ## Session handoff
 

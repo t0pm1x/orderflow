@@ -34,6 +34,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-17
+
+### Added
+- **3.4.g** Order Service PGRepository (`Insert/Get/List` over `pgxpool.Pool`, tx-atomic with outbox writer). REST handler wired into the order binary's chi router at `/v1/orders`. Compile-time `var _ api.Repository = (*PGRepo)(nil)` assertion.
+- **3.11.prep** `tests/harness.StartService(t, name, binName, env)` — launches a service binary as a child process with full env wiring (`DATABASE_URL`, `KAFKA_BROKER`, `REDIS_URL`, `HTTP_ADDR`) + `OTEL_EXPORTER=stdout` for hermeticity. Service logs to `tests/logs/<name>.log`. Graceful SIGTERM on stop.
+- **3.11.b** E2E happy path test — POSTs `examples/order.json`, polls until `confirmed` within 60s. Boots order/payment/inventory/saga against testcontainers harness.
+- **3.11.c** E2E compensation test — POSTs order with `last_four=0001` (forces `card_declined`), polls until `cancelled`/`failed`.
+- **3.11.d** Chaos test — kills Kafka container mid-order, asserts order service stays healthy and order does not spuriously progress to `confirmed`. (Full outbox-retry recovery assertion deferred — requires `RestartKafka` harness helper.)
+- **3.11.e** Load test — k6 50 VUs × 60s, thresholds `p(95)<1000` + `rate<0.05`. Go wrapper in `tests/load/load_test.go` shells out to k6 binary. New `make load` target.
+- **3.11.f** CI job — new `e2e` GitHub Actions job (ubuntu-only, `needs: build`, 30-min timeout) running happy/compensation/chaos. Load test excluded (manual `make load`).
+- **3.12.c** Kustomize overlays — `deploy/kustomize/{base,overlays/{dev,staging,prod}}`. Dev: replicas=1, ingress, reduced resources. Staging: replicas=2. Prod: replicas=3, HPA (cpu 70%, 3→10), PDB (`minAvailable: 2`), larger resources. Base references `all-services.yaml` (regenerated via `helm template`).
+- **3.12.d** ArgoCD manifests — `projects.yaml` (AppProject RBAC constraining destinations to `orderflow-*`), `appset.yaml` (ApplicationSet per env), per-env `overlays/{dev,staging,prod}.yaml`. Automated prune + selfHeal, exponential backoff retry (5 attempts, 10s→5m).
+
+### Deferred to v0.4.0
+- 3.12.f kind smoke test (`kind` binary not installed locally).
+- 3.13.d asciinema recording.
+- `RestartKafka` helper for full outbox-retry chaos assertion.
+
 ## [0.2.0] - 2026-08-17
 
 ### Added
