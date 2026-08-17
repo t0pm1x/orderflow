@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
 	"github.com/t0pm1x/orderflow/platform"
@@ -26,7 +27,10 @@ import (
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
 
 	svcconsumer "github.com/t0pm1x/orderflow/services/payment/internal/consumer"
+	svcidem "github.com/t0pm1x/orderflow/services/payment/internal/idempotency"
 	svcoutbox "github.com/t0pm1x/orderflow/services/payment/internal/outbox"
+	svcrepo "github.com/t0pm1x/orderflow/services/payment/internal/repository"
+	svcwebhook "github.com/t0pm1x/orderflow/services/payment/internal/webhook"
 )
 
 const TableName = "payment_outbox"
@@ -142,6 +146,28 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		})
 		r.Handle("/metrics", promhttp.Handler())
+
+		// Mount the payment webhook only when the DB pool is wired
+		// (i.e. DATABASE_URL was set). Without a pool PGRepo would
+		// have no DB to talk to; the handler is intentionally absent
+		// so /healthz and /metrics still respond without a DB.
+		//
+		// Idempotency needs Redis: when REDIS_URL is unset the route
+		// is mounted without the middleware. That is safe because the
+		// saga drives order state from outbox events, not from this
+		// endpoint's HTTP response.
+		if pool != nil {
+			var idemStore *svcidem.Store
+			if redisURL := envOrDefault("REDIS_URL", ""); redisURL == "" {
+				logger.Info("webhook idempotency disabled: REDIS_URL not set")
+			} else if opt, perr := redis.ParseURL(redisURL); perr != nil {
+				logger.Warn("webhook idempotency disabled: bad REDIS_URL", "err", perr)
+			} else {
+				idemStore = svcidem.NewStore(redis.NewClient(opt))
+			}
+			repo := svcrepo.NewPGRepo(pool)
+			r.Mount("/", svcwebhook.NewHandler(repo, idemStore).Routes())
+		}
 
 		var err error
 		ln, err = net.Listen("tcp", httpAddr)
