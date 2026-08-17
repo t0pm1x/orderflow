@@ -110,6 +110,7 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 			pool.Close()
 			return nil, fmt.Errorf("postgres ping: %w", err)
 		}
+		svcconsumer.SetHandler(svcconsumer.NewHandler(pool, logger))
 		var kafkaClient *events.Client
 		kafkaClient, err = events.NewClient(strings.Split(broker, ","), "payment")
 		if err != nil {
