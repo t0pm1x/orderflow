@@ -92,14 +92,13 @@
 | v0.5.0.inventory | real consumer handlers + POST /v1/inventory/reserve | done | a238e77 |
 | v0.5.0.payment | real PaymentRequested handler with mock provider | done | 1921628 |
 | v0.5.0.order | real consumer handlers (StockReserved/OrderConfirmed/etc) | done | f42f71e |
+| v0.6.0 | saga cross-restart TTL sweep for crashed-saga recovery | done | a3cf23f |
 
-## Deferred to v0.6.0
+## Deferred to v1.0
 
 - 3.12.f kind smoke test (requires `kind` binary installation)
 - 3.13.d asciinema recording (manual)
 - Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup)
-- Saga watchdog TTL sweep (in-process watchdog exists but cross-restart sweep over `expires_at` not wired)
-- Order consumer subscribes to `order-events` topic in addition to `payment-events`/`inventory-events` (already done in v0.5.0.order)
 
 ## Session handoff
 

@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-17
+
+### Added
+- **Saga cross-restart TTL sweep**: New `services/saga/internal/watchdog` package with `TTLSweep` that periodically queries `order_sagas WHERE expires_at < NOW() AND state NOT IN ('completed', 'compensated')` and emits `StockReleaseRequested` + `OrderCancelled` (reason="timeout") for each expired saga. Wired into `cmd/saga/main.go` to run every 30s in the same goroutine as the consumer + outbox poller. Survives saga-binary restarts — any non-terminal saga past its 5-minute TTL gets compensated automatically.
+- New repository method `PGRepo.ListExpired(ctx, limit)` — non-terminal expired sagas, ordered by `expires_at ASC`, bounded slice. TDD verified.
+
+### Deferred to v1.0
+- 3.12.f kind smoke test.
+- 3.13.d asciinema recording.
+- Full outbox-retry chaos assertion.
+
 ## [0.5.0] - 2026-08-17
 
 ### Added — platform now actually works end-to-end

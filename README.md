@@ -4,28 +4,27 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Status: v0.5.0
+## Status: v0.6.0
 
-This release wires up the **saga runtime** and all **consumer handlers** — the platform now actually processes orders end-to-end. Plus LDFLAGS injection (binaries report real git version) and saga go.sum housekeeping.
+This release adds saga cross-restart TTL sweep for crashed-saga recovery — non-terminal sagas past their 5-minute TTL get automatically compensated on the next saga binary restart. v0.5.0 features (working end-to-end event flow) remain.
 
 ### ✅ What works
-- All 4 services (`order`, `payment`, `inventory`, `saga`) compile and produce binaries
-- **Full event flow**: `POST /v1/orders` → OrderCreated outbox → saga starts → StockReserveRequested → inventory reserves → StockReserved → saga → PaymentRequested → payment charges → PaymentCompleted → saga → OrderConfirmed → order state=confirmed
-- `pkg/platform` library: logging (with OTel trace correlation), middleware, types, events envelope, typed errors, W3C tracecontext propagation
+- All 4 services compile and produce binaries
+- **Full event flow**: `POST /v1/orders` → OrderCreated outbox → saga → StockReserveRequested → inventory → StockReserved → saga → PaymentRequested → payment → PaymentCompleted → saga → OrderConfirmed → order=confirmed
+- **Saga recovery**: cross-restart TTL sweep compensates stuck sagas
 - All 4 services have PGRepository, REST API endpoints, real consumer handlers
-- Saga runtime: consumer + outbox + repository + state machine + compensation
+- Saga runtime: consumer + outbox + repository + state machine + compensation + TTL watchdog
 - Outbox poller + KafkaPublisher + KafkaDLQ + Prometheus metrics
-- Consumer base: franz-go, idempotent handler, DLQ on error
+- Consumer base: franz-go, idempotent handler, DLQ
 - Docker-compose stack + Helm charts + Kustomize overlays + ArgoCD manifests
-- testcontainers-go harness + E2E tests (happy + compensation + chaos) + k6 load test + `make e2e`
+- testcontainers-go harness + E2E tests + k6 load test + `make e2e`
 - 4 ADRs + 5 C4 diagrams + demo script
-- Binaries report real version (LDFLAGS injection via `git describe`)
+- Binaries report real version (LDFLAGS injection)
 
-### ⬜ Deferred to v0.6.0
-- kind smoke test (requires `kind` binary installation)
-- asciinema recording of the demo
-- Saga watchdog cross-restart TTL sweep
-- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup)
+### ⬜ Deferred to v1.0
+- kind smoke test (requires `kind` binary)
+- asciinema recording (manual)
+- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER`)
 
 ## Architecture
 
