@@ -52,6 +52,8 @@ type Harness struct {
 
 	OtelEndpoint string
 
+	kafkaContainer testcontainers.Container
+
 	t *testing.T
 }
 
@@ -98,8 +100,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 			"payment":   pgPay.url,
 			"inventory": pgInv.url,
 		},
-		RedisURL: rd.url,
-		t:        t,
+		RedisURL:       rd.url,
+		kafkaContainer: kf.container,
+		t:              t,
 	}
 
 	var oc *otelHandle
@@ -176,6 +179,13 @@ func (h *Harness) StartService(t *testing.T, name, binName string, env map[strin
 // Implementation deferred — the self-test does not exercise it.
 func (h *Harness) WaitForOrderState(_ string, _ string, _ time.Duration) error {
 	return errors.New("harness: WaitForOrderState not yet implemented (sub-stage 3.11.b)")
+}
+
+// KafkaContainer exposes the underlying Kafka testcontainer so chaos
+// tests can terminate (and optionally restart) the broker. Returns
+// nil if the harness failed to start Kafka.
+func (h *Harness) KafkaContainer() testcontainers.Container {
+	return h.kafkaContainer
 }
 
 // pgHandle bundles a running Postgres container with its connection
