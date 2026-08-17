@@ -3,11 +3,20 @@
 // the franz-go client, starts the consumer in a goroutine, and
 // returns a shutdown handle.
 //
-// The saga runtime consumes order-events from all sibling services
-// (order, inventory, payment) — every OrderCreated starts a saga;
-// every subsequent StockReserved / PaymentCompleted / PaymentFailed
-// advances it. The single-topic, single-consumer-group approach
-// matches the existing order/inventory/payment runners.
+// The saga runtime consumes two topics:
+//   - order-events:    OrderCreated (start), PaymentCompleted (→
+//                      OrderConfirmed), PaymentFailed (→ compensation),
+//                      OrderCancelled (ack)
+//   - inventory-events: StockReserved (→ PaymentRequested),
+//                       StockReservationFailed (→ OrderCancelled),
+//                       StockReleased (audit)
+//
+// PaymentRequested lands on order-events (the saga publishes there
+// via its outbox poller), so the saga doesn't need to subscribe to
+// payment-events directly even though payment-events is where the
+// spec says payment-side traffic ultimately belongs. That alignment
+// with the spec is left for v1.1; for now single-topic per service
+// keeps the wire simple and the chain testable end-to-end.
 package consumer
 
 import (
@@ -20,9 +29,9 @@ import (
 	pkgconsumer "github.com/t0pm1x/orderflow/consumer"
 )
 
-// Topic is the single Kafka topic the Saga Service reads from and
-// publishes to. Single-topic simplifies ordering: events for the
-// same order_id land on the same partition (Kafka key = order_id).
+// Topic is the topic the Saga Service publishes all its outgoing
+// events to. StockReserveRequested / PaymentRequested / OrderConfirmed
+// / StockReleaseRequested / OrderCancelled all go to order-events.
 const Topic = "order-events"
 
 // Start wires the Saga Service consumer. Returns a shutdown func
@@ -41,7 +50,10 @@ func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string
 	c, err := pkgconsumer.New(pkgconsumer.Config{
 		Brokers: []string{kafkaBroker},
 		GroupID: groupID,
-		Topics:  []string{Topic},
+		Topics: []string{
+			"order-events",
+			"inventory-events",
+		},
 	}, h.Registry())
 	if err != nil {
 		return nil, fmt.Errorf("saga consumer: %w", err)
