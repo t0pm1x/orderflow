@@ -8,6 +8,7 @@ use (
 	./pkg/consumer
 	./pkg/outbox
 	./pkg/platform
+	./pkg/platform/instrumentation/kafkaprop
 	./services/inventory
 	./services/order
 	./services/payment
