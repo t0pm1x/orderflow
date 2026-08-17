@@ -23,7 +23,9 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/t0pm1x/orderflow/kafkaprop"
 	"github.com/t0pm1x/orderflow/platform/events"
 )
 
@@ -174,6 +176,14 @@ func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 		c.toDLQ(ctx, nil, fmt.Sprintf("decode error: %v", err), rec)
 		return
 	}
+
+	ctx, span := kafkaprop.SpanFromEnvelope(ctx, env.TraceID, env.SpanID, "consumer."+env.EventType)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("messaging.system", "kafka"),
+		attribute.String("messaging.destination", env.EventType),
+		attribute.String("messaging.kafka.message.key", string(rec.Key)),
+	)
 
 	if c.deduper != nil {
 		seen, err := c.deduper.Seen(ctx, env.EventID)

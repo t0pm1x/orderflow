@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/t0pm1x/orderflow/platform/events"
 )
@@ -162,6 +165,57 @@ func (d *fakeDLQ) Send(_ context.Context, _ *events.Envelope, reason string) err
 	defer d.mu.Unlock()
 	d.sent = append(d.sent, reason)
 	return nil
+}
+
+// mustEncode JSON-encodes an envelope for tests; panics on error.
+func mustEncode(env events.Envelope) []byte {
+	b, err := json.Marshal(env)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// withTestTracer installs an SDK TracerProvider for the duration
+// of a test (3.10.c mirrors the 3.10.b pattern from outbox).
+func withTestTracer(t *testing.T) {
+	t.Helper()
+	prevTP := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+	})
+}
+
+// TestDispatch_RestoresSpanFromEnvelope asserts the consumer
+// restores the W3C trace context from the envelope and links the
+// handler's span to the producer's trace (sub-stage 3.10.c).
+func TestDispatch_RestoresSpanFromEnvelope(t *testing.T) {
+	withTestTracer(t)
+
+	ctx, origSpan := otel.Tracer("test").Start(context.Background(), "producer.op")
+	defer origSpan.End()
+
+	env := events.Envelope{
+		EventID: "id-1", EventType: "OrderCreated",
+		AggregateID: "agg-1", AggregateType: "Order",
+		TraceID: origSpan.SpanContext().TraceID().String(),
+		SpanID:  origSpan.SpanContext().SpanID().String(),
+		SchemaVersion: "1.0", Payload: json.RawMessage(`{}`),
+	}
+	var seenParent trace.SpanContext
+	reg := HandlerRegistry{"OrderCreated": func(ctx context.Context, _ *events.Envelope) error {
+		seenParent = trace.SpanFromContext(ctx).SpanContext()
+		return nil
+	}}
+	c := &Consumer{registry: reg, maxAttempts: 1}
+	rec := &kgo.Record{Value: mustEncode(env), Key: []byte("agg-1")}
+	c.dispatch(ctx, rec)
+	if seenParent.TraceID() != origSpan.SpanContext().TraceID() {
+		t.Fatalf("trace_id lost across consumer boundary")
+	}
 }
 
 // suppress unused import warnings for json if we trim tests.
