@@ -1,0 +1,6 @@
+{
+  "customer_id": "8d2f1a40-cf51-4a8b-8e72-1a4d2c8e6b3f",
+  "items": [
+    {"sku": "SKU-001", "quantity": 2, "unit_price_cents": 1999}
+  ]
+}

@@ -13,4 +13,5 @@ use (
 	./services/order
 	./services/payment
 	./services/saga
+	./tests
 )
