@@ -1,0 +1,12 @@
+Inventory Service ({{ .Chart.AppVersion }}) has been deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Service:
+  {{- if eq .Values.service.type "ClusterIP" }}
+  ClusterIP: {{ include "orderflow-inventory.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+  {{- end }}
+
+To check the status of the rollout:
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "orderflow-inventory.fullname" . }}
+
+To verify probes:
+  kubectl --namespace {{ .Release.Namespace }} get deployment {{ include "orderflow-inventory.fullname" . }} -o jsonpath='{.spec.template.spec.containers[0].livenessProbe}'
