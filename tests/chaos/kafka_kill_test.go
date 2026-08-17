@@ -77,7 +77,7 @@ func TestChaos_KafkaKill_OrderServiceSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/orders: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /v1/orders: status=%d", resp.StatusCode)
 	}
@@ -130,7 +130,7 @@ func getOrderState(t *testing.T, id string) string {
 	if err != nil {
 		t.Fatalf("GET /v1/orders/%s: %v", id, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var got struct {
 		State string `json:"state"`
 	}

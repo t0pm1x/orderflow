@@ -84,7 +84,7 @@ func TestE2E_HappyPath_OrderConfirmed(t *testing.T) {
 			State string `json:"state"`
 		}
 		_ = json.NewDecoder(getResp.Body).Decode(&got)
-		getResp.Body.Close()
+		_ = getResp.Body.Close()
 		if got.State == "confirmed" {
 			return
 		}

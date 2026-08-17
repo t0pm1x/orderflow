@@ -18,7 +18,9 @@ import (
 // harness, runs k6 in a child process, and asserts k6 exits 0 (which
 // means p95<1s AND failure rate<5% thresholds passed).
 func TestLoad_100RPS_p95Under1s(t *testing.T) {
-	if testing.Short() { t.Skip("load test requires docker + k6") }
+	if testing.Short() {
+		t.Skip("load test requires docker + k6")
+	}
 	h := harness.New(t)
 
 	stopOrder := h.StartService(t, "order", "order", map[string]string{
@@ -32,13 +34,20 @@ func TestLoad_100RPS_p95Under1s(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get("http://127.0.0.1:18081/healthz")
-		if err == nil { resp.Body.Close(); if resp.StatusCode == 200 { break } }
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == 200 {
+				break
+			}
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Find k6 binary.
 	k6Bin := "k6"
-	if runtime.GOOS == "windows" { k6Bin = "k6.exe" }
+	if runtime.GOOS == "windows" {
+		k6Bin = "k6.exe"
+	}
 	if _, err := exec.LookPath(k6Bin); err != nil {
 		t.Skipf("k6 not installed (install: winget install k6). Skipping.")
 	}

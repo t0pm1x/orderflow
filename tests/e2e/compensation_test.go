@@ -80,7 +80,7 @@ func TestE2E_Compensation_PaymentDeclined_CancelsOrder(t *testing.T) {
 			State string `json:"state"`
 		}
 		_ = json.NewDecoder(getResp.Body).Decode(&got)
-		getResp.Body.Close()
+		_ = getResp.Body.Close()
 		if got.State == "cancelled" || got.State == "failed" {
 			return
 		}

@@ -162,13 +162,13 @@ func (h *Harness) StartService(t *testing.T, name, binName string, env map[strin
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
+		_ = logFile.Close()
 		t.Fatalf("harness: start %s (%s): %v", name, binPath, err)
 	}
 	return func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		_, _ = cmd.Process.Wait()
-		logFile.Close()
+		_ = logFile.Close()
 	}
 }
 
