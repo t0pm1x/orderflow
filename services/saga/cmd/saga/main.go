@@ -18,15 +18,23 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
 	"github.com/t0pm1x/orderflow/platform"
+	"github.com/t0pm1x/orderflow/platform/events"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
+
+	svcconsumer "github.com/t0pm1x/orderflow/services/saga/internal/consumer"
+	svcoutbox "github.com/t0pm1x/orderflow/services/saga/internal/outbox"
 )
 
 // TableName is the outbox table identifier. The saga service does
@@ -55,6 +63,9 @@ func ListenAddr() string {
 func Run(ctx context.Context) error {
 	logger := slog.Default()
 	httpAddr := envOrDefault("HTTP_ADDR", ":8084")
+	dbURL := envOrDefault("DATABASE_URL", "")
+	broker := envOrDefault("KAFKA_BROKER", "")
+	groupID := envOrDefault("KAFKA_GROUP_ID", "orderflow-saga")
 
 	// Seed OTLP defaults so pkg/platform/otel.go (which reads them via os.Getenv) dials otel-collector:4317 when no override is set; export OTEL_EXPORTER=stdout for local dev.
 	otelExporter := envOrDefault("OTEL_EXPORTER", "otlp")
@@ -65,6 +76,9 @@ func Run(ctx context.Context) error {
 	logger.Info("orderflow-saga starting",
 		"version", Version,
 		"http_addr", httpAddr,
+		"database", redact(dbURL),
+		"kafka", broker,
+		"kafka_group", groupID,
 		"table", TableName)
 
 	traceShutdown, err := platform.InitTracing(ctx, TableName, Version)
@@ -72,6 +86,41 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("init tracing: %w", err)
 	}
 	defer func() { _ = traceShutdown(context.Background()) }()
+
+	// Bring up the runtime: DB pool + consumer + outbox poller.
+	// Disabled (no-op close) when DATABASE_URL or KAFKA_BROKER are
+	// unset, mirroring the order/payment/inventory services.
+	var (
+		pool          *pgxpool.Pool
+		consumerClose func(context.Context) error
+		outboxClose   func(context.Context) error
+	)
+	if dbURL != "" && broker != "" {
+		pool, err = pgxpool.New(ctx, dbURL)
+		if err != nil {
+			return fmt.Errorf("pgxpool: %w", err)
+		}
+		if err := pool.Ping(ctx); err != nil {
+			pool.Close()
+			return fmt.Errorf("postgres ping: %w", err)
+		}
+
+		consumerClose, err = svcconsumer.Start(ctx, logger, broker, groupID, pool)
+		if err != nil {
+			pool.Close()
+			return fmt.Errorf("consumer start: %w", err)
+		}
+		defer func() { _ = consumerClose(context.Background()) }()
+
+		outboxClose, err = startSagaOutbox(ctx, logger, pool, broker)
+		if err != nil {
+			pool.Close()
+			return fmt.Errorf("outbox start: %w", err)
+		}
+		defer func() { _ = outboxClose(context.Background()) }()
+	} else {
+		logger.Info("saga runtime disabled: DATABASE_URL or KAFKA_BROKER not set")
+	}
 
 	if httpAddr == "" {
 		logger.Info("http disabled: HTTP_ADDR not set")
@@ -89,6 +138,9 @@ func Run(ctx context.Context) error {
 
 	ln, err := net.Listen("tcp", httpAddr)
 	if err != nil {
+		if pool != nil {
+			pool.Close()
+		}
 		return fmt.Errorf("listen %s: %w", httpAddr, err)
 	}
 	boundAddr.Store(ln.Addr().String())
@@ -114,6 +166,50 @@ func Run(ctx context.Context) error {
 	case err := <-httpErr:
 		return err
 	}
+}
+
+// startSagaOutbox brings up the Saga Service outbox poller. Returns
+// a close fn that stops the poller; the caller owns pool's lifecycle.
+// Mirrors services/order/cmd/order/main.go's startOutbox.
+func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, broker string) (func(context.Context) error, error) {
+	kafkaClient, err := events.NewClient(strings.Split(broker, ","), "saga")
+	if err != nil {
+		return nil, fmt.Errorf("kafka client: %w", err)
+	}
+
+	src := svcoutbox.NewPGSource(pool)
+	pub := pkgoutbox.NewKafkaPublisher(kafkaClient)
+	dlq := pkgoutbox.NewKafkaDLQ(kafkaClient)
+	metrics := pkgoutbox.NewPrometheusMetrics(TableName, prometheus.DefaultRegisterer)
+
+	poller := pkgoutbox.New(pkgoutbox.PollerConfig{
+		Table:       TableName,
+		BatchSize:   100,
+		Interval:    100 * time.Millisecond,
+		MaxAttempts: 5,
+	}, src, pub, dlq, metrics)
+
+	go func() {
+		if err := poller.Run(ctx); err != nil {
+			logger.Error("saga outbox poller exited", "err", err)
+		}
+	}()
+
+	return func(shutdownCtx context.Context) error {
+		poller.Stop()
+		kafkaClient.Close()
+		return nil
+	}, nil
+}
+
+func redact(s string) string {
+	if s == "" {
+		return "<unset>"
+	}
+	if len(s) > 12 {
+		return s[:6] + "…" + s[len(s)-4:]
+	}
+	return "***"
 }
 
 // Main is the function called by cmd/saga/main.go; it owns the
