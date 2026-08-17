@@ -60,11 +60,11 @@ type raceDBTX struct {
 	row         *raceRow
 }
 
-func (d *raceDBTX) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+func (d *raceDBTX) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, nil
 }
 
-func (d *raceDBTX) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+func (d *raceDBTX) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	atomic.AddInt32(&d.updateCalls, 1)

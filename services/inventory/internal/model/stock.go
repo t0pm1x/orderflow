@@ -4,6 +4,11 @@ import (
 	"time"
 )
 
+// Stock is the inventory aggregate for a single SKU. Available and
+// Reserved are kept in lockstep: Available counts units that can be
+// reserved, Reserved counts units committed to a saga that haven't
+// been released yet. Version is the optimistic-lock token that
+// callers must echo in their UPDATE WHERE clause.
 type Stock struct {
 	SKU       string    `json:"sku"`
 	Available int       `json:"available"`

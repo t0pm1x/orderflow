@@ -44,11 +44,11 @@ func TestRegistry_StubsLogAndReturnNil(t *testing.T) {
 
 func TestStart_DisabledWhenNoEnv(t *testing.T) {
 	ctx := context.Background()
-	close, err := Start(ctx, slog.Default(), "", "")
+	stop, err := Start(ctx, slog.Default(), "", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := close(ctx); err != nil {
-		t.Errorf("close: %v", err)
+	if err := stop(ctx); err != nil {
+		t.Errorf("stop: %v", err)
 	}
 }

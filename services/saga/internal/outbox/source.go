@@ -1,5 +1,5 @@
-// Package outbox: PGSource implements pkg/outbox.Source against
-// the saga_outbox table. Mirrors the shape of
+// Package outbox implements pkg/outbox.Source against the
+// saga_outbox table. Mirrors the shape of
 // services/{order,payment,inventory}/internal/outbox/source.go.
 //
 // The saga runtime always publishes to "order-events", so this

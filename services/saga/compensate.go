@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Compensation is the contract for running one saga compensation
+// Compensator is the contract for running one saga compensation
 // step. Each Compensator is idempotent: if called twice with the
 // same arguments, the second call is a no-op (returns nil).
 type Compensator func(ctx context.Context, s *Saga) error

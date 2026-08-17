@@ -1,5 +1,5 @@
-// Package outbox: PGSource implements pkg/outbox.Source against
-// the inventory_outbox table. Aggregate_id is TEXT here because
+// Package outbox implements pkg/outbox.Source against the
+// inventory_outbox table. Aggregate_id is TEXT here because
 // SKU is the aggregate key (not a UUID).
 package outbox
 

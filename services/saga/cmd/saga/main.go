@@ -206,7 +206,7 @@ func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Poo
 		}
 	}()
 
-	return func(shutdownCtx context.Context) error {
+	return func(_ context.Context) error {
 		poller.Stop()
 		kafkaClient.Close()
 		return nil
@@ -227,8 +227,9 @@ func redact(s string) string {
 // signal-aware context lifecycle.
 func Main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	if err := Run(ctx); err != nil {
+	err := Run(ctx)
+	cancel()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "saga service: %v\n", err)
 		os.Exit(1)
 	}

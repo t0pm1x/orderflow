@@ -42,12 +42,12 @@ func TestRegistry_HasAllEventTypes(t *testing.T) {
 func TestRegistry_NoUnexpectedEventTypes(t *testing.T) {
 	r := newRegistryForTest()
 	want := map[string]bool{
-		"OrderCreated":            true,
-		"StockReserved":           true,
-		"PaymentCompleted":        true,
-		"PaymentFailed":           true,
-		"StockReleased":           true,
-		"StockReservationFailed":  true,
+		"OrderCreated":           true,
+		"StockReserved":          true,
+		"PaymentCompleted":       true,
+		"PaymentFailed":          true,
+		"StockReleased":          true,
+		"StockReservationFailed": true,
 	}
 	for ev := range r {
 		if !want[ev] {
@@ -60,12 +60,12 @@ func TestRegistry_NoUnexpectedEventTypes(t *testing.T) {
 // returns no-op close + nil. Matches services/order pattern.
 func TestStart_DisabledWhenNoEnv(t *testing.T) {
 	ctx := context.Background()
-	close, err := Start(ctx, slog.Default(), "", "", nil)
+	stop, err := Start(ctx, slog.Default(), "", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := close(ctx); err != nil {
-		t.Errorf("close: %v", err)
+	if err := stop(ctx); err != nil {
+		t.Errorf("stop: %v", err)
 	}
 }
 
@@ -73,12 +73,12 @@ func TestStart_DisabledWhenNoEnv(t *testing.T) {
 // pool must short-circuit to no-op (no consumer dialed, no panic).
 func TestStart_DisabledWhenPoolNil(t *testing.T) {
 	ctx := context.Background()
-	close, err := Start(ctx, slog.Default(), "broker:9092", "saga-group", nil)
+	stop, err := Start(ctx, slog.Default(), "broker:9092", "saga-group", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := close(ctx); err != nil {
-		t.Errorf("close: %v", err)
+	if err := stop(ctx); err != nil {
+		t.Errorf("stop: %v", err)
 	}
 }
 

@@ -78,15 +78,15 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 	}
 }
 
-func waitForAddr(t *testing.T, max time.Duration) string {
+func waitForAddr(t *testing.T, maxWait time.Duration) string {
 	t.Helper()
-	deadline := time.Now().Add(max)
+	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
 		if a := saga.ListenAddr(); a != "" {
 			return a
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("server did not bind within %s", max)
+	t.Fatalf("server did not bind within %s", maxWait)
 	return ""
 }

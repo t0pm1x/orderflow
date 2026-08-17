@@ -123,7 +123,7 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 			EventType:     "StockReleaseRequested",
 			SchemaVersion: "1.0",
 			Topic:         sagaoutbox.Topic,
-			Payload:       mustMarshal(sagaev.StockReleaseRequestedPayload{
+			Payload: mustMarshal(sagaev.StockReleaseRequestedPayload{
 				OrderID:       s.OrderID,
 				ReservationID: s.ReservationID,
 			}),
@@ -139,7 +139,7 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 			EventType:     "OrderCancelled",
 			SchemaVersion: "1.0",
 			Topic:         sagaoutbox.Topic,
-			Payload:       mustMarshal(sagaev.OrderCancelledPayload{
+			Payload: mustMarshal(sagaev.OrderCancelledPayload{
 				OrderID: s.OrderID,
 				Reason:  "timeout",
 				Source:  "saga",

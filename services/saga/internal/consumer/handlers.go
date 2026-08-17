@@ -59,7 +59,7 @@ func NewHandler(pool *pgxpool.Pool, logger *slog.Logger) *Handler {
 // unknown event_types (pkg/consumer behavior).
 func (h *Handler) Registry() pkgconsumer.HandlerRegistry {
 	return pkgconsumer.HandlerRegistry{
-		"OrderCreated":          h.OrderCreatedHandler,
+		"OrderCreated":           h.OrderCreatedHandler,
 		"StockReserved":          h.StockReservedHandler,
 		"PaymentCompleted":       h.PaymentCompletedHandler,
 		"PaymentFailed":          h.PaymentFailedHandler,
@@ -68,7 +68,7 @@ func (h *Handler) Registry() pkgconsumer.HandlerRegistry {
 	}
 }
 
-// OrderCreated starts a new saga. Inserts the saga row in
+// OrderCreatedHandler starts a new saga. Inserts the saga row in
 // StateInitiated and emits StockReserveRequested for the order's
 // first item (multi-item flow is out of scope for v0.5.0).
 func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope) error {
@@ -113,11 +113,11 @@ func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope)
 	})
 }
 
-// StockReserved advances the saga to StateStockReserved and emits
-// PaymentRequested with the saga's stored total. The AmountCents
-// comes from the saga row, not the StockReserved payload, because
-// the inventory event doesn't carry the order total (separate
-// aggregate).
+// StockReservedHandler advances the saga to StateStockReserved and
+// emits PaymentRequested with the saga's stored total. The
+// AmountCents comes from the saga row, not the StockReserved
+// payload, because the inventory event doesn't carry the order
+// total (separate aggregate).
 func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -143,7 +143,7 @@ func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope
 	})
 }
 
-// PaymentCompleted is the happy-path terminal: advance to
+// PaymentCompletedHandler is the happy-path terminal: advance to
 // StateCompleted and emit OrderConfirmed.
 func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
@@ -165,11 +165,11 @@ func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envel
 	})
 }
 
-// PaymentFailed triggers compensation. The saga transitions to
-// StateCompensated, then emits StockReleaseRequested (so inventory
-// releases the reservation) and OrderCancelled (so the order
-// service can mark the order as cancelled). ReservationID comes
-// from the saga row — PaymentFailed doesn't carry it.
+// PaymentFailedHandler triggers compensation. The saga transitions
+// to StateCompensated, then emits StockReleaseRequested (so
+// inventory releases the reservation) and OrderCancelled (so the
+// order service can mark the order as cancelled). ReservationID
+// comes from the saga row — PaymentFailed doesn't carry it.
 func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -201,12 +201,12 @@ func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope
 	})
 }
 
-// StockReleased is the compensation ack from inventory. The saga
-// is already in StateCompensated by the time this fires — we just
-// touch updated_at so observability tools see the chain close.
-// Note: the brief labels this terminal "fully_compensated" but the
-// state machine defines StateCompensated as terminal already, so
-// we keep it consistent with state.go.
+// StockReleasedHandler is the compensation ack from inventory. The
+// saga is already in StateCompensated by the time this fires — we
+// just touch updated_at so observability tools see the chain
+// close. Note: the brief labels this terminal "fully_compensated"
+// but the state machine defines StateCompensated as terminal
+// already, so we keep it consistent with state.go.
 func (h *Handler) StockReleasedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -223,9 +223,9 @@ func (h *Handler) StockReleasedHandler(ctx context.Context, env *events.Envelope
 	return nil
 }
 
-// StockReservationFailed is the inventory-side failure path:
-// saga never started, so no compensation is needed — just emit
-// OrderCancelled so the order service can mark it failed.
+// StockReservationFailedHandler is the inventory-side failure
+// path: saga never started, so no compensation is needed — just
+// emit OrderCancelled so the order service can mark it failed.
 func (h *Handler) StockReservationFailedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`

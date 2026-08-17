@@ -29,6 +29,10 @@ import (
 // State is the saga's per-order state.
 type State string
 
+// State is the per-order saga state. The string values are the
+// wire form written to order_sagas.state; the names below are the
+// transitions the handlers in services/saga/internal/consumer
+// drive. See transitionTable for the allowed (state, event) pairs.
 const (
 	StateInitiated       State = "initiated"
 	StateStockReserved   State = "stock_reserved"
