@@ -11,8 +11,20 @@ build:
 	go build -ldflags="$(LDFLAGS)" -o bin/inventory ./cmd/inventory
 	go build -ldflags="$(LDFLAGS)" -o bin/saga ./cmd/saga
 
+# Workspace modules (mirrors go.work `use` block). Each is `cd`'d
+# into before `go test ./...` because the workspace root has no
+# go.mod — `./...` at the root fails with "directory prefix . does
+# not contain modules listed in go.work".
+WORKSPACE_MODULES = pkg/platform pkg/outbox pkg/consumer pkg/platform/instrumentation/kafkaprop \
+                    services/order services/payment services/inventory services/saga \
+                    cmd/order cmd/payment cmd/inventory cmd/saga \
+                    tests
+
 test:
-	go test ./...
+	@for m in $(WORKSPACE_MODULES); do \
+		echo "==> testing $$m"; \
+		(cd "$$m" && go test ./...) || exit 1; \
+	done
 
 lint:
 	golangci-lint run
