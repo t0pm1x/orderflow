@@ -1,0 +1,6 @@
+image:
+  tag: "dev"
+  pullPolicy: Always
+replicas: 1
+env:
+  LOG_LEVEL: "debug"

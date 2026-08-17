@@ -1,0 +1,2 @@
+Saga orchestrator deployed!
+Get pods: kubectl get pods -l app.kubernetes.io/name={{ include "orderflow-saga.name" . }}
