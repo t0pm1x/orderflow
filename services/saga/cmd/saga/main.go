@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/t0pm1x/orderflow/platform"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
 )
 
@@ -59,6 +60,12 @@ func Run(ctx context.Context) error {
 		"version", Version,
 		"http_addr", httpAddr,
 		"table", TableName)
+
+	traceShutdown, err := platform.InitTracing(ctx, TableName, Version)
+	if err != nil {
+		return fmt.Errorf("init tracing: %w", err)
+	}
+	defer func() { _ = traceShutdown(context.Background()) }()
 
 	if httpAddr == "" {
 		logger.Info("http disabled: HTTP_ADDR not set")

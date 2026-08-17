@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
+	"github.com/t0pm1x/orderflow/platform"
 	"github.com/t0pm1x/orderflow/platform/events"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
 
@@ -56,6 +57,12 @@ func Run(ctx context.Context) error {
 		"kafka_group", groupID,
 		"http_addr", httpAddr,
 		"table", TableName)
+
+	traceShutdown, err := platform.InitTracing(ctx, TableName, Version)
+	if err != nil {
+		return fmt.Errorf("init tracing: %w", err)
+	}
+	defer func() { _ = traceShutdown(context.Background()) }()
 
 	outboxClose, err := startOutbox(ctx, logger, dbURL, broker, httpAddr)
 	if err != nil {

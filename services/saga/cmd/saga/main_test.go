@@ -29,6 +29,9 @@ func TestTableNameConstant(t *testing.T) {
 // Kafka wiring — so we only need to exercise the HTTP seam.
 func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	// Run() now calls platform.InitTracing; route spans to stdout
+	// so the test doesn't try to dial localhost:4317 on shutdown.
+	t.Setenv("OTEL_EXPORTER", "stdout")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

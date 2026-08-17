@@ -16,10 +16,17 @@ import (
 	oteltracer "go.opentelemetry.io/otel/trace"
 )
 
+// testResourceCtxKey is the private context key used to attach the
+// resource built by InitTracingForTest to the returned context so
+// tests can introspect service.name/service.version without the
+// OTLP exporter.
+type testResourceCtxKey struct{}
+
 // InitTracing sets up an OTLP gRPC exporter and returns a shutdown func.
 // Endpoint defaults to localhost:4317 (otel-collector).
 // Set OTEL_EXPORTER=stdout to use stdout exporter instead (for dev).
-func InitTracing(ctx context.Context, serviceName string) (func(context.Context) error, error) {
+// The version is attached as the service.version resource attribute.
+func InitTracing(ctx context.Context, serviceName, version string) (func(context.Context) error, error) {
 	exporter, err := createExporter(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("otel: create exporter: %w", err)
@@ -28,6 +35,7 @@ func InitTracing(ctx context.Context, serviceName string) (func(context.Context)
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
+			semconv.ServiceVersion(version),
 		),
 	)
 	if err != nil {
@@ -42,6 +50,31 @@ func InitTracing(ctx context.Context, serviceName string) (func(context.Context)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	return tp.Shutdown, nil
+}
+
+// InitTracingForTest sets up an SDK TracerProvider with the given
+// service name and version resource attributes, installs it
+// globally, and attaches the resource to the returned context so
+// tests can introspect it. It does NOT wire the OTLP exporter (so
+// unit tests don't need network access).
+func InitTracingForTest(ctx context.Context, name, ver string) (context.Context, func(context.Context) error, error) {
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(name),
+			semconv.ServiceVersion(ver),
+		),
+	)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("otel: resource: %w", err)
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+	)
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	return context.WithValue(ctx, testResourceCtxKey{}, res), tp.Shutdown, nil
 }
 
 func createExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
