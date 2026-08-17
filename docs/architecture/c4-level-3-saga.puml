@@ -1,0 +1,33 @@
+@startuml c4-level-3-saga
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+Container_Boundary(saga, "Saga Orchestrator") {
+    Component(state_machine, "Order Saga State Machine", "Go", "initiated -> stock_reserved -> completed/compensated")
+    Component(consumer, "Kafka Consumer", "Go", "Subscribes OrderCreated, StockReserved, PaymentCompleted, PaymentFailed; restores traceparent from kafkaprop")
+    Component(publisher, "Outbox Publisher", "Go", "Writes PaymentRequested, OrderCancelled; outbox poller emits to Kafka")
+    Component(pg_writer, "Postgres Writer", "Go", "Saga state row + outbox row in same transaction")
+    Component(pg_source, "Postgres Source", "Go", "FetchPending / MarkSent / MarkFailed")
+    Component(watchdog, "Saga Watchdog", "Go", "In-memory + TTL-row sweep for timed-out sagas")
+}
+
+ContainerDb_Ext(saga_db, "Saga Postgres", "PostgreSQL", "saga state + outbox")
+ContainerQueue_Ext(kafka, "Redpanda (Kafka)", "Redpanda", "order-events, payment-events")
+Container_Ext(order, "Order Service", "Go", "Consumes saga-emitted events")
+Container_Ext(payment, "Payment Service", "Go", "Consumes saga-emitted events")
+Container_Ext(inventory, "Inventory Service", "Go", "Consumes saga-emitted events")
+
+Rel(consumer, state_machine, "Drives transitions")
+Rel(state_machine, pg_writer, "Persists state + outbox")
+Rel(pg_writer, saga_db, "Writes", "SQL")
+Rel(publisher, pg_source, "Reads pending events")
+Rel(pg_source, saga_db, "FetchPending / MarkSent", "SQL")
+Rel(publisher, kafka, "Emits", "Kafka protocol")
+Rel(consumer, kafka, "Subscribes", "Kafka protocol")
+Rel(watchdog, saga_db, "Sweeps TTL rows", "SQL")
+Rel(watchdog, state_machine, "Marks timed-out")
+
+Rel(kafka, order, "Delivers events", "Kafka protocol")
+Rel(kafka, payment, "Delivers events", "Kafka protocol")
+Rel(kafka, inventory, "Delivers events", "Kafka protocol")
+
+@enduml
