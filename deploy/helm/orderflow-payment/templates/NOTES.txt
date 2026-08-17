@@ -1,0 +1,12 @@
+orderflow-payment has been deployed.
+
+Release name:   {{ .Release.Name }}
+Namespace:      {{ .Release.Namespace }}
+Service:        {{ include "orderflow-payment.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+HTTP port:      {{ .Values.service.port }}
+
+To check the status of the rollout:
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "orderflow-payment.fullname" . }}
+
+To view the logs:
+  kubectl --namespace {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "orderflow-payment.name" . }} -f
