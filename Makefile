@@ -1,10 +1,15 @@
 .PHONY: build test lint run clean tidy
 
+# Version baked into each binary's main.Version at build time.
+# git describe falls back to a dev tag if not on a tagged commit.
+VERSION ?= $(shell git describe --tags --always --dirty 2>nul || echo 0.0.0-dev)
+LDFLAGS := -s -w -X main.Version=$(VERSION)
+
 build:
-	go build -o bin/order ./cmd/order
-	go build -o bin/payment ./cmd/payment
-	go build -o bin/inventory ./cmd/inventory
-	go build -o bin/saga ./cmd/saga
+	go build -ldflags="$(LDFLAGS)" -o bin/order ./cmd/order
+	go build -ldflags="$(LDFLAGS)" -o bin/payment ./cmd/payment
+	go build -ldflags="$(LDFLAGS)" -o bin/inventory ./cmd/inventory
+	go build -ldflags="$(LDFLAGS)" -o bin/saga ./cmd/saga
 
 test:
 	go test ./...
