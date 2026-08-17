@@ -4,6 +4,7 @@ package inventory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -26,6 +28,7 @@ import (
 	apierrors "github.com/t0pm1x/orderflow/platform/errors"
 	"github.com/t0pm1x/orderflow/platform/events"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
+	"github.com/t0pm1x/orderflow/platform/outbox"
 
 	svcconsumer "github.com/t0pm1x/orderflow/services/inventory/internal/consumer"
 	svcoutbox "github.com/t0pm1x/orderflow/services/inventory/internal/outbox"
@@ -152,6 +155,7 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 		// talk to; the route is intentionally absent so /healthz and
 		// /metrics still respond without a DB.
 		if pool != nil {
+			svcconsumer.SetPool(pool)
 			repo := inventoryrepo.NewPGRepo(pool)
 			r.Get("/v1/inventory/stock/{sku}", func(w http.ResponseWriter, req *http.Request) {
 				sku := chi.URLParam(req, "sku")
@@ -162,6 +166,59 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(s)
+			})
+			// POST /v1/inventory/reserve is a synchronous reserve
+			// for clients that don't go through the saga/Kafka path.
+			// It produces the same StockReserved outbox event the
+			// consumer handler emits, so downstream consumers see a
+			// uniform event stream.
+			r.Post("/v1/inventory/reserve", func(w http.ResponseWriter, req *http.Request) {
+				var body struct {
+					OrderID  string `json:"order_id"`
+					SKU      string `json:"sku"`
+					Quantity int    `json:"quantity"`
+				}
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					http.Error(w, "invalid payload", http.StatusBadRequest)
+					return
+				}
+				if body.SKU == "" || body.Quantity <= 0 {
+					http.Error(w, "sku and positive quantity required", http.StatusBadRequest)
+					return
+				}
+				reservationID := uuid.NewString()
+				payload, err := json.Marshal(map[string]any{
+					"reservation_id": reservationID,
+					"order_id":       body.OrderID,
+					"sku":            body.SKU,
+					"quantity":       body.Quantity,
+					"expires_at":     time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+				})
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				outRec := outbox.Record{
+					EventID:       uuid.NewString(),
+					EventType:     "StockReserved",
+					AggregateID:   reservationID,
+					AggregateType: "Reservation",
+					SchemaVersion: "1.0",
+					Topic:         svcconsumer.Topic,
+					Payload:       payload,
+					Headers:       map[string]string{},
+				}
+				if err := repo.ReserveStock(req.Context(), body.SKU, body.Quantity, outRec); err != nil {
+					if errors.Is(err, inventoryrepo.ErrInsufficientStock) {
+						http.Error(w, "insufficient stock", http.StatusConflict)
+						return
+					}
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]string{"reservation_id": reservationID})
 			})
 		}
 
