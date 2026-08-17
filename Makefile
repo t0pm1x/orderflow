@@ -82,6 +82,16 @@ e2e-compensation:
 e2e-chaos:
 	go test ./tests/chaos/... -timeout 10m -v
 
+# --- k8s smoke test (kind cluster) ---
+# KIND_SKIP=0 explicitly re-enables the test even if the caller exported
+# KIND_SKIP=1 in their shell. CI sets KIND_SKIP=0 to opt-in.
+KIND_SMOKE := KIND_SKIP=0 go test ./tests/k8s/... -v -timeout 15m
+
+.PHONY: smoke-k8s
+
+smoke-k8s:
+	$(KIND_SMOKE)
+
 # --- record demo as asciinema cast ---
 .PHONY: record
 
