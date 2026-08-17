@@ -139,7 +139,7 @@ func Run(ctx context.Context) error {
 	if httpAddr == "" {
 		logger.Info("http disabled: HTTP_ADDR not set")
 		<-ctx.Done()
-		wgWait(&wg, pool, consumerClose, outboxClose, httpSrv, ln)
+		wgWait(ctx, &wg, pool, consumerClose, outboxClose, httpSrv)
 		return nil
 	}
 
@@ -153,9 +153,7 @@ func Run(ctx context.Context) error {
 
 	ln, err = net.Listen("tcp", httpAddr)
 	if err != nil {
-		if pool != nil {
-			pool.Close()
-		}
+		wgWait(ctx, &wg, pool, consumerClose, outboxClose, nil)
 		return fmt.Errorf("listen %s: %w", httpAddr, err)
 	}
 	boundAddr.Store(ln.Addr().String())
@@ -175,8 +173,7 @@ func Run(ctx context.Context) error {
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = httpSrv.Shutdown(shutdownCtx)
-	wgWait(&wg, pool, consumerClose, outboxClose, httpSrv, ln)
+	wgWait(shutdownCtx, &wg, pool, consumerClose, outboxClose, httpSrv)
 	return nil
 }
 
@@ -223,28 +220,24 @@ func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Poo
 // fetches), wait for all goroutines, then close the consumer and
 // the DB pool. Mirrors services/order/cmd/order/main.go's shutdown
 // path.
-func wgWait(wg *sync.WaitGroup, pool *pgxpool.Pool, consumerClose, outboxClose func(context.Context) error, httpSrv *http.Server, ln net.Listener) {
+func wgWait(shutdownCtx context.Context, wg *sync.WaitGroup, pool *pgxpool.Pool, consumerClose, outboxClose func(context.Context) error, httpSrv *http.Server) {
 	// Stop sources first so background goroutines exit promptly.
 	if outboxClose != nil {
-		_ = outboxClose(context.Background())
+		_ = outboxClose(shutdownCtx)
 	}
 	if httpSrv != nil {
-		_ = httpSrv.Shutdown(context.Background())
-	}
-	if ln != nil {
-		_ = ln.Close()
+		_ = httpSrv.Shutdown(shutdownCtx)
 	}
 
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
-		// Shutdown deadline expired. Continue closing what we can.
+	case <-shutdownCtx.Done():
 	}
 
 	if consumerClose != nil {
-		_ = consumerClose(context.Background())
+		_ = consumerClose(shutdownCtx)
 	}
 	if pool != nil {
 		pool.Close()
