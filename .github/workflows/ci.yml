@@ -44,7 +44,7 @@ jobs:
 
       - id: set-modules
         run: |
-          modules=$(go list -m -f '{{.Dir}}' | jq -R -s 'split("\n") | map(select(. != ""))')
+          modules=$(go list -m -f '{{.Dir}}' | jq -R -s -c 'split("\n") | map(select(. != ""))')
           echo "modules=$modules" >> "$GITHUB_OUTPUT"
 
   lint:

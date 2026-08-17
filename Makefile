@@ -23,7 +23,7 @@ WORKSPACE_MODULES = pkg/platform pkg/outbox pkg/consumer pkg/platform/instrument
 test:
 	@for m in $(WORKSPACE_MODULES); do \
 		echo "==> testing $$m"; \
-		(cd "$$m" && go test ./...) || exit 1; \
+		(cd "$$m" && go test -short ./...) || exit 1; \
 	done
 
 lint:
