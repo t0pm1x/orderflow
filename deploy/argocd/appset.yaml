@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: orderflow
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          - env: dev
+            namespace: orderflow-dev
+            replicas: 1
+          - env: staging
+            namespace: orderflow-staging
+            replicas: 2
+          - env: prod
+            namespace: orderflow-prod
+            replicas: 3
+  template:
+    metadata:
+      name: 'orderflow-{{.env}}'
+      namespace: argocd
+      labels:
+        env: '{{.env}}'
+    spec:
+      project: orderflow
+      source:
+        repoURL: https://github.com/t0pm1x/orderflow.git
+        targetRevision: main
+        path: deploy/kustomize/overlays/{{.env}}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m

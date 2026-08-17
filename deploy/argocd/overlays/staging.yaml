@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: orderflow-staging
+  namespace: argocd
+  labels: { env: staging }
+spec:
+  project: orderflow
+  source:
+    repoURL: https://github.com/t0pm1x/orderflow.git
+    targetRevision: main
+    path: deploy/kustomize/overlays/staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: orderflow-staging
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      - CreateNamespace=true
