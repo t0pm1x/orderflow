@@ -20,7 +20,7 @@ type fakeSource struct {
 	markErr  error
 }
 
-func (f *fakeSource) FetchPending(ctx context.Context, limit int) ([]outbox.Record, error) {
+func (f *fakeSource) FetchPending(_ context.Context, limit int) ([]outbox.Record, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fetchErr != nil {
@@ -35,7 +35,7 @@ func (f *fakeSource) FetchPending(ctx context.Context, limit int) ([]outbox.Reco
 	return out, nil
 }
 
-func (f *fakeSource) MarkSent(ctx context.Context, ids []string) error {
+func (f *fakeSource) MarkSent(_ context.Context, ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.markErr != nil {
@@ -60,7 +60,7 @@ func (f *fakeSource) MarkSent(ctx context.Context, ids []string) error {
 	return nil
 }
 
-func (f *fakeSource) MarkFailed(ctx context.Context, ids []string) error {
+func (f *fakeSource) MarkFailed(_ context.Context, ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failed = append(f.failed, ids...)
@@ -89,7 +89,7 @@ type fakePublisher struct {
 	alwaysErr error
 }
 
-func (f *fakePublisher) Publish(ctx context.Context, recs []outbox.Record) error {
+func (f *fakePublisher) Publish(_ context.Context, recs []outbox.Record) error {
 	idx := int(atomic.AddInt32(&f.calls, 1)) - 1
 	if f.alwaysErr != nil {
 		return f.alwaysErr
@@ -113,7 +113,7 @@ type fakeDLQ struct {
 	reasons []string
 }
 
-func (d *fakeDLQ) Send(ctx context.Context, r outbox.Record, reason string) error {
+func (d *fakeDLQ) Send(_ context.Context, r outbox.Record, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.sent = append(d.sent, r.EventID)

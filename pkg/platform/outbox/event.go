@@ -17,11 +17,11 @@ import "time"
 type Status string
 
 const (
-	// StatusPending: row written by the business tx, not yet published.
+	// StatusPending is the initial state; row written by the business tx, not yet published.
 	StatusPending Status = "PENDING"
-	// StatusSent: row has been published to Kafka.
+	// StatusSent is the terminal "happy path" state; row has been published to Kafka.
 	StatusSent Status = "SENT"
-	// StatusFailed: row exceeded the retry budget and was moved to DLQ.
+	// StatusFailed is the terminal state after retry budget exhausted; row was moved to DLQ.
 	StatusFailed Status = "FAILED"
 )
 

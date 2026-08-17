@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/t0pm1x/orderflow/platform/events"
 	"github.com/t0pm1x/orderflow/platform/outbox"
@@ -32,7 +32,7 @@ type fakeKafkaCall struct {
 	headers map[string]string
 }
 
-func (f *fakeKafka) PublishRaw(ctx context.Context, topic, key string, body []byte, headers map[string]string) error {
+func (f *fakeKafka) PublishRaw(_ context.Context, topic, key string, body []byte, headers map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err, ok := f.errByKey[key]; ok && err != nil {
@@ -170,7 +170,7 @@ func TestRecordToEnvelope_PropagatesActiveSpan(t *testing.T) {
 // tests that doesn't wire OpenTelemetry).
 func TestRecordToEnvelope_NoSpan_LeavesIDsEmpty(t *testing.T) {
 	prevTP := otel.GetTracerProvider()
-	otel.SetTracerProvider(trace.NewNoopTracerProvider())
+	otel.SetTracerProvider(noop.NewTracerProvider())
 	t.Cleanup(func() { otel.SetTracerProvider(prevTP) })
 
 	env, err := recordToEnvelope(context.Background(), outbox.Record{})

@@ -45,12 +45,12 @@ type fakeCall struct {
 	args []any
 }
 
-func (f *fakeDBTX) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+func (f *fakeDBTX) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	f.calls = append(f.calls, fakeCall{sql: sql, args: args})
 	return pgconn.CommandTag{}, f.err
 }
 
-func (f *fakeDBTX) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+func (f *fakeDBTX) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	f.calls = append(f.calls, fakeCall{sql: sql, args: args})
 	return nil
 }

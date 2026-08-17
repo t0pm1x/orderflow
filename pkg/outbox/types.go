@@ -57,6 +57,11 @@ type Metrics interface {
 // NoopMetrics is the default Metrics impl when none is configured.
 type NoopMetrics struct{}
 
+// ObservePoll is a no-op; satisfies the Metrics interface without emitting anything.
 func (NoopMetrics) ObservePoll(context.Context, int, time.Duration, error) {}
-func (NoopMetrics) ObservePublish(context.Context, int, error)             {}
-func (NoopMetrics) ObserveDLQ(context.Context, outbox.Record, string)      {}
+
+// ObservePublish is a no-op; satisfies the Metrics interface without emitting anything.
+func (NoopMetrics) ObservePublish(context.Context, int, error) {}
+
+// ObserveDLQ is a no-op; satisfies the Metrics interface without emitting anything.
+func (NoopMetrics) ObserveDLQ(context.Context, outbox.Record, string) {}

@@ -14,7 +14,7 @@ import (
 
 // Stack returns the standard chi middleware stack:
 //   - RequestID (UUID per request)
-//   - RealIP (from X-Forwarded-For)
+//   - ClientIP (from X-Forwarded-For, trusting 1 reverse proxy)
 //   - Recoverer (panic → 500)
 //   - OTel HTTP (auto-instrumentation, span per request)
 //   - Logger (structured request log with trace correlation)
@@ -22,7 +22,7 @@ import (
 func Stack(serviceName string, logger *slog.Logger) []func(http.Handler) http.Handler {
 	return []func(http.Handler) http.Handler{
 		middleware.RequestID,
-		middleware.RealIP,
+		middleware.ClientIPFromXFFTrustedProxies(1),
 		middleware.Recoverer,
 		otelmw.NewMiddleware(serviceName,
 			otelmw.WithSpanNameFormatter(func(_ string, r *http.Request) string {
@@ -41,6 +41,10 @@ func requestLogger(base *slog.Logger) func(http.Handler) http.Handler {
 			start := time.Now()
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
+			remote := middleware.GetClientIP(r.Context())
+			if remote == "" {
+				remote = r.RemoteAddr
+			}
 			logger := platform.LogWithTrace(r.Context(), base)
 			logger.Info("http request",
 				"method", r.Method,
@@ -48,7 +52,7 @@ func requestLogger(base *slog.Logger) func(http.Handler) http.Handler {
 				"status", ww.Status(),
 				"duration_ms", time.Since(start).Milliseconds(),
 				"request_id", middleware.GetReqID(r.Context()),
-				"remote", r.RemoteAddr,
+				"remote", remote,
 			)
 		})
 	}

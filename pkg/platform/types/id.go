@@ -4,9 +4,13 @@ import "github.com/google/uuid"
 
 // IDs are typed wrappers around UUIDs for type safety across services.
 type (
-	OrderID    uuid.UUID
-	PaymentID  uuid.UUID
-	StockID    uuid.UUID
+	// OrderID is a UUID that uniquely identifies an Order aggregate.
+	OrderID uuid.UUID
+	// PaymentID is a UUID that uniquely identifies a Payment aggregate.
+	PaymentID uuid.UUID
+	// StockID is a UUID that uniquely identifies a StockItem aggregate.
+	StockID uuid.UUID
+	// CustomerID is a UUID that uniquely identifies a Customer aggregate.
 	CustomerID uuid.UUID
 )
 
