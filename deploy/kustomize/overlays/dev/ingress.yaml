@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dev-orderflow
+  namespace: orderflow-dev
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: orderflow.dev.localhost
+      http:
+        paths:
+          - path: /v1/orders
+            pathType: Prefix
+            backend:
+              service:
+                name: dev-orderflow-order
+                port:
+                  number: 80
+          - path: /v1/payments
+            pathType: Prefix
+            backend:
+              service:
+                name: dev-orderflow-payment
+                port:
+                  number: 80
+          - path: /v1/inventory
+            pathType: Prefix
+            backend:
+              service:
+                name: dev-orderflow-inventory
+                port:
+                  number: 80

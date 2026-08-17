@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dev-orderflow-order }
+spec: { replicas: 1 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dev-orderflow-payment }
+spec: { replicas: 1 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dev-orderflow-inventory }
+spec: { replicas: 1 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dev-orderflow-saga }
+spec: { replicas: 1 }

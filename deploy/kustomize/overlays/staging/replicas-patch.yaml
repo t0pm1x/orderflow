@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: stg-orderflow-order }
+spec: { replicas: 2 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: stg-orderflow-payment }
+spec: { replicas: 2 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: stg-orderflow-inventory }
+spec: { replicas: 2 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: stg-orderflow-saga }
+spec: { replicas: 2 }

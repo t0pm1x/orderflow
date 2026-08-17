@@ -1,0 +1,35 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: orderflow-order }
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-order
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: orderflow-payment }
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-payment
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: orderflow-inventory }
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-inventory
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: orderflow-saga }
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-saga

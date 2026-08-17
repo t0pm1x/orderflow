@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# all-services.yaml is omitted while it is an instructions-only stub.
+# Regenerate the bundle, then add it to this resources list.
+resources:
+  - namespace.yaml

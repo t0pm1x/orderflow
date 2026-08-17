@@ -1,0 +1,8 @@
+# GENERATED stub — helm not installed, see deploy/kustomize/README.md.
+# Regenerate via:
+#   for svc in order payment inventory saga; do
+#     helm template orderflow-$svc deploy/helm/orderflow-$svc \
+#       --include-crds \
+#       >> deploy/kustomize/base/all-services.yaml
+#   done
+# Each overlay then patches this bundle with its environment-specific config.
