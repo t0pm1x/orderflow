@@ -4,8 +4,8 @@
 
 ## Sub-stages
 
-| Stage | Title                      | Status   | Commit    |
-|-------|----------------------------|----------|-----------|
+| Stage | Title                      | Status   | Commit    | Plan ref |
+|-------|----------------------------|----------|-----------|----------|
 | 3.0   | Bootstrap monorepo         | done     | 9c0b11e   |
 | 3.0.b | pkg/platform initial module | done    | 28aca48   |
 | 3.1.a-c | C4 architecture diagrams  | done     | 2cfc06a   |
