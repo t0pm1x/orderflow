@@ -1,41 +1,110 @@
 // Package consumer wires the Order Service's Kafka handler
-// registry for the events it consumes. Handlers are intentionally
-// stub-only at this stage (3.8.d); the real state-machine logic
-// arrives with the saga orchestrator in 3.9.
+// registry for the events it consumes. Handlers translate inventory
+// / saga events into updates on the orders.state column; the full
+// event flow is documented in docs/superpowers/specs/orderflow-events.md.
 package consumer
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	pkgconsumer "github.com/t0pm1x/orderflow/consumer"
 	"github.com/t0pm1x/orderflow/platform/events"
+	"github.com/t0pm1x/orderflow/services/order/internal/domain"
+	"github.com/t0pm1x/orderflow/services/order/internal/repository"
 )
 
+type Handler struct {
+	pool   *pgxpool.Pool
+	repo   *repository.PGRepo
+	logger *slog.Logger
+}
+
+func NewHandler(pool *pgxpool.Pool, logger *slog.Logger) *Handler {
+	return &Handler{
+		pool:   pool,
+		repo:   repository.NewPGRepo(pool),
+		logger: logger,
+	}
+}
+
 // Registry returns the Order Service's handler registry. Every
-// handler is a stub that logs the event so consumers can be wired
-// in main.go without depending on the (still-being-built) saga
-// orchestrator.
-func Registry(logger *slog.Logger) pkgconsumer.HandlerRegistry {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	stub := func(eventType string) pkgconsumer.Handler {
-		return func(_ context.Context, env *events.Envelope) error {
-			logger.Info("orderflow-order received event",
-				"event_type", eventType,
-				"event_id", env.EventID,
-				"aggregate_id", env.AggregateID,
-				"schema_version", env.SchemaVersion,
-			)
-			return nil
-		}
-	}
+// entry updates the orders.state column in response to a saga or
+// inventory event.
+func (h *Handler) Registry() pkgconsumer.HandlerRegistry {
 	return pkgconsumer.HandlerRegistry{
-		"StockReserved":          stub("StockReserved"),
-		"StockReleased":          stub("StockReleased"),
-		"StockReservationFailed": stub("StockReservationFailed"),
-		"PaymentCompleted":       stub("PaymentCompleted"),
-		"PaymentFailed":          stub("PaymentFailed"),
+		"StockReserved":          h.StockReserved,
+		"StockReservationFailed": h.StockReservationFailed,
+		"OrderConfirmed":         h.OrderConfirmed,
+		"OrderCancelled":         h.OrderCancelled,
+		"PaymentFailed":          h.PaymentFailed,
 	}
+}
+
+func (h *Handler) StockReserved(ctx context.Context, env *events.Envelope) error {
+	var p struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return err
+	}
+	return h.updateState(ctx, p.OrderID, domain.OrderState("reserved"))
+}
+
+func (h *Handler) StockReservationFailed(ctx context.Context, env *events.Envelope) error {
+	var p struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return err
+	}
+	return h.updateState(ctx, p.OrderID, domain.OrderState("cancelled"))
+}
+
+func (h *Handler) OrderConfirmed(ctx context.Context, env *events.Envelope) error {
+	var p struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return err
+	}
+	return h.updateState(ctx, p.OrderID, domain.OrderState("confirmed"))
+}
+
+func (h *Handler) OrderCancelled(ctx context.Context, env *events.Envelope) error {
+	var p struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return err
+	}
+	return h.updateState(ctx, p.OrderID, domain.OrderState("cancelled"))
+}
+
+func (h *Handler) PaymentFailed(ctx context.Context, env *events.Envelope) error {
+	var p struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return err
+	}
+	return h.updateState(ctx, p.OrderID, domain.OrderState("cancelled"))
+}
+
+func (h *Handler) updateState(ctx context.Context, orderID string, state domain.OrderState) error {
+	if h.pool == nil {
+		return errors.New("order consumer handler: pool not initialized")
+	}
+	if _, err := h.pool.Exec(ctx,
+		`UPDATE orders SET state = $1, updated_at = NOW() WHERE id = $2`,
+		string(state), orderID,
+	); err != nil {
+		h.logger.Error("update order state failed", "order_id", orderID, "state", state, "err", err)
+		return err
+	}
+	return nil
 }

@@ -1,7 +1,6 @@
 package consumer
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -17,12 +16,12 @@ import (
 // to the spec without a handler would silently ack-and-skip via
 // pkg/consumer, so we pin the registry shape here.
 func TestRegistry_HasAllEventTypes(t *testing.T) {
-	r := Registry(slog.Default())
+	r := NewHandler(nil, slog.Default()).Registry()
 	want := []string{
 		"StockReserved",
-		"StockReleased",
 		"StockReservationFailed",
-		"PaymentCompleted",
+		"OrderConfirmed",
+		"OrderCancelled",
 		"PaymentFailed",
 	}
 	for _, ev := range want {
@@ -32,15 +31,13 @@ func TestRegistry_HasAllEventTypes(t *testing.T) {
 	}
 }
 
-// TestRegistry_StubsLogAndReturnNil: stub handlers must not error
-// (they're placeholders for the saga-driven implementation that
-// arrives in 3.9). If a stub returns an error, the consumer would
-// retry it 5 times and DLQ — exactly the wrong behavior for a
-// placeholder.
-func TestRegistry_StubsLogAndReturnNil(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	r := Registry(logger)
+// TestRegistry_HandlersReturnErrorOnNilPool: every registered
+// handler must decode its payload and reach updateState, then fail
+// gracefully (non-nil error, no panic) when the pool is nil. The
+// consumer DLQs on returned error, so this is the right shape —
+// a panic would crash the goroutine.
+func TestRegistry_HandlersReturnErrorOnNilPool(t *testing.T) {
+	r := NewHandler(nil, slog.Default()).Registry()
 
 	for eventType, h := range r {
 		env := &events.Envelope{
@@ -49,22 +46,19 @@ func TestRegistry_StubsLogAndReturnNil(t *testing.T) {
 			AggregateID:   "a1",
 			AggregateType: "A",
 			SchemaVersion: "1.0",
-			Payload:       json.RawMessage(`{}`),
+			Payload:       json.RawMessage(`{"order_id":"a1"}`),
 		}
-		if err := h(context.Background(), env); err != nil {
-			t.Errorf("handler for %q returned error: %v", eventType, err)
+		if err := h(context.Background(), env); err == nil {
+			t.Errorf("handler for %q with nil pool should return error, got nil", eventType)
 		}
-	}
-	if buf.Len() == 0 {
-		t.Error("expected stub handlers to log something")
 	}
 }
 
-// TestStart_DisabledWhenNoEnv: Start with no broker/groupID
+// TestStart_DisabledWhenNoEnv: Start with no broker/groupID/handler
 // returns no-op close + nil.
 func TestStart_DisabledWhenNoEnv(t *testing.T) {
 	ctx := context.Background()
-	close, err := Start(ctx, slog.Default(), "", "")
+	close, err := Start(ctx, slog.Default(), "", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

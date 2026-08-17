@@ -85,13 +85,17 @@ func Run(ctx context.Context) error {
 	}
 	defer func() { _ = traceShutdown(context.Background()) }()
 
-	outboxClose, err := startOutbox(ctx, logger, dbURL, broker, httpAddr)
+	outboxClose, pool, err := startOutbox(ctx, logger, dbURL, broker, httpAddr)
 	if err != nil {
 		return fmt.Errorf("outbox start: %w", err)
 	}
 	defer func() { _ = outboxClose(context.Background()) }()
 
-	consumerClose, err := svcconsumer.Start(ctx, logger, broker, groupID)
+	var consumerHandler *svcconsumer.Handler
+	if pool != nil {
+		consumerHandler = svcconsumer.NewHandler(pool, logger)
+	}
+	consumerClose, err := svcconsumer.Start(ctx, logger, broker, groupID, consumerHandler)
 	if err != nil {
 		return fmt.Errorf("consumer start: %w", err)
 	}
@@ -104,8 +108,12 @@ func Run(ctx context.Context) error {
 // startOutbox brings up the poller + metrics HTTP server. Returns
 // a no-op closeFn when DATABASE_URL or KAFKA_BROKER are unset; the
 // HTTP server still starts as long as HTTP_ADDR is non-empty, so
-// /healthz and /metrics remain reachable in disabled mode.
-func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAddr string) (func(context.Context) error, error) {
+// /healthz and /metrics remain reachable in disabled mode. The
+// returned *pgxpool.Pool is non-nil only when the outbox is on
+// (both DATABASE_URL and KAFKA_BROKER set); it is exposed so the
+// consumer handler can update the orders table on the same pool
+// the API uses.
+func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAddr string) (func(context.Context) error, *pgxpool.Pool, error) {
 	var (
 		wg       sync.WaitGroup
 		httpSrv  *http.Server
@@ -119,18 +127,18 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 		var err error
 		pool, err = pgxpool.New(ctx, dbURL)
 		if err != nil {
-			return nil, fmt.Errorf("pgxpool: %w", err)
+			return nil, nil, fmt.Errorf("pgxpool: %w", err)
 		}
 		if err := pool.Ping(ctx); err != nil {
 			pool.Close()
-			return nil, fmt.Errorf("postgres ping: %w", err)
+			return nil, nil, fmt.Errorf("postgres ping: %w", err)
 		}
 
 		var kafkaClient *events.Client
 		kafkaClient, err = events.NewClient(strings.Split(broker, ","), "order")
 		if err != nil {
 			pool.Close()
-			return nil, fmt.Errorf("kafka client: %w", err)
+			return nil, nil, fmt.Errorf("kafka client: %w", err)
 		}
 
 		src := svcoutbox.NewPGSource(pool)
@@ -181,7 +189,7 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 			if pool != nil {
 				pool.Close()
 			}
-			return nil, fmt.Errorf("listen %s: %w", httpAddr, err)
+			return nil, nil, fmt.Errorf("listen %s: %w", httpAddr, err)
 		}
 		boundAddr.Store(ln.Addr().String())
 		httpSrv = &http.Server{Handler: r}
@@ -212,7 +220,7 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 			pool.Close()
 		}
 		return nil
-	}, nil
+	}, pool, nil
 }
 
 // Main is the function called by cmd/order/main.go; it owns the

@@ -15,18 +15,19 @@ import (
 // Start wires the Order Service consumer. Returns a shutdown func
 // that closes the underlying franz-go client. When kafkaBroker or
 // groupID are unset (e.g. local 'go run' without docker-compose),
-// returns a no-op shutdown and a nil error.
-func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string) (func(context.Context) error, error) {
-	if kafkaBroker == "" || groupID == "" {
-		logger.Info("order consumer disabled: KAFKA_BROKER or GROUP_ID not set")
+// or when handler is nil (DATABASE_URL unset → no pool to update
+// the orders table with), returns a no-op shutdown and a nil error.
+func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, handler *Handler) (func(context.Context) error, error) {
+	if kafkaBroker == "" || groupID == "" || handler == nil {
+		logger.Info("order consumer disabled: KAFKA_BROKER, GROUP_ID, or pool not set")
 		return func(context.Context) error { return nil }, nil
 	}
 
 	c, err := pkgconsumer.New(pkgconsumer.Config{
 		Brokers: []string{kafkaBroker},
 		GroupID: groupID,
-		Topics:  []string{"payment-events", "inventory-events"},
-	}, Registry(logger))
+		Topics:  []string{"order-events", "payment-events", "inventory-events"},
+	}, handler.Registry())
 	if err != nil {
 		return nil, fmt.Errorf("order consumer: %w", err)
 	}
