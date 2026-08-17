@@ -34,12 +34,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.2.0
-- DB migrations for all 3 services (3.4.e, 3.5.e, 3.6.e)
-- Outbox writers (3.4.d, 3.5.d, 3.6.d) + shared poller/publisher (3.7)
-- Kafka consumers for saga events (3.8)
-- Saga orchestrator with compensation (3.9)
-- Tracing propagation through Kafka headers (3.10)
-- E2E tests with testcontainers (3.11)
-- Helm charts (3.12)
-- Production docs + demo script (3.13)
+## [0.2.0] - 2026-08-17
+
+### Added
+- **Tracing (3.10)**: W3C tracecontext propagation through Kafka. New `pkg/platform/instrumentation/kafkaprop` module (Inject / Extract / SpanFromEnvelope). Outbox publisher populates `Envelope.TraceID`/`SpanID` from active span. Consumer restores traceparent and creates `consumer.<EventType>` child span. chi middleware on `/healthz` and `/metrics` for all 4 service binaries. `service.version` resource attribute on every service. OTLP env defaults (`OTEL_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317`).
+- **E2E harness (3.11.a)**: `tests/harness` testcontainers-go harness starting 3 Postgres + Redis + Kafka (confluent-local) + optional OTel collector. Self-test PASS in ~18s. Per-service migrations applied on startup. Individual E2E/chaos/load tests deferred to v0.3.0.
+- **Helm charts (3.12.a, 3.12.b)**: Production-ready Helm 3 charts for all 4 services + 3 infra deps (postgres with 3 databases, redis, redpanda). `values.yaml` (production defaults) + `values-dev.yaml` (replicas=1, debug logs). Security defaults (runAsNonRoot, readOnlyRootFilesystem). ServiceAccounts + ConfigMaps. Kustomize overlays + ArgoCD manifests deferred to v0.3.0.
+- **kind cluster (3.12.e)**: `deploy/kind/kind.yaml` with 10 host→container port mappings matching prod docker-compose. Makefile targets `kind-up / kind-down / kind-load / kind-status` with prereq check.
+- **ADR-0004 (3.13.a)**: W3C tracecontext decision. Decision log table added to README.
+- **Saga C4 diagram (3.13.b)**: `docs/architecture/c4-level-3-saga.puml` (33 lines) — state machine, consumer, publisher, watchdog, Postgres writer/source.
+- **Demo script (3.13.c)**: `docs/demo/demo.sh` runs the full happy path (compose up → build → start services → POST order → poll until confirmed) in ~60s. `docs/demo/README.md` with prerequisites + troubleshooting.
+- **Sub-stages index (3.13.e)**: `docs/superpowers/portfolio/orderflow-substages.md` — 73-row table; fixes broken README link.
+
+### Changed
+- `outbox.Record` gains `Headers map[string]string` (JSONB column added per service via `0002_outbox_headers.sql`).
+- `events.Client.PublishRaw` takes headers map.
+- `platform.InitTracing` signature now `(ctx, name, version)` (was `(ctx, name)`).
+
+### Deferred to v0.3.0
+- 3.11.b–e individual E2E tests (harness ready; tests to be added).
+- 3.11.f E2E CI job.
+- 3.12.c Kustomize overlays.
+- 3.12.d ArgoCD Application manifests.
+- 3.12.f kind smoke test (requires `kind` binary).
+- 3.13.d asciinema recording (manual).

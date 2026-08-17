@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (post v0.1.0-MVP, 20 sub-stages added in this session)
+**Last updated:** 2026-08-17 (post v0.2.0 release; 3.10–3.13 closed; 3.14 review done)
 
 ## Sub-stages
 
@@ -55,16 +55,37 @@
 | 3.9.d | saga migrations (order_sagas + TTL index) | done | cb8cae8 |
 | 3.9.e | saga unit tests (state transitions, compensation, watchdog expiry) | done | ae30a44 |
 | v0.1.0-MVP | README + CHANGELOG | done | cd8b2f5 |
+| 3.10.a | kafkaprop module (Inject / Extract / SpanFromEnvelope) | done | b4f784e |
+| 3.10.b | outbox publisher populates TraceID/SpanID from active span | done | 9d1fae1 |
+| 3.10.c | consumer dispatch restores traceparent + creates per-message span | done | c735586 |
+| 3.10.d | chi middleware on /healthz and /metrics for all 4 service binaries | done | f640c3d / ea983ee / eaeb4c2 / 7545b64 |
+| 3.10.e | service.version resource attribute on every service | done | 4a2fdd5 |
+| 3.10.f | Tempo runbook + OTLP env defaults | done | 6a6477e |
+| 3.11.a | testcontainers harness (postgres×3 + redis + kafka) | done | 1bfe584 |
+| 3.12.a.order | Helm chart for Order Service | done | be6daec |
+| 3.12.a.payment | Helm chart for Payment Service | done | 279a39f |
+| 3.12.a.inventory | Helm chart for Inventory Service | done | 548319f |
+| 3.12.a.saga | Helm chart for Saga orchestrator | done | d239bbd |
+| 3.12.b | infra Helm charts (postgres/redis/redpanda) | done | c37d081 |
+| 3.12.e | kind cluster config + make kind-up/down/load | done | 0b03254 |
+| 3.13.a | ADR-0004 (W3C tracecontext) + decision log index | done | c254cb3 |
+| 3.13.b | C4 component diagram for Saga orchestrator | done | 601c59c |
+| 3.13.c | end-to-end demo script + README | done | adfcffe |
+| 3.13.e | sub-stages index doc (fixes README broken link) | done | c2b0598 |
+| 3.14 | final review + gofmt cleanup | done | 4fb1100 |
+| v0.2.0 | CHANGELOG + README + tag | done | — |
 
-## Next up (deferred — requires infrastructure)
+## Deferred to v0.3.0
 
-- 3.10.a–d W3C tracecontext through Kafka + Tempo wire-up + service map
-- 3.11.a–f E2E tests (happy / compensation / chaos / load) — testcontainers
-- 3.12.a–f Helm + Kustomize + ArgoCD + kind smoke
-- 3.13.a–d README + ADR log + demo script + asciinema
-- 3.14    final whole-branch review
+- 3.11.b–e E2E tests (happy / compensation / chaos / load) — harness at `tests/harness/`; individual tests to be added
+- 3.11.f E2E CI job
+- 3.12.c Kustomize overlays (depends on Helm charts — now ready)
+- 3.12.d ArgoCD Application manifests
+- 3.12.f kind smoke test (requires `kind` binary installation)
+- 3.13.d asciinema recording (manual)
 
 ## Session handoff
 
 A compact session-resume document lives at
-`docs/superpowers/portfolio/orderflow-checkpoint.md`.
+`docs/superpowers/portfolio/orderflow-checkpoint.md`. The full sub-stages index
+is at `docs/superpowers/portfolio/orderflow-substages.md`.

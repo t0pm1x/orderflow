@@ -4,31 +4,33 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Status: v0.1.0-MVP
+## Status: v0.2.0
 
-This is a **scaffolding release**. Core types, domain logic, and one service (Order) have real implementation. Other services have skeletons and partial implementations.
+This release closes stages 3.10 (tracing), 3.11.a (E2E harness), 3.12 (Helm + kind), 3.13 (docs + demo). Tracing, outbox, saga, and migrations from v0.1.0-MVP remain. E2E individual tests, Kustomize, ArgoCD, and asciinema deferred to v0.3.0.
 
 ### ✅ What works
 - All 4 services (`order`, `payment`, `inventory`, `saga`) compile and produce binaries
-- `pkg/platform` library: logging (with OTel trace correlation), middleware, types (Money, IDs), events envelope, typed errors
-- Order Service: full domain (state machine + transitions) + REST API (POST/GET/LIST) with 5 integration tests
-- Payment mock provider: deterministic success/decline/insufficient-funds/timeout
-- Inventory Stock model: optimistic locking version column, reserve/release
-- Docker-compose stack configured (postgres ×3, redis, redpanda, kafka-init, otel-collector, prometheus, tempo, grafana)
-- K8s base manifests (namespace, rbac, network-policies)
-- 3 ADRs (saga vs choreography, outbox pattern, REST vs gRPC)
-- 3-level C4 architecture diagrams
+- `pkg/platform` library: logging (with OTel trace correlation), middleware, types (Money, IDs), events envelope, typed errors, W3C tracecontext propagation
+- Order Service: full domain (state machine: pending→reserved→confirmed/cancelled/failed), REST API (POST/GET/LIST), outbox writer, PGSource, DB migrations
+- Payment Service: mock provider with deterministic success/decline/insufficient-funds/timeout; outbox writer; Redis-backed idempotency; DB migrations
+- Inventory Service: Stock model with optimistic locking version column, reserve/release, outbox writer, DB migrations
+- Saga Service: state machine (initiated → stock_reserved → completed/compensated), compensation, watchdog, DB migrations
+- Outbox poller: FetchPending / MarkSent / MarkFailed with retry + per-topic DLQ + Prometheus metrics; KafkaPublisher and KafkaDLQ adapters
+- Consumer base: franz-go consumer group, idempotent handler wrapper (event_id dedupe), DLQ on error, per-service handler registries
+- Docker-compose stack: 3 Postgres, Redis, Redpanda (KRaft), OTel Collector, Prometheus, Tempo, Grafana
+- K8s base: namespace, RBAC, default-deny + intra-namespace NetworkPolicies
+- 4 ADRs (saga vs choreography, outbox pattern, REST vs gRPC, W3C tracecontext)
+- 4-level C4 architecture diagrams (System Context, Container, 3 Component diagrams + new Saga component diagram)
+- Helm charts for all 4 services + 3 infra deps (postgres/redis/redpanda), `values-dev.yaml` overlays
+- kind cluster config (`deploy/kind/kind.yaml`) + `make kind-up/down/load`
+- testcontainers-go E2E harness (3 Postgres + Redis + Kafka) at `tests/harness/`
+- End-to-end demo script at `docs/demo/demo.sh`
 
-### ⬜ Deferred to v0.2.0 (see [substages doc](docs/superpowers/portfolio/orderflow-substages.md))
-- Database migrations for all 3 services
-- Outbox writers + Kafka publisher
-- Consumer side (Kafka event handlers)
-- Saga orchestrator
-- Tracing propagation through Kafka headers
-- E2E / chaos / load tests
-- Helm charts
-- HTTP API for Payment and Inventory
-- Full REST/gRPC inter-service communication
+### ⬜ Deferred to v0.3.0
+- Individual E2E / chaos / load tests (harness ready, tests to be added)
+- Kustomize overlays + ArgoCD Application manifests
+- kind smoke test (requires `kind` binary installation)
+- asciinema recording of the demo
 
 ## Architecture
 
