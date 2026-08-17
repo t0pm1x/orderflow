@@ -1,10 +1,10 @@
-// Saga: explicit state machine for the order saga with compensation actions and TTL watchdog.
+// Saga Service binary — wiring lives in services/saga/cmd/saga so
+// it can access the service's internal packages; this top-level
+// cmd is just the binary entry point.
 package main
 
-import "fmt"
-
-var version = "0.0.0-dev"
+import "github.com/t0pm1x/orderflow/services/saga/cmd/saga"
 
 func main() {
-	fmt.Printf("orderflow-saga version %s\n", version)
+	saga.Main()
 }
