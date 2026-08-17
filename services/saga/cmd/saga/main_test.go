@@ -79,13 +79,14 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 }
 
 // TestRun_GoroutinesExitOnCancel verifies that Run returns within a
-// bounded shutdown timeout after ctx is cancelled. Before the
-// WaitGroup fix, the outbox poller and TTL sweep goroutines had no
-// shutdown signal — Run would return on ctx.Done but those
-// goroutines could still be mid-transaction. This test asserts the
-// fix by verifying Run returns promptly (within 7 seconds) even when
-// the runtime is in disabled mode (no DB, no Kafka) — the HTTP
-// server and any registered background goroutines must exit.
+// bounded shutdown timeout after ctx is cancelled. This is a
+// regression net for the WaitGroup-based shutdown contract: the
+// integration paths (TTL sweep, outbox poller) are exercised by the
+// orderflow E2E suite against services/order/cmd/order/main.go's
+// startOutbox + WaitGroup pattern, which saga mirrors here. In
+// disabled mode (no DB, no Kafka), the only registered goroutine is
+// the HTTP server, whose existing httpSrv.Shutdown already returned
+// promptly before this fix; this test pins that contract.
 func TestRun_GoroutinesExitOnCancel(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("OTEL_EXPORTER", "stdout")
