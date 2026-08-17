@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -89,11 +90,14 @@ func Run(ctx context.Context) error {
 	}
 	defer func() { _ = traceShutdown(context.Background()) }()
 
-	// Bring up the runtime: DB pool + consumer + outbox poller.
-	// Disabled (no-op close) when DATABASE_URL or KAFKA_BROKER are
-	// unset, mirroring the order/payment/inventory services.
+	// Bring up the runtime: DB pool + consumer + outbox poller + TTL sweep.
+	// Disabled (no-op close) when DATABASE_URL or KAFKA_BROKER are unset,
+	// mirroring the order/payment/inventory services.
 	var (
+		wg            sync.WaitGroup
 		pool          *pgxpool.Pool
+		httpSrv       *http.Server
+		ln            net.Listener
 		consumerClose func(context.Context) error
 		outboxClose   func(context.Context) error
 	)
@@ -112,21 +116,20 @@ func Run(ctx context.Context) error {
 			pool.Close()
 			return fmt.Errorf("consumer start: %w", err)
 		}
-		defer func() { _ = consumerClose(context.Background()) }()
 
-		outboxClose, err = startSagaOutbox(ctx, logger, pool, broker)
+		outboxClose, err = startSagaOutbox(ctx, logger, pool, broker, &wg)
 		if err != nil {
+			_ = consumerClose(context.Background())
 			pool.Close()
 			return fmt.Errorf("outbox start: %w", err)
 		}
-		defer func() { _ = outboxClose(context.Background()) }()
 
 		// Start cross-restart TTL sweep — compensates sagas whose
-		// expires_at has passed but never fired in-process. Sub-stage
-		// 3.9.c: durable recovery path alongside the in-process
-		// Watchdog (timeout.go).
+		// expires_at has passed but never fired in-process.
 		ttl := svcwatchdog.NewTTLSweep(pool, svcrepo.NewPGRepo(pool), svcoutbox.NewPGWriter(), 30*time.Second, logger)
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			ttl.Run(ctx)
 		}()
 	} else {
@@ -136,6 +139,7 @@ func Run(ctx context.Context) error {
 	if httpAddr == "" {
 		logger.Info("http disabled: HTTP_ADDR not set")
 		<-ctx.Done()
+		wgWait(&wg, pool, consumerClose, outboxClose, httpSrv, ln)
 		return nil
 	}
 
@@ -147,7 +151,7 @@ func Run(ctx context.Context) error {
 	})
 	r.Handle("/metrics", promhttp.Handler())
 
-	ln, err := net.Listen("tcp", httpAddr)
+	ln, err = net.Listen("tcp", httpAddr)
 	if err != nil {
 		if pool != nil {
 			pool.Close()
@@ -155,34 +159,32 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", httpAddr, err)
 	}
 	boundAddr.Store(ln.Addr().String())
-	httpSrv := &http.Server{
+	httpSrv = &http.Server{
 		Handler:           r,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	httpErr := make(chan error, 1)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			logger.Error("saga http exited", "err", err)
-			httpErr <- err
 		}
 	}()
 
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shutdownCtx)
-		return nil
-	case err := <-httpErr:
-		return err
-	}
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = httpSrv.Shutdown(shutdownCtx)
+	wgWait(&wg, pool, consumerClose, outboxClose, httpSrv, ln)
+	return nil
 }
 
-// startSagaOutbox brings up the Saga Service outbox poller. Returns
-// a close fn that stops the poller; the caller owns pool's lifecycle.
-// Mirrors services/order/cmd/order/main.go's startOutbox.
-func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, broker string) (func(context.Context) error, error) {
+// startSagaOutbox brings up the Saga Service outbox poller. The
+// caller passes a WaitGroup so the poller goroutine is tracked and
+// the close fn can wait for it on shutdown. Mirrors
+// services/order/cmd/order/main.go's startOutbox + WaitGroup pattern.
+func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, broker string, wg *sync.WaitGroup) (func(context.Context) error, error) {
 	kafkaClient, err := events.NewClient(strings.Split(broker, ","), "saga")
 	if err != nil {
 		return nil, fmt.Errorf("kafka client: %w", err)
@@ -200,7 +202,9 @@ func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Poo
 		MaxAttempts: 5,
 	}, src, pub, dlq, metrics)
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := poller.Run(ctx); err != nil {
 			logger.Error("saga outbox poller exited", "err", err)
 		}
@@ -211,6 +215,40 @@ func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Poo
 		kafkaClient.Close()
 		return nil
 	}, nil
+}
+
+// wgWait blocks until all background goroutines (TTL sweep, outbox
+// poller, HTTP server) have exited, OR the shutdown timeout
+// expires. The order is: stop the poller (so it does not start new
+// fetches), wait for all goroutines, then close the consumer and
+// the DB pool. Mirrors services/order/cmd/order/main.go's shutdown
+// path.
+func wgWait(wg *sync.WaitGroup, pool *pgxpool.Pool, consumerClose, outboxClose func(context.Context) error, httpSrv *http.Server, ln net.Listener) {
+	// Stop sources first so background goroutines exit promptly.
+	if outboxClose != nil {
+		_ = outboxClose(context.Background())
+	}
+	if httpSrv != nil {
+		_ = httpSrv.Shutdown(context.Background())
+	}
+	if ln != nil {
+		_ = ln.Close()
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		// Shutdown deadline expired. Continue closing what we can.
+	}
+
+	if consumerClose != nil {
+		_ = consumerClose(context.Background())
+	}
+	if pool != nil {
+		pool.Close()
+	}
 }
 
 func redact(s string) string {
