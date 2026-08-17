@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/t0pm1x/orderflow/services/saga"
 )
 
 // testDB returns a connected pgxpool against the database referenced
@@ -234,5 +236,58 @@ func TestPGRepo_Get_MissingReturnsErrNotFound(t *testing.T) {
 	_, err := repo.Get(context.Background(), "99999999-9999-9999-9999-999999999999")
 	if err != ErrNotFound {
 		t.Errorf("Get missing: got %v want ErrNotFound", err)
+	}
+}
+
+// TestPGRepo_ListExpired_ReturnsOnlyExpiredAndNonTerminal pins the
+// TTL sweep contract: ListExpired must return only sagas whose
+// expires_at is in the past AND whose state is neither "completed"
+// nor "compensated". Sagas that expired but are already terminal
+// (e.g. crash-compensated before) must NOT be returned — otherwise
+// the sweep would re-emit events for an already-clean saga.
+func TestPGRepo_ListExpired_ReturnsOnlyExpiredAndNonTerminal(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+	ctx := context.Background()
+
+	expiredID := "44444444-4444-4444-4444-444444444444"
+	freshID := "55555555-5555-5555-5555-555555555555"
+	expiredTerminalID := "66666666-6666-6666-6666-666666666666"
+	expiredCompensatedID := "77777777-7777-7777-7777-777777777777"
+
+	insertWithExpires := func(id string, state saga.State, expiresAt string) {
+		t.Helper()
+		_, err := pool.Exec(ctx,
+			`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, expires_at)
+			 VALUES ($1, $2, '[]'::jsonb, 0, '', $3::timestamptz)`,
+			id, string(state), expiresAt)
+		if err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+
+	insertWithExpires(expiredID, "initiated", "NOW() - INTERVAL '1 minute'")
+	insertWithExpires(freshID, "initiated", "NOW() + INTERVAL '5 minutes'")
+	insertWithExpires(expiredTerminalID, "completed", "NOW() - INTERVAL '1 minute'")
+	insertWithExpires(expiredCompensatedID, "compensated", "NOW() - INTERVAL '1 minute'")
+
+	got, err := repo.ListExpired(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListExpired: %v", err)
+	}
+
+	var gotIDs []string
+	for _, s := range got {
+		gotIDs = append(gotIDs, s.OrderID)
+	}
+
+	if len(gotIDs) != 1 {
+		t.Fatalf("ListExpired returned %d rows, want 1 (got=%v)", len(gotIDs), gotIDs)
+	}
+	if gotIDs[0] != expiredID {
+		t.Errorf("ListExpired first id: got %q want %q", gotIDs[0], expiredID)
+	}
+	if got[0].State != "initiated" {
+		t.Errorf("ListExpired state: got %q want initiated", got[0].State)
 	}
 }

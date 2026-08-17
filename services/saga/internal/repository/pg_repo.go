@@ -116,3 +116,43 @@ func (r *PGRepo) SetReservationID(ctx context.Context, orderID, reservationID st
 		reservationID, orderID)
 	return err
 }
+
+// ListExpired returns sagas whose expires_at is in the past and
+// whose state is non-terminal. Used by the cross-restart TTL sweep
+// (services/saga/internal/watchdog) to find sagas that crashed
+// before the in-process watchdog could fire their compensation.
+//
+// Terminal states ("completed", "compensated") are excluded so
+// already-clean sagas are never re-compensated. Rows are returned
+// ordered by expires_at ASC so the oldest abandoned sagas are
+// reaped first; the caller enforces a hard cap with limit to
+// bound tx size.
+func (r *PGRepo) ListExpired(ctx context.Context, limit int) ([]*Saga, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT order_id, state, items, total_cents, reservation_id
+		   FROM order_sagas
+		  WHERE expires_at < NOW()
+		    AND state NOT IN ('completed', 'compensated')
+		  ORDER BY expires_at ASC
+		  LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*Saga, 0, limit)
+	for rows.Next() {
+		var (
+			s     Saga
+			state string
+		)
+		if err := rows.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID); err != nil {
+			return nil, err
+		}
+		s.State = saga.State(state)
+		out = append(out, &s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

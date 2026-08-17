@@ -35,6 +35,8 @@ import (
 
 	svcconsumer "github.com/t0pm1x/orderflow/services/saga/internal/consumer"
 	svcoutbox "github.com/t0pm1x/orderflow/services/saga/internal/outbox"
+	svcrepo "github.com/t0pm1x/orderflow/services/saga/internal/repository"
+	svcwatchdog "github.com/t0pm1x/orderflow/services/saga/internal/watchdog"
 )
 
 // TableName is the outbox table identifier. The saga service does
@@ -118,6 +120,15 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("outbox start: %w", err)
 		}
 		defer func() { _ = outboxClose(context.Background()) }()
+
+		// Start cross-restart TTL sweep — compensates sagas whose
+		// expires_at has passed but never fired in-process. Sub-stage
+		// 3.9.c: durable recovery path alongside the in-process
+		// Watchdog (timeout.go).
+		ttl := svcwatchdog.NewTTLSweep(pool, svcrepo.NewPGRepo(pool), svcoutbox.NewPGWriter(), 30*time.Second, logger)
+		go func() {
+			ttl.Run(ctx)
+		}()
 	} else {
 		logger.Info("saga runtime disabled: DATABASE_URL or KAFKA_BROKER not set")
 	}
