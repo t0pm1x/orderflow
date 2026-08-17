@@ -52,11 +52,20 @@ func (w *PGWriter) Append(ctx context.Context, tx outbox.DBTX, r outbox.Record) 
 	if r.Headers == nil {
 		headers = []byte(`{}`)
 	}
+	// Argument order MUST match insertSQL's column order:
+	//   event_id, aggregate_id, aggregate_type, event_type, payload, headers
+	// The saga_outbox schema (0002_saga_outbox.sql) orders columns
+	// differently from order/inventory/payment outboxes — the writer
+	// must thread AggregateID/AggregateType/EventType through in the
+	// schema's order, not the canonical one. A previous version of
+	// this method passed EventType where AggregateID belongs, so
+	// every saga event landed in Kafka with event_type="Order" and
+	// downstream consumers ack-and-skipped it.
 	_, err = tx.Exec(ctx, insertSQL,
 		r.EventID,
-		r.EventType,
 		r.AggregateID,
 		r.AggregateType,
+		r.EventType,
 		r.Payload,
 		headers,
 	)

@@ -48,7 +48,10 @@ func argsEqual(a, b any) bool {
 // aggregate_id, aggregate_type, event_type, payload, and headers
 // through as positional args in that exact order. schema_version is
 // fixed at 1 in v0.5.0 (see 0002_saga_outbox.sql); status starts at
-// PENDING.
+// PENDING. Note: the saga schema column order differs from
+// order/inventory/payment, so the args here are NOT in the canonical
+// (EventID, EventType, AggregateID, ...) order — AggregateID and
+// EventType are intentionally swapped relative to the Record fields.
 func TestPGWriter_Append_EmitsInsert(t *testing.T) {
 	db := &fakeDBTX{}
 	w := NewPGWriter()
@@ -71,9 +74,9 @@ func TestPGWriter_Append_EmitsInsert(t *testing.T) {
 	c := db.calls[0]
 	want := []any{
 		"evt-1",
-		"StockReserveRequested",
 		"ord-1",
 		"Order",
+		"StockReserveRequested",
 		[]byte(`{"sku":"A","qty":2}`),
 		[]byte(`{}`),
 	}
