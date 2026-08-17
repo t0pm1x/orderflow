@@ -93,12 +93,15 @@
 | v0.5.0.payment | real PaymentRequested handler with mock provider | done | 1921628 |
 | v0.5.0.order | real consumer handlers (StockReserved/OrderConfirmed/etc) | done | f42f71e |
 | v0.6.0 | saga cross-restart TTL sweep for crashed-saga recovery | done | a3cf23f |
+| v1.0.kind | kind smoke test (cluster create + Helm template validation) | done | 5ce2be7 |
+| v1.0.demo | asciinema recording script + runbook | done | 19d5ec0 |
+| v1.0 | final CHANGELOG/README/tag | done | — |
 
-## Deferred to v1.0
+## Deferred to v1.1
 
-- 3.12.f kind smoke test (requires `kind` binary installation)
-- 3.13.d asciinema recording (manual)
 - Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup)
+- kind smoke: actual image loading into cluster (currently only validates Helm template rendering, not full deploy)
+- ghcr.io publishing pipeline (binaries are built locally; CI publishing is a separate concern)
 
 ## Session handoff
 

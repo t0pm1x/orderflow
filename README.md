@@ -4,27 +4,46 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Status: v0.6.0
+## Status: v1.0.0
 
-This release adds saga cross-restart TTL sweep for crashed-saga recovery — non-terminal sagas past their 5-minute TTL get automatically compensated on the next saga binary restart. v0.5.0 features (working end-to-end event flow) remain.
+**First stable release.** The platform is end-to-end functional, saga recovery is wired, deployment is GitOps-ready, and CI is in place. Demo script + recording runbook included.
 
 ### ✅ What works
-- All 4 services compile and produce binaries
-- **Full event flow**: `POST /v1/orders` → OrderCreated outbox → saga → StockReserveRequested → inventory → StockReserved → saga → PaymentRequested → payment → PaymentCompleted → saga → OrderConfirmed → order=confirmed
+- All 4 services (`order`, `payment`, `inventory`, `saga`) compile + run with PGRepository + REST API + real consumer handlers
+- **Full event flow**: `POST /v1/orders` → OrderCreated → saga → StockReserveRequested → inventory reserves → StockReserved → saga → PaymentRequested → payment → PaymentCompleted → saga → OrderConfirmed → order=confirmed
 - **Saga recovery**: cross-restart TTL sweep compensates stuck sagas
-- All 4 services have PGRepository, REST API endpoints, real consumer handlers
-- Saga runtime: consumer + outbox + repository + state machine + compensation + TTL watchdog
-- Outbox poller + KafkaPublisher + KafkaDLQ + Prometheus metrics
-- Consumer base: franz-go, idempotent handler, DLQ
-- Docker-compose stack + Helm charts + Kustomize overlays + ArgoCD manifests
-- testcontainers-go harness + E2E tests + k6 load test + `make e2e`
-- 4 ADRs + 5 C4 diagrams + demo script
-- Binaries report real version (LDFLAGS injection)
+- W3C tracecontext through Kafka (kafkaprop + outbox + consumer + chi middleware)
+- Helm charts for all 4 services + 3 infra deps
+- Kustomize overlays (dev/staging/prod) with HPA + PDB for prod
+- ArgoCD ApplicationSet for GitOps delivery
+- testcontainers harness + E2E tests (happy + compensation + chaos) + k6 load test
+- kind smoke test (`make smoke-k8s`) + cluster config (`make kind-up/down/load`)
+- CI: build matrix + E2E job (ubuntu-only, `needs: build`)
+- 4 ADRs + 5 C4 diagrams + demo script + asciinema recording runbook
+- Binaries report real git version (LDFLAGS injection)
 
-### ⬜ Deferred to v1.0
-- kind smoke test (requires `kind` binary)
-- asciinema recording (manual)
+### Quickstart
+```bash
+# Local happy-path demo (requires docker + 8GB RAM)
+bash docs/demo/demo.sh
+
+# E2E test suite (requires docker)
+make e2e
+
+# Build all 4 binaries with version injection
+make build
+
+# k8s smoke (requires kind + docker)
+make smoke-k8s
+
+# Demo recording (requires asciinema)
+make record
+```
+
+### ⬜ Deferred to v1.1
 - Full outbox-retry chaos assertion (services cache `KAFKA_BROKER`)
+- kind smoke: actual image loading into cluster (currently validates Helm rendering only)
+- ghcr.io publishing pipeline
 
 ## Architecture
 

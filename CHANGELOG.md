@@ -34,6 +34,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-17
+
+### Added — v1.0 release
+
+- **kind smoke test** (`v1.0.kind`): New `tests/k8s/smoke_test.go` creates a real kind cluster using `deploy/kind/kind.yaml`, waits for nodes ready, validates that all 4 service Helm charts + the infra postgres chart render to valid YAML. Skippable via `KIND_SKIP=1` or `-short`. New `make smoke-k8s` target. CI will run it.
+- **Asciinema recording** (`v1.0.demo`): `docs/demo/record.sh` + `docs/demo/RECORDING.md` document how to capture the demo as an asciinema `.cast` file. New `make record` target. Manual step (requires asciinema binary install — not automated in CI).
+
+### Platform status at v1.0
+
+- ✅ All 4 services (`order`, `payment`, `inventory`, `saga`) compile + run with PGRepository + REST API + real consumer handlers.
+- ✅ End-to-end event flow: `POST /v1/orders` → OrderCreated → saga → StockReserveRequested → inventory reserves → StockReserved → saga → PaymentRequested → payment → PaymentCompleted → saga → OrderConfirmed → order=confirmed.
+- ✅ Saga recovery: cross-restart TTL sweep compensates stuck sagas.
+- ✅ W3C tracecontext through Kafka (kafkaprop module + outbox + consumer + chi middleware + service.version resource).
+- ✅ Helm charts for all 4 services + 3 infra deps.
+- ✅ Kustomize overlays (dev/staging/prod) with HPA + PDB for prod.
+- ✅ ArgoCD ApplicationSet for GitOps delivery.
+- ✅ testcontainers harness + E2E tests (happy + compensation + chaos) + k6 load test.
+- ✅ CI: build matrix + E2E job (ubuntu-only, `needs: build`).
+- ✅ 4 ADRs + 5 C4 diagrams + demo script + recording runbook.
+- ✅ Binaries report real git version (LDFLAGS injection).
+
+### Deferred to v1.1
+- Full outbox-retry chaos assertion (services cache `KAFKA_BROKER`).
+- kind smoke: actual image loading into cluster (currently validates Helm rendering only).
+- ghcr.io publishing pipeline.
+
 ## [0.6.0] - 2026-08-17
 
 ### Added
