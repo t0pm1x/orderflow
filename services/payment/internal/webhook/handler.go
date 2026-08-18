@@ -139,6 +139,11 @@ func (h *Handler) Routes() http.Handler {
 
 func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	var req webhookRequest
+	// Cap the request body at 64 KiB. Webhook payloads are JSON
+	// with a handful of fields (payment_id, status, last_four,
+	// error_code); 64 KiB is generous and prevents OOM via
+	// giant-body DoS.
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apierrors.WriteError(w, apierrors.ErrInvalidPayload)
 		return
