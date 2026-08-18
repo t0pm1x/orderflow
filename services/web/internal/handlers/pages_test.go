@@ -308,15 +308,19 @@ func TestInventory_OK(t *testing.T) {
 	}
 	b := new(strings.Builder)
 	_, _ = io.Copy(b, resp.Body)
-	if !strings.Contains(b.String(), "SKU-001") {
-		t.Errorf("missing SKU-001: %s", b.String())
-	}
-	if !strings.Contains(b.String(), "99") {
-		t.Errorf("missing available qty 99: %s", b.String())
+	for _, want := range []string{"SKU-001", "SKU-002", "99", "50"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in body: %s", want, b.String())
+		}
 	}
 }
 
-func TestInventory_BackendError(t *testing.T) {
+// TestInventory_OrderBackendDown covers the order-side failure path:
+// when Order.List errors, the handler renders a backend-unavailable
+// banner and still returns 200 so the layout shell stays usable.
+// Per-SKU inventory errors are handled separately by
+// TestInventory_StockRowMissing (they degrade to Missing: true).
+func TestInventory_OrderBackendDown(t *testing.T) {
 	oc := &fakeOrderClient{listErr: fmt.Errorf("upstream 503")}
 	srv := httptest.NewServer(newTestSetWith(t, oc, &fakeInventoryClient{}))
 	defer srv.Close()
@@ -333,5 +337,48 @@ func TestInventory_BackendError(t *testing.T) {
 	low := strings.ToLower(b.String())
 	if !strings.Contains(low, "unavailable") && !strings.Contains(low, "backend") {
 		t.Errorf("expected backend notice: %s", b.String())
+	}
+}
+
+// TestInventory_StockRowMissing covers the per-SKU degradation path:
+// the order side returns a SKU the inventory service has no row for
+// (GetStock returns (nil, error)). The handler keeps the row in the
+// list with Missing: true and renders &mdash; for the numeric columns
+// rather than failing the whole page.
+func TestInventory_StockRowMissing(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-1", State: backend.OrderStatePending,
+				Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 2}}},
+			{ID: "ord-2", State: backend.OrderStateReserved,
+				Items: []backend.OrderItem{{SKU: "SKU-002", Quantity: 1}}},
+		}},
+	}
+	ic := &fakeInventoryClient{
+		stock: map[string]*backend.StockItem{
+			"SKU-001": {SKU: "SKU-001", Available: 99, Reserved: 1, Version: 3},
+		},
+	}
+	srv := httptest.NewServer(newTestSetWith(t, oc, ic))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/inventory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "SKU-001") {
+		t.Errorf("missing resolved SKU-001 row: %s", body)
+	}
+	if !strings.Contains(body, "SKU-002") {
+		t.Errorf("missing row SKU-002 should still appear: %s", body)
+	}
+	if !strings.Contains(body, "&mdash;") {
+		t.Errorf("expected &mdash; rendering for missing row: %s", body)
 	}
 }
