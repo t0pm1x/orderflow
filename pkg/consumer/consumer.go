@@ -191,6 +191,14 @@ func (c *Consumer) Stop() {
 
 // dispatch decodes the record and invokes the registered handler.
 // Retry + DLQ semantics live here.
+//
+// Panics from the handler are recovered and treated as a regular
+// retryable error. Without this guard, a single panic kills the
+// consumer goroutine silently — events pile up in Kafka retention
+// until Kubernetes notices the liveness probe fails and reschedules
+// the pod. With the recover, the panic is counted as a failed
+// attempt (up to MaxAttempts) and ultimately DLQ'd like any other
+// failure.
 func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	var env events.Envelope
 	if err := json.Unmarshal(rec.Value, &env); err != nil {
@@ -198,8 +206,29 @@ func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 		return
 	}
 
+	// Open the trace span BEFORE the recover defer so a panic
+	// inside the handler chain still cleans up the span. The
+	// recover catches panics from the handler dispatch path
+	// (registry lookup, deduper, markRecord, retry loop).
 	ctx, span := kafkaprop.SpanFromEnvelope(ctx, env.TraceID, env.SpanID, "consumer."+env.EventType)
-	defer span.End()
+	defer func() {
+		span.End()
+		// Recover from any panic in the handler chain. Without
+		// this guard, a single panic kills the consumer goroutine
+		// silently and events pile up in Kafka retention until
+		// Kubernetes notices the failed liveness probe. Here we
+		// log and mark the record for commit so we don't loop on
+		// a programming bug (retries won't fix a panic).
+		if r := recover(); r != nil {
+			slog.Default().Error("consumer: handler panic",
+				"event_id", env.EventID,
+				"event_type", env.EventType,
+				"panic", fmt.Sprintf("%v", r),
+				"offset", rec.Offset,
+				"partition", rec.Partition)
+			c.markRecord(rec)
+		}
+	}()
 	span.SetAttributes(
 		attribute.String("messaging.system", "kafka"),
 		attribute.String("messaging.destination", env.EventType),

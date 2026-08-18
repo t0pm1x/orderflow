@@ -132,6 +132,30 @@ func TestDispatch_MarksRecordForCommit_AfterRetryThenSuccess(t *testing.T) {
 	}
 }
 
+// TestDispatch_RecoversHandlerPanic: a handler that panics must
+// not kill the consumer goroutine — the dispatch recovers, logs,
+// and marks the record for commit. Without the recover, the
+// panic would propagate out of dispatch into the Run loop and
+// (depending on Go runtime behavior) kill the goroutine.
+func TestDispatch_RecoversHandlerPanic(t *testing.T) {
+	fc := &fakeClient{}
+	c := &Consumer{
+		client: fc,
+		registry: HandlerRegistry{
+			"OrderCreated": func(_ context.Context, _ *events.Envelope) error {
+				panic("handler bug")
+			},
+		},
+		maxAttempts:  1,
+		retryBackoff: time.Millisecond,
+	}
+	// Should NOT panic out of dispatch.
+	c.dispatch(context.Background(), orderCreatedRecord())
+	if len(fc.marked) != 1 {
+		t.Errorf("panic'd record must be marked for commit; got %d marks", len(fc.marked))
+	}
+}
+
 // TestInMemoryDeduper_SeenAndMark: dedup behavior contract.
 func TestInMemoryDeduper_SeenAndMark(t *testing.T) {
 	d := NewInMemoryDeduper()
