@@ -112,6 +112,12 @@ func (t *TTLSweep) RunOnce(ctx context.Context) {
 // stranded. Marshal errors are returned (not panicked) so a
 // malformed payload aborts the tx cleanly instead of crashing the
 // whole saga service mid-tx.
+//
+// The UPDATE carries a state guard so a saga that was already
+// compensated by PaymentFailedHandler between the sweep's SELECT
+// and UPDATE is a no-op for state — and crucially, RowsAffected=0
+// skips the outbox emission so a race with the in-flight consumer
+// handler doesn't double-emit compensation events.
 func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 	cancelPayload, err := json.Marshal(sagaev.OrderCancelledPayload{
 		OrderID: s.OrderID,
@@ -123,11 +129,23 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 	}
 
 	return pgx.BeginFunc(ctx, t.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx,
+		ct, err := tx.Exec(ctx,
 			`UPDATE order_sagas
 			    SET state = 'compensated', updated_at = NOW()
-			  WHERE order_id = $1`, s.OrderID); err != nil {
+			  WHERE order_id = $1
+			    AND state NOT IN ('completed', 'compensated')`, s.OrderID)
+		if err != nil {
 			return err
+		}
+		if ct.RowsAffected() == 0 {
+			// Saga was already terminal by the time the sweep
+			// got here (either another sweep already compensated
+			// it, or PaymentFailedHandler just beat us to it).
+			// Skip the outbox emission to avoid duplicate
+			// compensation events downstream.
+			t.logger.Info("ttl sweep: saga already terminal, skipping emit",
+				"order_id", s.OrderID)
+			return nil
 		}
 		if err := appendReleaseEvents(ctx, tx, t.writer, s); err != nil {
 			return err
