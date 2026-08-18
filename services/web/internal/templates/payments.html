@@ -1,0 +1,37 @@
+{{define "paymentsSimBody"}}
+<section>
+  <h1>Payment webhook simulator</h1>
+  <p class="muted">Fire a webhook into the Payment Service for any in-flight order below. The payment_id is derived deterministically from the order_id so replays are idempotent.</p>
+  {{if .BackendDown}}<div class="error">Backend unavailable: {{.Error}}</div>{{end}}
+  {{if and (not .BackendDown) .InFlight}}
+  <table>
+    <thead><tr><th>Order</th><th>State</th><th>Fire succeeded</th><th>Fire failed</th></tr></thead>
+    <tbody>
+      {{range .InFlight}}
+      <tr>
+        <td class="mono">{{.ID}}</td>
+        <td><span class="badge {{.State}}">{{.State}}</span></td>
+        <td>
+          <form method="post" action="/payments/sim/fire" hx-post="/payments/sim/fire" hx-swap="none">
+            <input type="hidden" name="order_id" value="{{.ID}}">
+            <input type="hidden" name="status" value="succeeded">
+            <button type="submit">force &check;</button>
+          </form>
+        </td>
+        <td>
+          <form method="post" action="/payments/sim/fire" hx-post="/payments/sim/fire" hx-swap="none">
+            <input type="hidden" name="order_id" value="{{.ID}}">
+            <input type="hidden" name="status" value="failed">
+            <input type="hidden" name="error_code" value="card_declined">
+            <button type="submit" class="danger">force &cross;</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else if not .BackendDown}}
+  <p class="muted">No in-flight orders. Create one on <a href="/">Orders</a> first.</p>
+  {{end}}
+</section>
+{{end}}

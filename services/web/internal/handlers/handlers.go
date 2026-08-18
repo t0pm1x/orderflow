@@ -33,7 +33,7 @@ type Set struct {
 // by the orders-list page (Task 5).
 func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 	inventory backend.InventoryClient, bus *events.Bus) *Set {
-	t := template.Must(template.ParseFS(templates.FS, "layout.html", "orders_list.html", "order_new.html", "order_detail.html", "inventory.html"))
+	t := template.Must(template.ParseFS(templates.FS, "layout.html", "orders_list.html", "order_new.html", "order_detail.html", "inventory.html", "payments.html"))
 	return &Set{
 		Order:     order,
 		Payment:   payment,
@@ -53,8 +53,10 @@ func (s *Set) Routes(r chi.Router) {
 	r.Get("/orders/new", s.PageOrderNew)
 	r.Get("/orders/{id}", s.PageOrderDetail)
 	r.Get("/inventory", s.PageInventory)
+	r.Get("/payments/sim", s.PagePaymentsSim)
 	r.Post("/v1/orders", s.ActionOrderSubmit)
 	r.Post("/v1/orders/{id}", s.ActionOrderCancel)
+	r.Post("/payments/sim/fire", s.ActionPaymentsFire)
 }
 
 // ordersListVM is the view model for the GET / page.

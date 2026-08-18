@@ -23,6 +23,7 @@
       {{if eq .Body "ordersListBody"}}{{template "ordersListBody" .}}{{end}}
       {{if eq .Body "orderDetailBody"}}{{template "orderDetailBody" .}}{{end}}
       {{if eq .Body "inventoryBody"}}{{template "inventoryBody" .}}{{end}}
+      {{if eq .Body "paymentsSimBody"}}{{template "paymentsSimBody" .}}{{end}}
     </section>
     <aside class="sidebar" hx-ext="sse" sse-connect="/events/stream" sse-swap="event" hx-swap="afterend">
       <h3>Live events</h3>

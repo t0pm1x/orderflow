@@ -42,9 +42,12 @@ func (f *fakeOrderClient) Cancel(_ context.Context, _ string) error {
 
 func ptrInt64(v int64) *int64 { return &v }
 
-type fakePaymentClient struct{}
+type fakePaymentClient struct{ lastWebhook *backend.PaymentWebhook }
 
-func (f *fakePaymentClient) FireWebhook(_ context.Context, _ backend.PaymentWebhook) error { return nil }
+func (f *fakePaymentClient) FireWebhook(_ context.Context, w backend.PaymentWebhook) error {
+	f.lastWebhook = &w
+	return nil
+}
 
 type fakeInventoryClient struct {
 	stock map[string]*backend.StockItem
@@ -380,5 +383,82 @@ func TestInventory_StockRowMissing(t *testing.T) {
 	}
 	if !strings.Contains(body, "&mdash;") {
 		t.Errorf("expected &mdash; rendering for missing row: %s", body)
+	}
+}
+
+// TestPaymentsSim_OK covers GET /payments/sim: when the order backend
+// returns a reserved order, the page renders the order id and the
+// force-success / force-fail buttons. The page only lists orders in
+// in-flight states (pending or reserved), so a reserved order must
+// appear. The button label and id both come from the rendered HTML.
+func TestPaymentsSim_OK(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "o-1", State: backend.OrderStateReserved,
+				Items: []backend.OrderItem{{SKU: "X", Quantity: 1}}},
+		}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/payments/sim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "o-1") {
+		t.Errorf("missing order id: %s", body)
+	}
+	if !strings.Contains(body, "force") {
+		t.Errorf("missing force buttons: %s", body)
+	}
+	if !strings.Contains(body, "/payments/sim/fire") {
+		t.Errorf("missing fire action URL: %s", body)
+	}
+}
+
+// TestPaymentsFire_OK covers POST /payments/sim/fire: builds a
+// PaymentWebhook from the form (order_id + status + error_code) and
+// proxies it to PaymentClient.FireWebhook. The handler must echo
+// HX-Redirect to /payments/sim so htmx reloads the page, and the
+// payment_id must be deterministic on order_id so the mock's replay
+// guard accepts repeat fires for the same order.
+func TestPaymentsFire_OK(t *testing.T) {
+	pc := &fakePaymentClient{}
+	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
+	r := chi.NewRouter()
+	set.Routes(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	form := strings.NewReader("order_id=o-1&status=failed&error_code=card_declined")
+	req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("HX-Redirect"); got != "/payments/sim" {
+		t.Errorf("HX-Redirect: got %q want /payments/sim", got)
+	}
+	if pc.lastWebhook == nil {
+		t.Fatal("webhook not fired")
+	}
+	if pc.lastWebhook.Status != "failed" {
+		t.Errorf("Status: got %q want failed", pc.lastWebhook.Status)
+	}
+	if pc.lastWebhook.ErrorCode != "card_declined" {
+		t.Errorf("ErrorCode: got %q want card_declined", pc.lastWebhook.ErrorCode)
+	}
+	if pc.lastWebhook.PaymentID != "o-1" {
+		t.Errorf("PaymentID determinism: got %q want o-1", pc.lastWebhook.PaymentID)
 	}
 }

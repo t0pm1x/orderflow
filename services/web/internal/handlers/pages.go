@@ -166,3 +166,67 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
+
+type paymentsSimVM struct {
+	Body        string
+	InFlight    []backend.Order
+	BackendDown bool
+	Error       string
+}
+
+// PagePaymentsSim serves GET /payments/sim. Lists in-flight orders
+// (state=pending + state=reserved) so the operator can fire a webhook
+// for any of them. Both lists are queried independently so a partial
+// failure (one state errors out) still surfaces the other state.
+// BackendDown is only set when both queries fail.
+func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
+	pending, _ := s.Order.List(r.Context(), backend.OrderStatePending, 50)
+	reserved, _ := s.Order.List(r.Context(), backend.OrderStateReserved, 50)
+	vm := paymentsSimVM{Body: "paymentsSimBody"}
+	if pending == nil && reserved == nil {
+		vm.BackendDown = true
+		vm.Error = "Order service unavailable"
+	}
+	if pending != nil {
+		vm.InFlight = append(vm.InFlight, pending.Items...)
+	}
+	if reserved != nil {
+		vm.InFlight = append(vm.InFlight, reserved.Items...)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// ActionPaymentsFire serves POST /payments/sim/fire. Builds a
+// PaymentWebhook from form fields (order_id, status, error_code) and
+// proxies to PaymentClient.FireWebhook. The payment_id is set to
+// order_id so the payment mock's replay guard accepts repeat fires
+// for the same order. Responds with HX-Redirect to /payments/sim so
+// htmx reloads the page after the mutation. Backend failures surface
+// as 502 with the error body.
+func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	orderID := r.FormValue("order_id")
+	status := r.FormValue("status")
+	errorCode := r.FormValue("error_code")
+	if orderID == "" || (status != "succeeded" && status != "failed") {
+		http.Error(w, "order_id and status required", http.StatusBadRequest)
+		return
+	}
+	wh := backend.PaymentWebhook{
+		PaymentID: orderID, // deterministic on order_id (idempotent in mock)
+		Status:    status,
+		ErrorCode: errorCode,
+	}
+	if err := s.Payment.FireWebhook(r.Context(), wh); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("HX-Redirect", "/payments/sim")
+	w.WriteHeader(http.StatusOK)
+}
