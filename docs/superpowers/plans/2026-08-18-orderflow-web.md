@@ -120,6 +120,49 @@ go mod tidy
 
 (If `go get ./...` for the orderflow packages fails locally because the module cache isn't populated, run `go work sync` from the repo root first, then re-run from `services/web`.)
 
+- [ ] **Step 1.1a: Create the `events` package stub**
+
+`handlers.Set` (Task 5) needs `events.NewBus()` to exist before Task 10 implements the real fan-out. Create a minimal stub now — Task 10 replaces it with the full implementation.
+
+Create `services/web/internal/events/bus.go`:
+
+```go
+// Package events hosts an in-process publish/subscribe bus used by
+// the SSE endpoint to relay Kafka events to connected browsers.
+// Task 10 replaces this stub with the full implementation.
+package events
+
+// BusEvent is the value type passed through the bus. The Envelope
+// field is `any` in the stub; Task 10 narrows it to
+// pkg/platform/events.Envelope.
+type BusEvent struct {
+	Envelope any
+}
+
+// Bus is a fan-out broadcast hub. This stub lets handlers compile
+// before Task 10 lands. Replace with full Subscribe/Publish/Close.
+type Bus struct{}
+
+// NewBus returns a fresh stub bus.
+func NewBus() *Bus { return &Bus{} }
+```
+
+Create `services/web/internal/events/bus_test.go` with a single smoke test:
+
+```go
+package events_test
+
+import "testing"
+import "github.com/t0pm1x/orderflow/services/web/internal/events"
+
+func TestBus_StubConstruct(t *testing.T) {
+	b := events.NewBus()
+	if b == nil { t.Fatal("nil bus") }
+}
+```
+
+Run: `cd services/web && go test -short ./internal/events/...` — expect PASS.
+
 - [ ] **Step 1.2: Write `services/web/internal/web/main.go`**
 
 This is the Web Service binary entry point. It mirrors the order service's `Run` contract but currently has no background goroutines (Task 3 adds the HTTP server; Task 10 adds the Kafka tail). Reason about shutdown even though there's nothing to wait for yet — `Run` returns `nil` on clean `<-ctx.Done()` exit.
@@ -1525,11 +1568,16 @@ Expected: PASS (2 tests).
 
 - [ ] **Step 5.6: Wire the handler into the server**
 
-In `services/web/internal/server/server.go`, replace the placeholder `/` route (Step 4.6) with `r.Get("/", handlers.Set{...}.PageOrdersList)`. Concretely: introduce a `Handlers *handlers.Set` field on `Options`; in `New`, pass through; in `Start`, call `s.opt.Handlers.Routes(r)`.
+In `services/web/internal/server/server.go`, replace the placeholder `/` route (added in Task 4 Step 4.6) with `r.Get("/", handlers.Set{...}.PageOrdersList)`. **KEEP the `/static/*` route** — it serves embedded CSS at every later task, not just Task 4. Concretely:
 
-(Modify `Options`, `New` callers, and add a new import `"github.com/t0pm1x/orderflow/services/web/internal/handlers"`.)
+1. Replace the `RegisterRoutes Routes` field on `Options` with `Handlers *handlers.Set` (the closure-based RegisterRoutes is no longer needed).
+2. In `Start`, replace the `if s.opt.RegisterRoutes != nil { s.opt.RegisterRoutes(r) }` block with `if s.opt.Handlers != nil { s.opt.Handlers.Routes(r) }`.
+3. The `/static/*` route stays where it was added in Step 4.6 (it serves `styles.css` from the embedded `static.FS`).
+4. Remove only the placeholder `/` route (the inline `r.Get("/", ...)` that returned the literal `<h1>Loading…</h1>` HTML).
 
-Update `services/web/internal/web/main.go` to construct the `*handlers.Set` and pass it through `server.Options.Handlers`. Use `backend.New(nil, orderURL, paymentURL, inventoryURL)` for the HTTP client and `events.NewBus()`.
+Add a new import `"github.com/t0pm1x/orderflow/services/web/internal/handlers"`.
+
+Update `services/web/internal/web/main.go` to construct the `*handlers.Set` and pass it through `server.Options.Handlers`. Use `backend.New(nil, orderURL, paymentURL, inventoryURL)` for the HTTP client and `events.NewBus()` for the bus.
 
 - [ ] **Step 5.7: Smoke test**
 
@@ -1777,7 +1825,7 @@ func atoi(s string) int {
 }
 ```
 
-(Add `"strconv"` and `"github.com/google/uuid"` to imports IF `customer_id` should be auto-generated. Skip auto-gen for v1; users paste their own UUID or leave blank. The above does NOT auto-generate — matches the test `TestOrderSubmit_OK_RedirectsViaHTMX` which passes only `sku` and `quantity`.)
+(Add `"strconv"` to imports. **Do not** import `github.com/google/uuid` in this task — `customer_id` is passed through verbatim (or left blank) and the unit test only posts `sku` and `quantity`. Auto-generating UUIDs is explicit non-goal for v1.)
 
 - [ ] **Step 6.6: Run tests — expect PASS**
 
