@@ -1,6 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- ensure GNU make is on PATH (Windows without WSL) ---
+# Git Bash doesn't see /c/Program Files (x86)/GnuWin32/bin unless we
+# add it explicitly. If `make` isn't available, fall back to direct
+# `go build` calls so the script still works on Windows boxes where
+# GnuWin32-make isn't installed.
+if ! command -v make >/dev/null 2>&1; then
+  if [[ -x "/c/Program Files (x86)/GnuWin32/bin/make.exe" ]]; then
+    export PATH="/c/Program Files (x86)/GnuWin32/bin:${PATH}"
+  fi
+fi
+make_or_gobuild() {
+  if command -v make >/dev/null 2>&1; then
+    make build
+  else
+    echo "(make not found; falling back to direct go build)"
+    go build -ldflags="-s -w -X main.Version=v1.x-demo" -o bin/order    ./cmd/order    || true
+    go build -ldflags="-s -w -X main.Version=v1.x-demo" -o bin/payment  ./cmd/payment  || true
+    go build -ldflags="-s -w -X main.Version=v1.x-demo" -o bin/inventory ./cmd/inventory || true
+    go build -ldflags="-s -w -X main.Version=v1.x-demo" -o bin/saga      ./cmd/saga     || true
+    go build -ldflags="-s -w -X github.com/t0pm1x/orderflow/services/web/internal/web.Version=v1.x-demo" -o bin/web ./cmd/web || true
+  fi
+}
+
 # --- config ---
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="${ROOT}/deploy/docker-compose.yml"
@@ -40,7 +63,7 @@ sleep 30
 # --- build binaries ---
 echo "==> building service binaries"
 cd "${ROOT}"
-make build
+make_or_gobuild
 
 # --- start services ---
 echo "==> starting order, payment, inventory, saga in background"
