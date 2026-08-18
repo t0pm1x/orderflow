@@ -4,8 +4,8 @@
 
 ## Sub-stages
 
-| Stage | Title                      | Status   | Commit    |
-|-------|----------------------------|----------|-----------|
+| Stage | Title                      | Status   | Commit    | Plan ref |
+|-------|----------------------------|----------|-----------|----------|
 | 3.0   | Bootstrap monorepo         | done     | 9c0b11e   |
 | 3.0.b | pkg/platform initial module | done    | 28aca48   |
 | 3.1.a-c | C4 architecture diagrams  | done     | 2cfc06a   |
@@ -96,6 +96,7 @@
 | v1.0.kind | kind smoke test (cluster create + Helm template validation) | done | 5ce2be7 |
 | v1.0.demo | asciinema recording script + runbook | done | 19d5ec0 |
 | v1.0 | final CHANGELOG/README/tag | done | — |
+| v1.1.pre | Saga shutdown goroutine leak + `mustMarshal` panic fix | done | c8a396898d639defb4738793fedb1aaff0255b41 | this plan |
 
 ## Deferred to v1.1
 

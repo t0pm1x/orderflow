@@ -1,0 +1,40 @@
+@startuml social-preview
+skinparam backgroundColor #0D1117
+skinparam dpi 245
+skinparam DefaultFontName "Segoe UI"
+skinparam DefaultFontSize 12
+skinparam DefaultFontColor #E6EDF3
+skinparam RectangleFontColor #E6EDF3
+skinparam ArrowFontSize 11
+skinparam nodesep 25
+skinparam ranksep 30
+skinparam Padding 2
+skinparam RectanglePadding 8
+skinparam BoxPadding 2
+
+left to right direction
+
+title
+<size:32><b>orderflow</b></size>
+<size:13>Event-driven order processing with saga + outbox patterns
+end title
+
+rectangle "<size:16><b>order</b></size>\n<size:10>REST API\nstate machine" as ORDER #58A6FF
+rectangle "<size:16><b>payment</b></size>\n<size:10>Mock provider\nidempotency" as PAYMENT #A371F7
+rectangle "<size:16><b>inventory</b></size>\n<size:10>Optimistic\nlocking" as INVENTORY #3FB950
+rectangle "<size:16><b>saga</b></size>\n<size:10>State machine\nTTL watchdog" as SAGA #F78166
+
+ORDER -[#58A6FF,thickness=2]-> SAGA : emits
+SAGA -[#F78166,thickness=2]-> PAYMENT : requests
+SAGA -[#F78166,thickness=2]-> INVENTORY : reserves
+
+footer
+<size:11>4 Go microservices | Kafka | Postgres | OpenTelemetry | Kubernetes
+<size:10>github.com/t0pm1x/orderflow
+end footer
+
+right header
+<size:12>v1.1.pre
+end header
+
+@enduml
