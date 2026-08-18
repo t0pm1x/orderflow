@@ -312,6 +312,7 @@ func TestPGRepo_UpdateStateTx_RollbackUndoesUpdate(t *testing.T) {
 		t.Errorf("after rollback: state must remain initiated; got %q", got.State)
 	}
 }
+
 // TTL sweep contract: ListExpired must return only sagas whose
 // expires_at is in the past AND whose state is neither "completed"
 // nor "compensated". Sagas that expired but are already terminal
