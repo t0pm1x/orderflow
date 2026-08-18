@@ -101,7 +101,11 @@ func (r *PGRepo) Get(ctx context.Context, id types.OrderID) (*domain.Order, erro
 // ordered by created_at DESC. A non-positive or excessive limit
 // is clamped to 50 to keep the call cheap.
 func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) ([]*domain.Order, error) {
-	if limit <= 0 || limit > 200 {
+	// Clamp limit to match the handler's allowed range (1..500).
+	// Non-positive or excessive values fall back to the default 50.
+	// Keep both bounds in sync to avoid handler-side has_more
+	// drift on the response contract.
+	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
 	rows, err := r.pool.Query(ctx,

@@ -33,13 +33,16 @@ type State string
 // wire form written to order_sagas.state; the names below are the
 // transitions the handlers in services/saga/internal/consumer
 // drive. See transitionTable for the allowed (state, event) pairs.
+//
+// StatePaymentPending and StatePaymentComplete were reserved for
+// a future in-flight payment sub-state but the actual flow
+// (initiated → stock_reserved → completed) skips them — the saga
+// only emits PaymentRequested once and waits for the result.
 const (
-	StateInitiated       State = "initiated"
-	StateStockReserved   State = "stock_reserved"
-	StatePaymentPending  State = "payment_pending"
-	StatePaymentComplete State = "payment_completed"
-	StateCompleted       State = "completed"
-	StateCompensated     State = "compensated"
+	StateInitiated     State = "initiated"
+	StateStockReserved State = "stock_reserved"
+	StateCompleted     State = "completed"
+	StateCompensated   State = "compensated"
 )
 
 // IsTerminal reports whether the state is final (no further
@@ -57,7 +60,7 @@ var transitionTable = map[State]map[string]State{
 	},
 	StateStockReserved: {
 		"StockReleased":    StateInitiated, // back to start (rare)
-		"PaymentCompleted": StateCompleted, // happy path skipped payment_pending
+		"PaymentCompleted": StateCompleted, // happy path
 		"PaymentFailed":    StateCompensated,
 	},
 }
