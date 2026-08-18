@@ -68,6 +68,7 @@ services:
     image: redpandadata/redpanda:v24.2.7
     command:
       - redpanda
+      - start
       - --kafka-addr=PLAINTEXT://0.0.0.0:9092
       - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
       - --smp=1
