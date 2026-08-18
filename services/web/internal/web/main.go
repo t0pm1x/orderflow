@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/t0pm1x/orderflow/services/web/internal/backend"
+	"github.com/t0pm1x/orderflow/services/web/internal/events"
+	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
 	"github.com/t0pm1x/orderflow/services/web/internal/server"
 )
 
@@ -79,14 +82,17 @@ func Run(ctx context.Context) error {
 	paymentURL := envOrDefault("PAYMENT_URL", "http://localhost:8081")
 	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8082")
 
+	bus := events.NewBus()
+	bc := backend.New(nil, orderURL, paymentURL, inventoryURL)
+	hSet := handlers.NewSet(bc, bc, bc, bus)
+
 	srv := server.New(server.Options{
 		Name:         "web",
 		Logger:       logger,
 		OrderURL:     orderURL,
 		PaymentURL:   paymentURL,
 		InventoryURL: inventoryURL,
-		// RegisterRoutes wired in Task 5.
-		RegisterRoutes: nil,
+		Handlers:     hSet,
 	})
 	if err := srv.Start(ctx, httpAddr); err != nil {
 		return fmt.Errorf("server start: %w", err)

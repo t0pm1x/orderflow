@@ -15,13 +15,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
 	"github.com/t0pm1x/orderflow/services/web/internal/static"
 )
-
-// Routes is the route registration callable provided by
-// services/web/internal/handlers (Task 5+ wires this up).
-type Routes func(r chi.Router)
 
 // Options controls server behavior.
 type Options struct {
@@ -30,7 +27,7 @@ type Options struct {
 	OrderURL     string
 	PaymentURL   string
 	InventoryURL string
-	RegisterRoutes Routes
+	Handlers     *handlers.Set
 }
 
 // Server hosts the HTTP listener. One instance per process.
@@ -71,13 +68,9 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Placeholder: full route handlers live in internal/handlers and
-	// are mounted via RegisterRoutes (Task 5+). Until then, / renders
-	// a single placeholder page so the layout + CSS are testable.
-	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<!doctype html><meta charset=utf-8><title>web</title><link rel=stylesheet href=/static/styles.css><h1 class=muted>Loading… (handler not wired yet)</h1>`))
-	})
+	// Static assets (CSS, future images). Mounted before the handler
+	// set so the layout.html <link rel=stylesheet href=/static/styles.css>
+	// resolves on every page render.
 	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
 		p := strings.TrimPrefix(req.URL.Path, "/static/")
 		data, err := static.FS.ReadFile("styles.css")
@@ -93,8 +86,8 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		http.NotFound(w, req)
 	})
 
-	if s.opt.RegisterRoutes != nil {
-		s.opt.RegisterRoutes(r)
+	if s.opt.Handlers != nil {
+		s.opt.Handlers.Routes(r)
 	}
 
 	ln, err := net.Listen("tcp", addr)
