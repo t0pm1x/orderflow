@@ -141,7 +141,7 @@ services:
   # cmd/{order,payment,inventory}/Dockerfile and their own compose fragments.)
   web:
     build:
-      context: .
+      context: ..
       dockerfile: services/web/Dockerfile
     container_name: orderflow-web
     ports:
