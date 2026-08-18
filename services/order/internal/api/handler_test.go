@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,13 +29,13 @@ func newMockRepo() *mockRepo {
 	}
 }
 
-func (m *mockRepo) Insert(o *domain.Order, events ...outbox.Record) error {
+func (m *mockRepo) Insert(_ context.Context, o *domain.Order, events ...outbox.Record) error {
 	m.orders[o.ID] = o
 	m.events[o.ID] = append(m.events[o.ID], events...)
 	return nil
 }
 
-func (m *mockRepo) Get(id types.OrderID) (*domain.Order, error) {
+func (m *mockRepo) Get(_ context.Context, id types.OrderID) (*domain.Order, error) {
 	o, ok := m.orders[id]
 	if !ok {
 		return nil, errNotFound
@@ -42,7 +43,7 @@ func (m *mockRepo) Get(id types.OrderID) (*domain.Order, error) {
 	return o, nil
 }
 
-func (m *mockRepo) List(state domain.OrderState, _ int) ([]*domain.Order, error) {
+func (m *mockRepo) List(_ context.Context, state domain.OrderState, _ int) ([]*domain.Order, error) {
 	var out []*domain.Order
 	for _, o := range m.orders {
 		if state == "" || o.State == state {
@@ -143,7 +144,7 @@ func TestSubmit_EmitsOrderCreatedEvent(t *testing.T) {
 func TestGet_OK(t *testing.T) {
 	repo := newMockRepo()
 	o := domain.NewOrder(types.NewCustomerID(), []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 100}})
-	if err := repo.Insert(o); err != nil {
+	if err := repo.Insert(context.Background(), o); err != nil {
 		t.Fatalf("mockRepo.Insert: %v", err)
 	}
 

@@ -48,15 +48,13 @@ var _ api.Repository = (*PGRepo)(nil)
 
 // Insert writes the order row and every supplied outbox Record in
 // a single transaction. Either all rows commit or none do. The
-// api.Repository interface does not carry a context, so we use
-// context.Background() for the underlying pgx calls; the caller's
-// HTTP deadline is enforced by the chi middleware stack.
-func (r *PGRepo) Insert(o *domain.Order, events ...outbox.Record) error {
+// caller's context (typically the HTTP request) is honored by pgx
+// so a cancelled request aborts the write before commit.
+func (r *PGRepo) Insert(ctx context.Context, o *domain.Order, events ...outbox.Record) error {
 	itemsJSON, err := json.Marshal(o.Items)
 	if err != nil {
 		return fmt.Errorf("marshal items: %w", err)
 	}
-	ctx := context.Background()
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO orders (id, customer_id, items, state, total_cents, created_at, updated_at)
@@ -77,8 +75,8 @@ func (r *PGRepo) Insert(o *domain.Order, events ...outbox.Record) error {
 // Get loads a single order by id. Returns an error wrapping
 // pgx.ErrNoRows when the order does not exist; callers (the
 // handler) translate that into a 404.
-func (r *PGRepo) Get(id types.OrderID) (*domain.Order, error) {
-	row := r.pool.QueryRow(context.Background(),
+func (r *PGRepo) Get(ctx context.Context, id types.OrderID) (*domain.Order, error) {
+	row := r.pool.QueryRow(ctx,
 		`SELECT id, customer_id, items, state, total_cents
 		   FROM orders WHERE id = $1`, id)
 	var (
@@ -102,11 +100,11 @@ func (r *PGRepo) Get(id types.OrderID) (*domain.Order, error) {
 // List returns up to limit orders whose state matches the filter,
 // ordered by created_at DESC. A non-positive or excessive limit
 // is clamped to 50 to keep the call cheap.
-func (r *PGRepo) List(state domain.OrderState, limit int) ([]*domain.Order, error) {
+func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) ([]*domain.Order, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := r.pool.Query(context.Background(),
+	rows, err := r.pool.Query(ctx,
 		`SELECT id, customer_id, items, state, total_cents
 		   FROM orders
 		  WHERE state = $1

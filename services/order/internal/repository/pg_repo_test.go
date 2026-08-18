@@ -154,11 +154,11 @@ func TestPGRepo_InsertGetRoundTrip(t *testing.T) {
 		State:      domain.StatePending,
 		TotalCents: types.NewMoneyFromCents(2*250 + 999),
 	}
-	if err := repo.Insert(o); err != nil {
+	if err := repo.Insert(context.Background(), o); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 
-	got, err := repo.Get(orderID)
+	got, err := repo.Get(context.Background(), orderID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestPGRepo_InsertWithOutboxEvent(t *testing.T) {
 		Topic:         "order-events",
 		Payload:       []byte(`{"order_id":"` + orderID.String() + `"}`),
 	}
-	if err := repo.Insert(o, rec); err != nil {
+	if err := repo.Insert(context.Background(), o, rec); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 
@@ -258,14 +258,14 @@ func TestPGRepo_ListFiltersByState(t *testing.T) {
 		State:      domain.StateConfirmed,
 		TotalCents: types.NewMoneyFromCents(20),
 	}
-	if err := repo.Insert(pending); err != nil {
+	if err := repo.Insert(context.Background(), pending); err != nil {
 		t.Fatalf("Insert pending: %v", err)
 	}
-	if err := repo.Insert(confirmed); err != nil {
+	if err := repo.Insert(context.Background(), confirmed); err != nil {
 		t.Fatalf("Insert confirmed: %v", err)
 	}
 
-	got, err := repo.List(domain.StatePending, 50)
+	got, err := repo.List(context.Background(), domain.StatePending, 50)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

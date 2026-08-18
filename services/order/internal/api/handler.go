@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -38,10 +39,14 @@ type OrderCreatedPayload struct {
 //     (preserved for unit tests of the handler).
 //   - 3.4.d+ PGRepo:  tx-wraps INSERT INTO orders + Append on the
 //     outbox writer, commits atomically.
+//
+// All methods take a context so the HTTP request deadline reaches
+// the DB driver — without it, a client that cancels mid-write
+// would still see the order appear in the database.
 type Repository interface {
-	Insert(o *domain.Order, events ...outbox.Record) error
-	Get(id types.OrderID) (*domain.Order, error)
-	List(state domain.OrderState, limit int) ([]*domain.Order, error)
+	Insert(ctx context.Context, o *domain.Order, events ...outbox.Record) error
+	Get(ctx context.Context, id types.OrderID) (*domain.Order, error)
+	List(ctx context.Context, state domain.OrderState, limit int) ([]*domain.Order, error)
 }
 
 // Handler serves the Order Service REST routes. It validates input,
@@ -99,7 +104,7 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.repo.Insert(o, rec); err != nil {
+	if err := h.repo.Insert(r.Context(), o, rec); err != nil {
 		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "INSERT_FAILED", err.Error(), err))
 		return
 	}
@@ -117,7 +122,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	o, err := h.repo.Get(id)
+	o, err := h.repo.Get(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, errNotFound) {
 			apierrors.WriteError(w, apierrors.ErrNotFound)
@@ -138,7 +143,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	items, err := h.repo.List(state, limit)
+	items, err := h.repo.List(r.Context(), state, limit)
 	if err != nil {
 		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "LIST_FAILED", err.Error(), err))
 		return
