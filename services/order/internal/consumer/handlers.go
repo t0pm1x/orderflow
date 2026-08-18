@@ -113,16 +113,17 @@ func (h *Handler) updateState(ctx context.Context, orderID string, state domain.
 	if h.pool == nil {
 		return errors.New("order consumer handler: pool not initialized")
 	}
-	// Guard terminal states. A redelivered OrderConfirmed after
-	// the order was already cancelled must NOT flip it back —
-	// otherwise a slow retry would silently undo the compensation.
-	// The WHERE clause is additive to the index on (id) so the
-	// planner cost is unchanged.
+	// Guard all terminal states (confirmed, cancelled, AND
+	// failed). The P1-#2 audit finding was that the pre-v1.1.1
+	// SQL excluded only 'confirmed' and 'cancelled', letting a
+	// late 'OrderConfirmed' for a 'failed' order resurrect the
+	// order. StateFailed is reachable via the saga TTL sweep,
+	// so it must be protected too.
 	if _, err := h.pool.Exec(ctx,
 		`UPDATE orders
 		    SET state = $1, updated_at = NOW()
 		  WHERE id = $2
-		    AND state NOT IN ('confirmed', 'cancelled')`,
+		    AND state NOT IN ('confirmed', 'cancelled', 'failed')`,
 		string(state), orderID,
 	); err != nil {
 		h.logger.Error("update order state failed", "order_id", orderID, "state", state, "err", err)
