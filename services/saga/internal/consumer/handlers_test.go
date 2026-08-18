@@ -60,7 +60,7 @@ func TestRegistry_NoUnexpectedEventTypes(t *testing.T) {
 // returns no-op close + nil. Matches services/order pattern.
 func TestStart_DisabledWhenNoEnv(t *testing.T) {
 	ctx := context.Background()
-	stop, err := Start(ctx, slog.Default(), "", "", nil, nil)
+	stop, err := Start(ctx, slog.Default(), "", "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestStart_DisabledWhenNoEnv(t *testing.T) {
 // pool must short-circuit to no-op (no consumer dialed, no panic).
 func TestStart_DisabledWhenPoolNil(t *testing.T) {
 	ctx := context.Background()
-	stop, err := Start(ctx, slog.Default(), "broker:9092", "saga-group", nil, nil)
+	stop, err := Start(ctx, slog.Default(), "broker:9092", "saga-group", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

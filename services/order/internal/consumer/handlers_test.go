@@ -58,7 +58,7 @@ func TestRegistry_HandlersReturnErrorOnNilPool(t *testing.T) {
 // returns no-op close + nil.
 func TestStart_DisabledWhenNoEnv(t *testing.T) {
 	ctx := context.Background()
-	closer, err := Start(ctx, slog.Default(), "", "", nil, nil)
+	closer, err := Start(ctx, slog.Default(), "", "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -38,13 +39,17 @@ const Topic = "order-events"
 // returns a no-op shutdown and a nil error -- the same disabled
 // pattern services/{order,payment,inventory}/internal/consumer use.
 // deduper may be nil — pkgconsumer.New substitutes a NoopDeduper.
-func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, pool *pgxpool.Pool, deduper pkgconsumer.Deduper) (func(context.Context) error, error) {
+// wg tracks the consumer goroutine for graceful shutdown.
+func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, pool *pgxpool.Pool, deduper pkgconsumer.Deduper, wg *sync.WaitGroup) (func(context.Context) error, error) {
 	if kafkaBroker == "" || groupID == "" || pool == nil {
 		logger.Info("saga consumer disabled: KAFKA_BROKER, GROUP_ID, or pool not set")
 		return func(context.Context) error { return nil }, nil
 	}
 	if deduper == nil {
 		deduper = pkgconsumer.NoopDeduper{}
+	}
+	if wg == nil {
+		wg = &sync.WaitGroup{}
 	}
 
 	h := NewHandler(pool, logger)
@@ -63,11 +68,19 @@ func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string
 		return nil, fmt.Errorf("saga consumer: %w", err)
 	}
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := c.Run(ctx); err != nil {
 			logger.Error("saga consumer exited", "err", err)
 		}
 	}()
 
-	return func(context.Context) error { c.Stop(); return nil }, nil
+	return func(_ context.Context) error {
+		c.Stop()
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		<-done
+		return nil
+	}, nil
 }

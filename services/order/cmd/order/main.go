@@ -101,7 +101,7 @@ func Run(ctx context.Context) error {
 		logger.Warn("order deduper disabled: bad REDIS_URL", "err", derr)
 		deduper = pkgconsumer.NoopDeduper{}
 	}
-	consumerClose, err := svcconsumer.Start(ctx, logger, broker, groupID, consumerHandler, deduper)
+	consumerClose, err := svcconsumer.Start(ctx, logger, broker, groupID, consumerHandler, deduper, nil)
 	if err != nil {
 		return fmt.Errorf("consumer start: %w", err)
 	}

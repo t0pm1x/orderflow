@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	pkgconsumer "github.com/t0pm1x/orderflow/consumer"
 )
@@ -12,13 +13,17 @@ import (
 // Start wires the Payment Service consumer. Consumes from the
 // order-events topic (PaymentRequested is published by the saga).
 // deduper may be nil — pkgconsumer.New substitutes a NoopDeduper.
-func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, deduper pkgconsumer.Deduper) (func(context.Context) error, error) {
+// wg tracks the consumer goroutine for graceful shutdown.
+func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, deduper pkgconsumer.Deduper, wg *sync.WaitGroup) (func(context.Context) error, error) {
 	if kafkaBroker == "" || groupID == "" {
 		logger.Info("payment consumer disabled: KAFKA_BROKER or GROUP_ID not set")
 		return func(context.Context) error { return nil }, nil
 	}
 	if deduper == nil {
 		deduper = pkgconsumer.NoopDeduper{}
+	}
+	if wg == nil {
+		wg = &sync.WaitGroup{}
 	}
 
 	c, err := pkgconsumer.New(pkgconsumer.Config{
@@ -31,11 +36,19 @@ func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string
 		return nil, fmt.Errorf("payment consumer: %w", err)
 	}
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := c.Run(ctx); err != nil {
 			logger.Error("payment consumer exited", "err", err)
 		}
 	}()
 
-	return func(context.Context) error { c.Stop(); return nil }, nil
+	return func(_ context.Context) error {
+		c.Stop()
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		<-done
+		return nil
+	}, nil
 }
