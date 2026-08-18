@@ -1,0 +1,15 @@
+# Default owners for everything in this repo
+* @t0pm1x
+
+# Service modules — primary maintainer
+/services/order/      @t0pm1x
+/services/payment/    @t0pm1x
+/services/inventory/  @t0pm1x
+/services/saga/       @t0pm1x
+
+# Shared platform code
+/pkg/                 @t0pm1x
+
+# Documentation
+/docs/                @t0pm1x
+*.md                  @t0pm1x
