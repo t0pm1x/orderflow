@@ -16,6 +16,7 @@ import (
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 	"github.com/t0pm1x/orderflow/services/web/internal/events"
 	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
+	"github.com/t0pm1x/orderflow/services/web/internal/kafkatail"
 	"github.com/t0pm1x/orderflow/services/web/internal/server"
 )
 
@@ -83,8 +84,17 @@ func Run(ctx context.Context) error {
 	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8082")
 
 	bus := events.NewBus()
+	defer bus.Close()
 	bc := backend.New(nil, orderURL, paymentURL, inventoryURL)
 	hSet := handlers.NewSet(bc, bc, bc, bus)
+
+	stopTail, err := kafkatail.Start(ctx, logger, envOrDefault("KAFKA_BROKERS", ""), bus)
+	if err != nil {
+		return fmt.Errorf("kafka tail: %w", err)
+	}
+	if stopTail != nil {
+		defer stopTail()
+	}
 
 	srv := server.New(server.Options{
 		Name:         "web",

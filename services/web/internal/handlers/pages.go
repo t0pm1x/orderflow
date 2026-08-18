@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -229,4 +232,54 @@ func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("HX-Redirect", "/payments/sim")
 	w.WriteHeader(http.StatusOK)
+}
+
+// PageEventsStream serves GET /events/stream as Server-Sent Events.
+// It subscribes to s.Bus and emits one `event: <type>\ndata: <json>\n\n`
+// line per envelope. A 15s heartbeat keeps proxies from idling the
+// connection; ctx.Done() is honored for client disconnect.
+func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ch, unsub := s.Bus.Subscribe()
+	defer unsub()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	if _, err := fmt.Fprintf(w, ": connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			if _, err := fmt.Fprintf(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(ev.Envelope)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Envelope.EventType, data); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }

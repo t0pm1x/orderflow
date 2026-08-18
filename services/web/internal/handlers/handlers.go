@@ -54,6 +54,7 @@ func (s *Set) Routes(r chi.Router) {
 	r.Get("/orders/{id}", s.PageOrderDetail)
 	r.Get("/inventory", s.PageInventory)
 	r.Get("/payments/sim", s.PagePaymentsSim)
+	r.Get("/events/stream", s.PageEventsStream)
 	r.Post("/v1/orders", s.ActionOrderSubmit)
 	r.Post("/v1/orders/{id}", s.ActionOrderCancel)
 	r.Post("/payments/sim/fire", s.ActionPaymentsFire)
