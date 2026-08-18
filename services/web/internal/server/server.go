@@ -35,7 +35,6 @@ type Options struct {
 type Server struct {
 	opt  Options
 	srv  *http.Server
-	ln   net.Listener
 	addr atomic.Value // string
 }
 
@@ -78,7 +77,6 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	s.ln = ln
 	s.addr.Store(ln.Addr().String())
 
 	s.srv = &http.Server{
@@ -94,13 +92,21 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		}
 	}()
 
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		_ = s.srv.Shutdown(shutdownCtx)
 	}()
 
-	<-ctx.Done()
+	wgDone := make(chan struct{})
+	go func() { wg.Wait(); close(wgDone) }()
+
+	select {
+	case <-wgDone:
+	case <-shutdownCtx.Done():
+		return shutdownCtx.Err()
+	}
 	return nil
 }
