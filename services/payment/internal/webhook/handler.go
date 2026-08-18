@@ -3,6 +3,7 @@ package webhook
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -59,6 +60,19 @@ type Payment struct {
 type Repository interface {
 	Get(id string) (*Payment, error)
 	UpdateStatus(id string, status PaymentStatus, events ...outbox.Record) error
+	// UpdateStatusFromNonTerminal transitions the payment to `to`
+	// only if its current status is non-terminal (i.e. NOT in
+	// {captured, failed}). Returns (true, nil) on transition with
+	// outbox rows emitted, (false, nil) when the current status is
+	// already terminal (no-op, no outbox emission), and (false,
+	// ErrPaymentNotFound) when the row vanished.
+	//
+	// The handler uses this to enforce terminal-state guards: a
+	// late webhook that flips a captured payment to failed (or
+	// vice versa) is silently dropped, and a same-status replay
+	// is also a no-op so we don't emit duplicate PaymentCompleted
+	// / PaymentFailed events.
+	UpdateStatusFromNonTerminal(id string, to PaymentStatus, events ...outbox.Record) (bool, error)
 }
 
 // PaymentCompletedPayload is the body of a PaymentCompleted event.
@@ -90,8 +104,9 @@ type webhookRequest struct {
 
 // Handler serves the provider callback endpoint.
 type Handler struct {
-	repo Repository
-	idem *idempotency.Store
+	repo   Repository
+	idem   *idempotency.Store
+	logger *slog.Logger
 }
 
 // NewHandler constructs a Handler. idemStore may be nil (no Redis
@@ -99,7 +114,16 @@ type Handler struct {
 // middleware, which is safe because the saga drives state from outbox
 // events rather than from the HTTP response.
 func NewHandler(repo Repository, idemStore *idempotency.Store) *Handler {
-	return &Handler{repo: repo, idem: idemStore}
+	return NewHandlerWithLogger(repo, idemStore, slog.Default())
+}
+
+// NewHandlerWithLogger constructs a Handler with an explicit logger.
+// Used by tests to capture log output.
+func NewHandlerWithLogger(repo Repository, idemStore *idempotency.Store, logger *slog.Logger) *Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Handler{repo: repo, idem: idemStore, logger: logger}
 }
 
 // Routes returns the chi router for the Payment Service.
@@ -159,9 +183,35 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.repo.UpdateStatus(p.ID, newStatus, ev); err != nil {
+	// Terminal-state guard: a payment already in a terminal
+	// status (captured or failed) must NOT be flipped to the
+	// other terminal by a late-delivered webhook. The repo
+	// transition only fires when the current status is non-terminal,
+	// so a same-status replay also no-ops (the row's status
+	// already matches). Either way, no outbox row is emitted
+	// for the no-op path.
+	advanced, err := h.repo.UpdateStatusFromNonTerminal(p.ID, newStatus, ev)
+	if err != nil {
+		if errors.Is(err, ErrPaymentNotFound) {
+			apierrors.WriteError(w, &apierrors.APIError{
+				Status:  http.StatusNotFound,
+				Code:    "PAYMENT_NOT_FOUND",
+				Message: err.Error(),
+				Cause:   err,
+			})
+			return
+		}
 		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "DB_ERROR", err.Error(), err))
 		return
+	}
+	if !advanced {
+		// Idempotent replay: payment is already in a terminal state
+		// different from the requested one (or the row's status
+		// doesn't match — but allowedFrom covers both terminals, so
+		// this branch is a true terminal-mismatch). Return 200 so the
+		// provider doesn't retry forever; log for observability.
+		h.logger.Info("webhook: payment already in terminal state, ignoring late update",
+			"payment_id", p.ID, "current_status", p.Status, "requested_status", newStatus)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

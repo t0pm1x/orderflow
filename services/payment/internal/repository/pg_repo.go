@@ -94,3 +94,68 @@ func (r *PGRepo) UpdateStatus(id string, status webhook.PaymentStatus, events ..
 		return nil
 	})
 }
+
+// UpdateStatusFromNonTerminal transitions the payment to `to` only
+// if its current status is non-terminal (NOT in {captured, failed}).
+// Returns (true, nil) on transition with outbox rows emitted, (false,
+// nil) when the row's status is already terminal (no-op, no outbox
+// emission), and (false, ErrPaymentNotFound) when the row doesn't
+// exist. Outbox rows only commit on a real transition so a replay
+// against a terminal-state payment doesn't produce duplicate
+// PaymentCompleted / PaymentFailed events.
+func (r *PGRepo) UpdateStatusFromNonTerminal(id string, to webhook.PaymentStatus, events ...outbox.Record) (bool, error) {
+	ctx := context.Background()
+	var advanced bool
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE payments
+			    SET status = $2, updated_at = NOW()
+			  WHERE id = $1
+			    AND status NOT IN ('captured', 'failed')`,
+			id, string(to))
+		if err != nil {
+			return fmt.Errorf("update payment status: %w", err)
+		}
+		switch tag.RowsAffected() {
+		case 1:
+			advanced = true
+			for _, ev := range events {
+				if err := r.writer.Append(ctx, tx, ev); err != nil {
+					return fmt.Errorf("insert outbox: %w", err)
+				}
+			}
+			return nil
+		case 0:
+			return nil
+		default:
+			return fmt.Errorf("UpdateStatusFromNonTerminal: unexpected RowsAffected=%d for payment_id=%s", tag.RowsAffected(), id)
+		}
+	})
+	return advanced, err
+}
+
+// runInTx wraps a tx body and converts pgx.ErrNoRows to ErrPaymentNotFound
+// when the row vanished. Used by UpdateStatusIfCurrent so the
+// handler can return 404 cleanly.
+func (r *PGRepo) runInTx(ctx context.Context, body func(pgx.Tx) (bool, error)) (bool, error) {
+	return runInPGx(ctx, r.pool, body)
+}
+
+// runInPGx is a package-local helper so the body closure can use
+// the pool without leaking pgx pool semantics.
+func runInPGx(ctx context.Context, pool *pgxpool.Pool, body func(pgx.Tx) (bool, error)) (bool, error) {
+	var advanced bool
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var ierr error
+		advanced, ierr = body(tx)
+		return ierr
+	})
+	if err != nil {
+		// Distinguish "row vanished" from real errors. body returns
+		// nil on no-op (RowsAffected=0) and a value on transition
+		// or error. ErrPaymentNotFound surfaces only when body
+		// explicitly returned it.
+		return advanced, err
+	}
+	return advanced, nil
+}

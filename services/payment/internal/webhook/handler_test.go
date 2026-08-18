@@ -55,6 +55,31 @@ func (f *fakeRepo) UpdateStatus(id string, status PaymentStatus, events ...outbo
 	return nil
 }
 
+// UpdateStatusFromNonTerminal mirrors the production PGRepo
+// method: the payment transitions to `to` only if its current
+// status is non-terminal. Returns (true, nil) on transition with
+// outbox events captured, (false, nil) when the row's status is
+// already terminal. The handler relies on the false branch to
+// short-circuit late webhooks without emitting duplicate
+// PaymentCompleted / PaymentFailed events.
+func (f *fakeRepo) UpdateStatusFromNonTerminal(id string, to PaymentStatus, events ...outbox.Record) (bool, error) {
+	if f.updateErr != nil {
+		return false, f.updateErr
+	}
+	p, ok := f.payments[id]
+	if !ok {
+		return false, fmt.Errorf("payment %s: %w", id, ErrPaymentNotFound)
+	}
+	if p.Status == StatusCaptured || p.Status == StatusFailed {
+		// Already terminal — the same-status replay and the
+		// opposite-terminal flip both short-circuit here.
+		return false, nil
+	}
+	p.Status = to
+	f.events = append(f.events, events...)
+	return true, nil
+}
+
 const (
 	testPaymentID = "2e4f8a1c-5b7d-4e9a-8c2f-1a6b3e7d9c4f"
 	testOrderID   = "0fa1b8e2-7c14-4d39-9b1e-3f8c0a7b2d5e"
@@ -281,5 +306,82 @@ func TestRoutes_UnknownPath_404(t *testing.T) {
 	NewHandler(newFakeRepo(), nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status: got %d want 404", rec.Code)
+	}
+}
+
+// TestWebhook_TerminalGuard_LateFailedAfterCaptured is the
+// regression guard for P1-#1 from the v1.1.1 audit: a payment
+// already in StatusCaptured must NOT flip to StatusFailed on a
+// late-delivered webhook. Pre-fix, the handler unconditionally
+// UPDATEd status — letting providers' "failed" retries overwrite
+// a confirmed successful-c payment.
+func TestWebhook_TerminalGuard_LateFailedAfterCaptured(t *testing.T) {
+	repo := newFakeRepo(&Payment{
+		ID:          testPaymentID,
+		OrderID:     testOrderID,
+		AmountCents: 1000,
+		Status:      StatusCaptured,
+	})
+
+	rec := post(t, repo, fmt.Sprintf(`{"payment_id":%q,"status":"failed","error_code":"card_declined"}`, testPaymentID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+
+	if got := repo.payments[testPaymentID].Status; got != StatusCaptured {
+		t.Errorf("status: got %q want %q (terminal-state guard must reject opposite-terminal flip)", got, StatusCaptured)
+	}
+	if n := len(repo.events); n != 0 {
+		t.Errorf("outbox events: got %d want 0 (no PaymentFailed should be emitted)", n)
+	}
+}
+
+// TestWebhook_TerminalGuard_LateCapturedAfterFailed: symmetric
+// case — payment in StatusFailed, late webhook says succeeded.
+// Must NOT flip.
+func TestWebhook_TerminalGuard_LateCapturedAfterFailed(t *testing.T) {
+	repo := newFakeRepo(&Payment{
+		ID:          testPaymentID,
+		OrderID:     testOrderID,
+		AmountCents: 1000,
+		Status:      StatusFailed,
+	})
+
+	rec := post(t, repo, fmt.Sprintf(`{"payment_id":%q,"status":"succeeded"}`, testPaymentID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rec.Code)
+	}
+
+	if got := repo.payments[testPaymentID].Status; got != StatusFailed {
+		t.Errorf("status: got %q want %q (terminal-state guard must reject opposite-terminal flip)", got, StatusFailed)
+	}
+	if n := len(repo.events); n != 0 {
+		t.Errorf("outbox events: got %d want 0", n)
+	}
+}
+
+// TestWebhook_TerminalGuard_SameStatusReplay: same-status replay
+// must NOT emit a duplicate PaymentCompleted / PaymentFailed.
+// Idempotent no-op. Start with non-terminal status (simulates a
+// fresh payment that the consumer handler hasn't yet classified);
+// the first webhook transitions to captured and emits; the second
+// is a same-status replay and must not double-emit.
+func TestWebhook_TerminalGuard_SameStatusReplay(t *testing.T) {
+	repo := newFakeRepo(&Payment{
+		ID:          testPaymentID,
+		OrderID:     testOrderID,
+		AmountCents: 1000,
+		Status:      "",
+	})
+
+	// Two identical webhooks — the first transitions; the second
+	// is a no-op because the row is already terminal.
+	post(t, repo, fmt.Sprintf(`{"payment_id":%q,"status":"succeeded"}`, testPaymentID))
+	if n := len(repo.events); n != 1 {
+		t.Fatalf("after first: events = %d want 1", n)
+	}
+	post(t, repo, fmt.Sprintf(`{"payment_id":%q,"status":"succeeded"}`, testPaymentID))
+	if n := len(repo.events); n != 1 {
+		t.Errorf("after replay: events = %d want 1 (idempotent no-op must not double-emit)", n)
 	}
 }
