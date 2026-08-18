@@ -12,6 +12,8 @@ import (
 	"os/signal"
 	"sync/atomic"
 	"syscall"
+
+	"github.com/t0pm1x/orderflow/services/web/internal/server"
 )
 
 // Version is the binary version (overridden at build via -ldflags
@@ -72,8 +74,24 @@ func Run(ctx context.Context) error {
 		"inventory_url", redact(envOrDefault("INVENTORY_URL", "http://localhost:8082")),
 		"kafka_brokers", redact(envOrDefault("KAFKA_BROKERS", "")))
 
-	<-ctx.Done()
-	logger.Info("orderflow-web shutting down")
+	httpAddr := envOrDefault("HTTP_ADDR", ":8083")
+	orderURL := envOrDefault("ORDER_URL", "http://localhost:8080")
+	paymentURL := envOrDefault("PAYMENT_URL", "http://localhost:8081")
+	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8082")
+
+	srv := server.New(server.Options{
+		Name:         "web",
+		Logger:       logger,
+		OrderURL:     orderURL,
+		PaymentURL:   paymentURL,
+		InventoryURL: inventoryURL,
+		// RegisterRoutes wired in Task 5.
+		RegisterRoutes: nil,
+	})
+	if err := srv.Start(ctx, httpAddr); err != nil {
+		return fmt.Errorf("server start: %w", err)
+	}
+	boundAddr.Store(srv.Addr())
 	return nil
 }
 

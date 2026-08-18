@@ -1,0 +1,106 @@
+// Package server wires the orderflow-web HTTP server: chi router,
+// shared middleware, route registration, and graceful shutdown.
+package server
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	mw "github.com/t0pm1x/orderflow/platform/middleware"
+)
+
+// Routes is the route registration callable provided by
+// services/web/internal/handlers (Task 5+ wires this up).
+type Routes func(r chi.Router)
+
+// Options controls server behavior.
+type Options struct {
+	Name         string
+	Logger       *slog.Logger
+	OrderURL     string
+	PaymentURL   string
+	InventoryURL string
+	RegisterRoutes Routes
+}
+
+// Server hosts the HTTP listener. One instance per process.
+type Server struct {
+	opt  Options
+	srv  *http.Server
+	ln   net.Listener
+	addr atomic.Value // string
+}
+
+// New creates a non-listening Server. Call Start to bind + serve.
+func New(opt Options) *Server {
+	return &Server{opt: opt}
+}
+
+// Addr returns the bound address (host:port) or "" if Start has not
+// completed.
+func (s *Server) Addr() string {
+	v, _ := s.addr.Load().(string)
+	return v
+}
+
+// Start binds the listener and serves until ctx is cancelled.
+func (s *Server) Start(ctx context.Context, addr string) error {
+	r := chi.NewRouter()
+	r.Use(mw.Stack(s.opt.Name, s.opt.Logger)...)
+
+	// Probes
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
+		// /readyz succeeds as long as the web process is up; the page
+		// handlers themselves report backend reachability inline. (A
+		// stricter check that pings :8080/:8081/:8082 /healthz lives
+		// in this method's expansion if the user wants it later.)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	if s.opt.RegisterRoutes != nil {
+		s.opt.RegisterRoutes(r)
+	}
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	s.ln = ln
+	s.addr.Store(ln.Addr().String())
+
+	s.srv = &http.Server{
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := s.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			s.opt.Logger.Error("web http exited", "err", err)
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.srv.Shutdown(shutdownCtx)
+	}()
+
+	<-ctx.Done()
+	return nil
+}
