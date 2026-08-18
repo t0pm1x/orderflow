@@ -1,4 +1,4 @@
-.PHONY: build test lint run clean tidy
+.PHONY: build build-web test lint run clean tidy run-web
 
 # Version baked into each binary's main.Version at build time.
 # git describe falls back to a dev tag if not on a tagged commit.
@@ -10,14 +10,18 @@ build:
 	go build -ldflags="$(LDFLAGS)" -o bin/payment ./cmd/payment
 	go build -ldflags="$(LDFLAGS)" -o bin/inventory ./cmd/inventory
 	go build -ldflags="$(LDFLAGS)" -o bin/saga ./cmd/saga
+	go build -ldflags="$(LDFLAGS)" -o bin/web ./cmd/web
+
+build-web:
+	go build -ldflags="$(LDFLAGS)" -o bin/web ./cmd/web
 
 # Workspace modules (mirrors go.work `use` block). Each is `cd`'d
 # into before `go test ./...` because the workspace root has no
 # go.mod — `./...` at the root fails with "directory prefix . does
 # not contain modules listed in go.work".
 WORKSPACE_MODULES = pkg/platform pkg/outbox pkg/consumer pkg/platform/instrumentation/kafkaprop \
-                    services/order services/payment services/inventory services/saga \
-                    cmd/order cmd/payment cmd/inventory cmd/saga \
+                    services/order services/payment services/inventory services/saga services/web \
+                    cmd/order cmd/payment cmd/inventory cmd/saga cmd/web \
                     tests
 
 test:
@@ -43,6 +47,9 @@ run-inventory:
 
 run-saga:
 	go run ./cmd/saga
+
+run-web:
+	go run ./cmd/web
 
 clean:
 	rm -rf bin/

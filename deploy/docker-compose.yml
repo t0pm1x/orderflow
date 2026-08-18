@@ -134,6 +134,28 @@ services:
       - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
       - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
 
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    container_name: orderflow-web
+    ports:
+      - "8083:8083"
+    environment:
+      ORDER_URL: http://order:8080
+      PAYMENT_URL: http://payment:8081
+      INVENTORY_URL: http://inventory:8082
+      KAFKA_BROKERS: redpanda:9092
+      HTTP_ADDR: ":8083"
+    depends_on:
+      order:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pg_order_data:
   pg_payment_data:

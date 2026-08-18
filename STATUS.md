@@ -97,6 +97,17 @@
 | v1.0.demo | asciinema recording script + runbook | done | 19d5ec0 |
 | v1.0 | final CHANGELOG/README/tag | done | — |
 | v1.1.pre | Saga shutdown goroutine leak + `mustMarshal` panic fix | done | c8a396898d639defb4738793fedb1aaff0255b41 | this plan |
+| web.1    | bootstrap web module skeleton | done | d38cf27 | this plan |
+| web.2    | backend clients + types | done | 4fe476b | this plan |
+| web.3    | server scaffolding + probes | done | 9190081 | this plan |
+| web.4    | layout + stylesheet | done | b87f643 | this plan |
+| web.5    | orders list page | done | 7d401e7 | this plan |
+| web.6    | create-order page | done | 9119964 | this plan |
+| web.7    | order detail + cancel | done | b93ddac | this plan |
+| web.8    | inventory viewer | done | 497b12f | this plan |
+| web.9    | payment webhook simulator | done | 3895c51 | this plan |
+| web.10   | live event tail + SSE | done | 912e2b2 | this plan |
+| web.11   | compose + Makefile + README | done | a52edef   | this plan |
 
 ## Deferred to v1.1
 

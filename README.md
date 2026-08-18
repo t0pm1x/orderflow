@@ -30,7 +30,7 @@ bash docs/demo/demo.sh
 # E2E test suite (requires docker)
 make e2e
 
-# Build all 4 binaries with version injection
+# Build all 5 binaries with version injection
 make build
 
 # k8s smoke (requires kind + docker)
@@ -39,6 +39,16 @@ make smoke-k8s
 # Demo recording (requires asciinema)
 make record
 ```
+
+### Web playground (optional)
+
+After `bash docs/demo/demo.sh`, the orderflow-web UI is also available at
+[http://localhost:8083](http://localhost:8083) — list orders, create new
+ones, fire a forced-fail payment webhook, and watch `order-events` arrive
+in the sidebar.
+
+Build it on its own: `make run-web` (requires Order/Payment/Inventory
+services to already be running on :8080/:8081/:8082).
 
 ### Local verification (pre-push)
 
@@ -139,13 +149,14 @@ This brings up postgres ×3, redis, redpanda (KRaft), kafka-init (creates 4 topi
 
 ```
 orderflow/
-├── cmd/{order,payment,inventory,saga}/  # service entry points
+├── cmd/{order,payment,inventory,saga,web}/  # service entry points
 ├── pkg/platform/          # shared library (logging, otel, types, events, errors)
 ├── services/
 │   ├── order/             # Order Service (most complete)
 │   ├── payment/           # Payment Service (mock provider only)
 │   ├── inventory/         # Inventory Service (stock model only)
-│   └── saga/              # Saga orchestrator (stub)
+│   ├── saga/              # Saga orchestrator (stub)
+│   └── web/               # Orderflow-web playground UI (server-rendered HTML + htmx)
 ├── api/openapi.yaml        # REST API contract
 ├── deploy/
 │   ├── docker-compose.yml  # full platform stack
