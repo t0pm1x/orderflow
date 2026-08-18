@@ -11,7 +11,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ErrDuplicate is returned when an Idempotency-Key has already been processed.
+// ErrDuplicate is returned when an Idempotency-Key has already been
+// processed (the key holds the cached response body).
 type ErrDuplicate struct {
 	CachedResponse []byte
 }
@@ -19,6 +20,25 @@ type ErrDuplicate struct {
 func (e *ErrDuplicate) Error() string {
 	return "idempotency: duplicate request"
 }
+
+// ErrInFlight is returned when an Idempotency-Key is reserved by a
+// concurrent in-flight request. The middleware maps this to HTTP
+// 409 Conflict so a duplicate retry doesn't get a stale response.
+//
+// The pre-v1.1 implementation returned the literal "in-flight"
+// marker as the cached body, so duplicates got HTTP 200 with
+// body "in-flight" — a real bug (operators saw the body in their
+// retry logs and thought the payment succeeded).
+type ErrInFlight struct{}
+
+func (e *ErrInFlight) Error() string {
+	return "idempotency: request in flight"
+}
+
+// inFlightMarker is the value stored under a key while a request
+// is still being processed. Begin distinguishes this state from a
+// completed response by checking the value after a duplicate SETNX.
+const inFlightMarker = "orderflow:idem:in-flight"
 
 // Store is a Redis-backed idempotency cache.
 type Store struct {
@@ -47,17 +67,19 @@ type Reservation struct {
 
 // Begin atomically claims idempotencyKey. On success, returns a
 // Reservation the caller uses to Complete() or Release(). If the key
-// has already been processed, returns *ErrDuplicate carrying the
-// cached response.
+// is reserved by an in-flight request, returns *ErrInFlight. If the
+// key holds a cached response from a previous completed call,
+// returns *ErrDuplicate carrying the cached response body.
 func (s *Store) Begin(ctx context.Context, idempotencyKey string) (*Reservation, error) {
 	key := s.key(idempotencyKey)
 	// SETNX with TTL — if key exists, returns 0 (duplicate); else returns 1 (reserved)
-	ok, err := s.client.SetNX(ctx, key, "in-flight", s.ttl).Result()
+	ok, err := s.client.SetNX(ctx, key, inFlightMarker, s.ttl).Result()
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		// Already exists — fetch cached response
+		// Already exists — fetch current value to distinguish
+		// "in-flight" (concurrent retry) from "completed" (cached).
 		cached, err := s.client.Get(ctx, key).Bytes()
 		if err == redis.Nil {
 			// Race: key expired between SETNX and GET. Retry once.
@@ -65,6 +87,9 @@ func (s *Store) Begin(ctx context.Context, idempotencyKey string) (*Reservation,
 		}
 		if err != nil {
 			return nil, err
+		}
+		if string(cached) == inFlightMarker {
+			return nil, &ErrInFlight{}
 		}
 		return nil, &ErrDuplicate{CachedResponse: cached}
 	}

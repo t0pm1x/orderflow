@@ -2,6 +2,7 @@ package idempotency_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,7 +73,9 @@ func TestDuplicateWebhook_DifferentBodies(t *testing.T) {
 
 // TestStore_BeginReleasesOnPanic demonstrates the reservation lifecycle:
 // a handler that panics leaves the reservation in place (no Complete),
-// so a retry with a DIFFERENT handler logic would still hit ErrDuplicate.
+// so a retry would still hit a non-nil error — the in-flight marker
+// distinguishes "key reserved but no response yet" from "completed,
+// here's the cached body" (which is ErrDuplicate).
 // (Use Middleware's Release on 5xx for the explicit retry path; this
 // test pins down Begin-only behavior.)
 func TestStore_BeginReleasesOnPanic(t *testing.T) {
@@ -87,10 +90,14 @@ func TestStore_BeginReleasesOnPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	// Same key immediately returns ErrDuplicate (no Complete needed).
+	// Same key returns ErrInFlight (the key still holds the
+	// in-flight marker; nothing has been completed yet). This
+	// differs from ErrDuplicate, which means "we already have a
+	// cached response body to replay".
 	_, err = store.Begin(ctx, "p1")
-	if _, ok := idempotency.IsDuplicate(err); !ok {
-		t.Fatalf("expected duplicate, got %v", err)
+	var inFlight *idempotency.ErrInFlight
+	if !errors.As(err, &inFlight) {
+		t.Fatalf("expected ErrInFlight, got %v", err)
 	}
 	// Release the original reservation; the key is now available again.
 	if err := store.Release(ctx, res1); err != nil {
@@ -101,3 +108,5 @@ func TestStore_BeginReleasesOnPanic(t *testing.T) {
 		t.Fatalf("begin after release: %v", err)
 	}
 }
+
+

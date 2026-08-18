@@ -26,6 +26,10 @@ const HeaderReplayed = "Idempotent-Replayed"
 //  1. If the header is missing, respond 400 — the webhook contract
 //     requires a key.
 //  2. Store.Begin(key):
+//     - on *ErrInFlight, respond 409 Conflict so a concurrent retry
+//     doesn't see the literal in-flight marker as a body. This was
+//     a v1.0 bug: duplicates received HTTP 200 with body
+//     "in-flight".
 //     - on *ErrDuplicate, write the cached body with status 200 and
 //     HeaderReplayed=true; do not call the handler.
 //     - on other error, respond 500.
@@ -54,6 +58,11 @@ func Middleware(s *Store) func(http.Handler) http.Handler {
 					w.Header().Set(HeaderReplayed, "true")
 					w.WriteHeader(http.StatusOK)
 					_, _ = w.Write(dup.CachedResponse)
+					return
+				}
+				var inFlight *ErrInFlight
+				if errors.As(err, &inFlight) {
+					http.Error(w, "concurrent request with same Idempotency-Key in flight", http.StatusConflict)
 					return
 				}
 				http.Error(w, "idempotency backend error", http.StatusInternalServerError)
