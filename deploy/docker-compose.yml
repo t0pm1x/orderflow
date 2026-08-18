@@ -146,7 +146,7 @@ services:
       dockerfile: services/web/Dockerfile
     container_name: orderflow-web
     ports:
-      - "8083:8083"
+      - "8085:8083"
     environment:
       ORDER_URL: http://order:8080
       PAYMENT_URL: http://payment:8081
