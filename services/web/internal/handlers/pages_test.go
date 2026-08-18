@@ -17,22 +17,30 @@ import (
 )
 
 type fakeOrderClient struct {
-	listResp   *backend.OrderList
-	listErr    error
-	submitResp *backend.Order
-	submitErr  error
+	listResp    *backend.OrderList
+	listErr     error
+	submitResp  *backend.Order
+	submitErr   error
+	getResp     *backend.Order
+	getErr      error
+	cancelCalls int
 }
 
 func (f *fakeOrderClient) List(ctx context.Context, _ backend.OrderState, _ int) (*backend.OrderList, error) {
 	return f.listResp, f.listErr
 }
 func (f *fakeOrderClient) Get(_ context.Context, _ string) (*backend.Order, error) {
-	return nil, nil
+	return f.getResp, f.getErr
 }
 func (f *fakeOrderClient) Submit(_ context.Context, _ backend.OrderSubmit) (*backend.Order, error) {
 	return f.submitResp, f.submitErr
 }
-func (f *fakeOrderClient) Cancel(_ context.Context, _ string) error { return nil }
+func (f *fakeOrderClient) Cancel(_ context.Context, _ string) error {
+	f.cancelCalls++
+	return nil
+}
+
+func ptrInt64(v int64) *int64 { return &v }
 
 type fakePaymentClient struct{}
 
@@ -194,5 +202,67 @@ func TestOrderSubmit_Upstream5xx(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 502 {
 		t.Fatalf("status: got %d want 502", resp.StatusCode)
+	}
+}
+
+func TestOrderDetail_OK(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.getResp = &backend.Order{
+		ID: "order-1", State: backend.OrderStateReserved,
+		Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 2, UnitPriceCents: ptrInt64(1999)}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/order-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(b.String(), "order-1") {
+		t.Error("missing id")
+	}
+	if !strings.Contains(b.String(), "reserved") {
+		t.Error("missing state badge")
+	}
+}
+
+func TestOrderDetail_NotFound(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.getErr = fmt.Errorf("upstream 404: status 404: not found")
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
+	}
+}
+
+func TestOrderCancel_OK(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.cancelCalls = 0
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v1/orders/order-1", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("HX-Redirect"); got != "/orders/order-1" {
+		t.Errorf("HX-Redirect: got %q want /orders/order-1", got)
+	}
+	if oc.cancelCalls != 1 {
+		t.Errorf("Cancel calls: got %d want 1", oc.cancelCalls)
 	}
 }

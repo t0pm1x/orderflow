@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 )
 
@@ -65,4 +67,46 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+type orderDetailVM struct {
+	Body        string
+	Order       *backend.Order
+	BackendDown bool
+	Error       string
+}
+
+// PageOrderDetail serves GET /orders/{id}. On backend failure it
+// returns 404 (id not found / unreachable) with the layout shell +
+// banner so the navbar stays usable.
+func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	vm := orderDetailVM{Body: "orderDetailBody"}
+	o, err := s.Order.Get(r.Context(), id)
+	if err != nil {
+		vm.BackendDown = true
+		vm.Error = err.Error()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		return
+	}
+	vm.Order = o
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// ActionOrderCancel serves POST /v1/orders/{id}. Wraps OrderClient.Cancel
+// and returns HX-Redirect to /orders/{id} so the page reloads after
+// the mutation. Backend failures surface as 502 with the error body.
+func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.Order.Cancel(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("HX-Redirect", "/orders/"+id)
+	w.WriteHeader(http.StatusOK)
 }

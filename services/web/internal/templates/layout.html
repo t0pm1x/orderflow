@@ -21,6 +21,7 @@
     <section class="content">
       {{if eq .Body "orderNewBody"}}{{template "orderNewBody" .}}{{end}}
       {{if eq .Body "ordersListBody"}}{{template "ordersListBody" .}}{{end}}
+      {{if eq .Body "orderDetailBody"}}{{template "orderDetailBody" .}}{{end}}
     </section>
     <aside class="sidebar" hx-ext="sse" sse-connect="/events/stream" sse-swap="event" hx-swap="afterend">
       <h3>Live events</h3>
