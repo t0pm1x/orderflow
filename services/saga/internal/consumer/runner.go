@@ -67,3 +67,4 @@ func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string
 
 	return func(context.Context) error { c.Stop(); return nil }, nil
 }
+// CI lint cache-bust — reformat trigger
