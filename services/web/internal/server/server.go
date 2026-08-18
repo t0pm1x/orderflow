@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
+	"github.com/t0pm1x/orderflow/services/web/internal/static"
 )
 
 // Routes is the route registration callable provided by
@@ -67,6 +69,28 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		// in this method's expansion if the user wants it later.)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// Placeholder: full route handlers live in internal/handlers and
+	// are mounted via RegisterRoutes (Task 5+). Until then, / renders
+	// a single placeholder page so the layout + CSS are testable.
+	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><meta charset=utf-8><title>web</title><link rel=stylesheet href=/static/styles.css><h1 class=muted>Loading… (handler not wired yet)</h1>`))
+	})
+	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
+		p := strings.TrimPrefix(req.URL.Path, "/static/")
+		data, err := static.FS.ReadFile("styles.css")
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		if p == "styles.css" {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			_, _ = w.Write(data)
+			return
+		}
+		http.NotFound(w, req)
 	})
 
 	if s.opt.RegisterRoutes != nil {

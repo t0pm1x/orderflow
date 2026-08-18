@@ -1,0 +1,49 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>orderflow-web playground</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.3/dist/htmx.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">orderflow-web</a>
+    <nav>
+      <a href="/">Orders</a>
+      <a href="/inventory">Inventory</a>
+      <a href="/payments/sim">Payments sim</a>
+    </nav>
+  </header>
+
+  <main class="main">
+    <section class="content">
+      {{template "body" .}}
+    </section>
+    <aside class="sidebar" hx-ext="sse" sse-connect="/events/stream" sse-swap="event" hx-swap="afterend">
+      <h3>Live events</h3>
+      <ul id="events" class="events"></ul>
+    </aside>
+  </main>
+
+  <script>
+    // Vanilla JS SSE-receiver that appends one <li> per incoming event.
+    // Re-uses the EventSource already opened by htmx-sse extension so
+    // we don't double-open a connection.
+    document.body.addEventListener('htmx:sseMessage', function (e) {
+      try {
+        var data = JSON.parse(e.detail.data);
+        var ul = document.getElementById('events');
+        if (!ul) return;
+        var li = document.createElement('li');
+        li.className = 'event event-' + (data.event_type || 'unknown');
+        li.textContent = data.occurred_at + ' ' + data.event_type + ' ' + data.aggregate_id;
+        ul.prepend(li);
+        while (ul.children.length > 50) ul.removeChild(ul.lastChild);
+      } catch (_) {}
+    });
+  </script>
+</body>
+</html>
+{{end}}
