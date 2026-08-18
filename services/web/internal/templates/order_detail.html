@@ -1,34 +1,40 @@
 {{define "orderDetailBody"}}
-<section>
-  <div class="row-between">
-    <h1>Order <span class="mono">{{.Order.ID}}</span></h1>
-    <a class="btn secondary" href="/">&#8592; back to list</a>
-  </div>
-  {{if .BackendDown}}<div class="error">Backend unavailable: {{.Error}}</div>{{end}}
-  {{if .Order}}
-  <p><span class="badge {{.Order.State}}">{{.Order.State}}</span>
-     <span class="muted">created {{.Order.CreatedAt.Format "2006-01-02 15:04:05"}}</span>
-     {{if .Order.CompletedAt}} &middot; <span class="muted">completed {{.Order.CompletedAt.Format "15:04:05"}}</span>{{end}}
-  </p>
-  {{if .Order.FailureReason}}<div class="error">Failure: {{.Order.FailureReason}}</div>{{end}}
-  <table>
-    <thead><tr><th>SKU</th><th>Qty</th><th>Unit price</th></tr></thead>
-    <tbody>
-      {{range .Order.Items}}
-      <tr>
-        <td class="mono">{{.SKU}}</td>
-        <td>{{.Quantity}}</td>
-        <td>{{if .UnitPriceCents}}{{.UnitPriceCents}}&#162;{{else}}<span class="muted">auto</span>{{end}}</td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-  {{if not (or (eq .Order.State "cancelled") (eq .Order.State "failed") (eq .Order.State "confirmed"))}}
-  <form method="post" action="/v1/orders/{{.Order.ID}}" hx-post="/v1/orders/{{.Order.ID}}" hx-swap="none" style="margin-top:16px">
-    <button type="submit" class="danger">Cancel order</button>
-  </form>
-  {{end}}
-  <p class="muted">Page polls every 1s while non-terminal.</p>
-  {{end}}
-</section>
+{{if and .Order (not (or (eq .Order.State "cancelled") (eq .Order.State "failed") (eq .Order.State "confirmed")))}}
+<div id="page-content" hx-get="/orders/{{.Order.ID}}?frag=1" hx-trigger="every 1s" hx-swap="innerHTML">
+{{else}}
+<div id="page-content">
+{{end}}
+  <section>
+    <div class="row-between">
+      <h1>Order <span class="mono">{{if .Order}}{{.Order.ID}}{{else}}?{{end}}</span></h1>
+      <a class="btn secondary" href="/">&#8592; back to list</a>
+    </div>
+    {{if .BackendDown}}<div class="error">Backend unavailable: {{.Error}}</div>{{end}}
+    {{if .Order}}
+    <p><span class="badge {{.Order.State}}">{{.Order.State}}</span>
+       <span class="muted">created {{.Order.CreatedAt.Format "2006-01-02 15:04:05"}}</span>
+       {{if .Order.CompletedAt}} &middot; <span class="muted">completed {{.Order.CompletedAt.Format "15:04:05"}}</span>{{end}}
+    </p>
+    {{if .Order.FailureReason}}<div class="error">Failure: {{.Order.FailureReason}}</div>{{end}}
+    <table>
+      <thead><tr><th>SKU</th><th>Qty</th><th>Unit price</th></tr></thead>
+      <tbody>
+        {{range .Order.Items}}
+        <tr>
+          <td class="mono">{{.SKU}}</td>
+          <td>{{.Quantity}}</td>
+          <td>{{if .UnitPriceCents}}{{.UnitPriceCents}}&#162;{{else}}<span class="muted">auto</span>{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{if not (or (eq .Order.State "cancelled") (eq .Order.State "failed") (eq .Order.State "confirmed"))}}
+    <form method="post" action="/v1/orders/{{.Order.ID}}" hx-post="/v1/orders/{{.Order.ID}}" hx-swap="none" style="margin-top:16px">
+      <button type="submit" class="danger">Cancel order</button>
+    </form>
+    {{end}}
+    <p class="muted">Page polls every 1s while non-terminal.</p>
+    {{end}}
+  </section>
+</div>
 {{end}}

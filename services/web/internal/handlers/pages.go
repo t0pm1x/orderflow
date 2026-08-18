@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -57,9 +58,22 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := s.Order.Submit(r.Context(), in)
 	if err != nil {
+		var he *backend.HTTPError
+		if errors.As(err, &he) {
+			vm.Error = fmt.Sprintf("Order service returned %d: %s", he.Status, he.Body)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if he.Status >= 400 && he.Status < 500 {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+				return
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+			return
+		}
 		vm.Error = "Order service error: " + err.Error()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(502)
+		w.WriteHeader(http.StatusBadGateway)
 		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 		return
 	}
@@ -81,7 +95,9 @@ type orderDetailVM struct {
 
 // PageOrderDetail serves GET /orders/{id}. On backend failure it
 // returns 404 (id not found / unreachable) with the layout shell +
-// banner so the navbar stays usable.
+// banner so the navbar stays usable. When called with ?frag=1 the
+// handler renders only the body fragment (no layout shell) so htmx
+// polling can swap just the page-content region.
 func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	vm := orderDetailVM{Body: "orderDetailBody"}
@@ -91,11 +107,19 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 		vm.Error = err.Error()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
+		if r.URL.Query().Get("frag") == "1" {
+			renderFragment(w, s.Templates, "orderDetailBody", vm)
+			return
+		}
 		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 		return
 	}
 	vm.Order = o
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.URL.Query().Get("frag") == "1" {
+		renderFragment(w, s.Templates, "orderDetailBody", vm)
+		return
+	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -103,10 +127,22 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 
 // ActionOrderCancel serves POST /v1/orders/{id}. Wraps OrderClient.Cancel
 // and returns HX-Redirect to /orders/{id} so the page reloads after
-// the mutation. Backend failures surface as 502 with the error body.
+// the mutation. Upstream 401/404 surface as 404 BFF (cancel can't
+// proceed if the order doesn't exist or we lost authorization);
+// 5xx + transport errors stay 502.
 func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := s.Order.Cancel(r.Context(), id); err != nil {
+		var he *backend.HTTPError
+		if errors.As(err, &he) {
+			switch {
+			case he.Status == http.StatusUnauthorized, he.Status == http.StatusNotFound:
+				http.Error(w, err.Error(), http.StatusNotFound)
+			default:
+				http.Error(w, err.Error(), http.StatusBadGateway)
+			}
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -133,7 +169,9 @@ type inventoryVM struct {
 // exposes per-SKU reads, so the SKU list is derived from the most
 // recent orders' items (List, limit 50). Missing/unknown SKUs show
 // as "—" so the page still surfaces order-side activity even when
-// the inventory backend has gaps.
+// the inventory backend has gaps. When called with ?frag=1 the
+// handler renders only the body fragment (no layout shell) so htmx
+// polling can swap just the page-content region.
 func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 	vm := inventoryVM{Body: "inventoryBody"}
 	list, err := s.Order.List(r.Context(), "", 50)
@@ -165,6 +203,10 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.URL.Query().Get("frag") == "1" {
+		renderFragment(w, s.Templates, "inventoryBody", vm)
+		return
+	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

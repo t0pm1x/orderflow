@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -60,11 +61,25 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
-		// /readyz succeeds as long as the web process is up; the page
-		// handlers themselves report backend reachability inline. (A
-		// stricter check that pings :8080/:8081/:8082 /healthz lives
-		// in this method's expansion if the user wants it later.)
+		// /readyz succeeds iff Order, Payment, and Inventory upstreams
+		// all answer /healthz with a 2xx within 2s. Probes run in
+		// parallel so a single dead upstream doesn't serialize the
+		// whole check. Failures => 503 + JSON listing failed URLs.
+		urls := []string{
+			s.opt.OrderURL + "/healthz",
+			s.opt.PaymentURL + "/healthz",
+			s.opt.InventoryURL + "/healthz",
+		}
+		failed := pingUpstreams(req.Context(), urls)
 		w.Header().Set("Content-Type", "application/json")
+		if len(failed) > 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(struct {
+				Status string   `json:"status"`
+				Failed []string `json:"failed"`
+			}{Status: "down", Failed: failed})
+			return
+		}
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 

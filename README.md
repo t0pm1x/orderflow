@@ -56,7 +56,7 @@ Run the same checks CI runs, locally:
 
     make verify
 
-Runs `tidy` (go mod tidy per-module), `build` (4 binaries with version injection), `test` (all 13 workspace modules), and `lint` (golangci-lint, requires v2.x locally — matches the GitHub Actions version). Catches most issues before pushing.
+Runs `tidy` (go mod tidy per-module), `build` (5 binaries with version injection), `test` (all 13 workspace modules), and `lint` (golangci-lint, requires v2.x locally — matches the GitHub Actions version). Catches most issues before pushing.
 
 ### ⬜ Deferred to v1.1
 - Full outbox-retry chaos assertion (services cache `KAFKA_BROKER`)
@@ -117,15 +117,15 @@ See [`docs/architecture/c4-level-2.puml`](docs/architecture/c4-level-2.puml) for
 - **DB:** PostgreSQL 16 (one per service)
 - **Cache:** Redis 7
 - **Tracing:** OpenTelemetry (OTLP)
-- **Workspace:** `go.work` (1 platform module + 3 service modules + 4 cmd stubs)
+- **Workspace:** `go.work` (1 platform module + 4 service modules + 5 cmd stubs; `services/web` hosts the orderflow-web playground UI)
 - **Migrations:** goose (planned, not yet wired)
 
 ## Building
 
 ```bash
-# Build all 4 binaries
+# Build all 5 binaries
 make build
-# → bin/order, bin/payment, bin/inventory, bin/saga
+# → bin/order, bin/payment, bin/inventory, bin/saga, bin/web
 
 # Run a single service
 make run-order    # → POST /v1/orders on :8080

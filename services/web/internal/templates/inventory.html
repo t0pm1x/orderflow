@@ -1,23 +1,25 @@
 {{define "inventoryBody"}}
-<section>
-  <h1>Inventory</h1>
-  {{if .BackendDown}}<div class="error">Inventory backend unavailable: {{.Error}}</div>
-  {{else if not .Rows}}<p class="muted">No stock items yet. Submit some orders to populate this view.</p>
-  {{else}}
-  <table>
-    <thead><tr><th>SKU</th><th>Available</th><th>Reserved</th><th>Version</th></tr></thead>
-    <tbody>
-      {{range .Rows}}
-      <tr>
-        <td class="mono">{{.SKU}}</td>
-        <td>{{if .Missing}}&mdash;{{else}}{{.Available}}{{end}}</td>
-        <td>{{if .Missing}}&mdash;{{else}}{{.Reserved}}{{end}}</td>
-        <td class="muted">{{if .Missing}}&mdash;{{else}}{{.Version}}{{end}}</td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-  {{end}}
-  <p class="muted">Page polls every 3s.</p>
-</section>
+<div id="page-content" hx-get="/inventory?frag=1" hx-trigger="every 3s" hx-swap="innerHTML">
+  <section>
+    <h1>Inventory</h1>
+    {{if .BackendDown}}<div class="error">Inventory backend unavailable: {{.Error}}</div>
+    {{else if not .Rows}}<p class="muted">No stock items yet. Submit some orders to populate this view.</p>
+    {{else}}
+    <table>
+      <thead><tr><th>SKU</th><th>Available</th><th>Reserved</th><th>Version</th></tr></thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td class="mono">{{.SKU}}</td>
+          <td>{{if .Missing}}&mdash;{{else}}{{.Available}}{{end}}</td>
+          <td>{{if .Missing}}&mdash;{{else}}{{.Reserved}}{{end}}</td>
+          <td class="muted">{{if .Missing}}&mdash;{{else}}{{.Version}}{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{end}}
+    <p class="muted">Page polls every 3s.</p>
+  </section>
+</div>
 {{end}}

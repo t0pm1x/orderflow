@@ -222,6 +222,28 @@ func TestOrderSubmit_Upstream5xx(t *testing.T) {
 	}
 }
 
+// TestOrderSubmit_Upstream4xx_BadRequest covers the typed-HTTPError
+// path: when the upstream returns 4xx (user error — bad SKU, bad
+// qty, schema mismatch), the BFF should surface 400 + form
+// re-render so the user can fix their input, NOT 502.
+func TestOrderSubmit_Upstream4xx_BadRequest(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.submitErr = &backend.HTTPError{Status: 400, Body: "bad sku"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
 func TestOrderDetail_OK(t *testing.T) {
 	oc := &fakeOrderClient{}
 	oc.getResp = &backend.Order{

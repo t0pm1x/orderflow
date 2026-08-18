@@ -79,8 +79,9 @@ func (c *HTTPClient) Cancel(ctx context.Context, id string) error {
 	return fmt.Errorf("order cancel: status %d", resp.StatusCode)
 }
 
-// do runs req and decodes a JSON body on 2xx; wraps any failure with
-// the upstream status code and response body.
+// do runs req and decodes a JSON body on 2xx; on non-2xx returns a
+// *HTTPError so callers can branch on Status (4xx user errors are
+// usually safe to surface as 400 to the end user; 5xx stays 502).
 func (c *HTTPClient) do(req *http.Request, out any) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -89,7 +90,11 @@ func (c *HTTPClient) do(req *http.Request, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("upstream %s %s: status %d: %s", req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(body)))
+		return &HTTPError{
+			Status: resp.StatusCode,
+			Body:   strings.TrimSpace(string(body)),
+			URL:    req.URL.Path,
+		}
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {

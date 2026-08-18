@@ -1,33 +1,35 @@
 {{define "ordersListBody"}}
-<section>
-  <div class="row-between">
-    <h1>Orders</h1>
-    <a class="btn" href="/orders/new">+ New order</a>
-  </div>
-  {{if .BackendDown}}
-  <div class="error">Backend unavailable: {{.Error}}</div>
-  {{else if not .Orders}}
-  <p class="muted">No orders yet. Click <strong>+ New order</strong> to start.</p>
-  {{else}}
-  <table>
-    <thead>
-      <tr><th>ID</th><th>State</th><th>Items</th><th>Created</th><th></th></tr>
-    </thead>
-    <tbody>
-      {{range .Orders}}
-      <tr>
-        <td class="mono">{{.ID}}</td>
-        <td><span class="badge {{.State}}">{{.State}}</span></td>
-        <td>
-          {{range .Items}}{{.SKU}}&times;{{.Quantity}} {{end}}
-        </td>
-        <td class="muted">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
-        <td><a href="/orders/{{.ID}}">view &rarr;</a></td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-  {{end}}
-  <p class="muted">Page polls every 2s via <code>htmx</code>.</p>
-</section>
+<div id="page-content" hx-get="/?frag=1" hx-trigger="every 2s" hx-swap="innerHTML">
+  <section>
+    <div class="row-between">
+      <h1>Orders</h1>
+      <a class="btn" href="/orders/new">+ New order</a>
+    </div>
+    {{if .BackendDown}}
+    <div class="error">Backend unavailable: {{.Error}}</div>
+    {{else if not .Orders}}
+    <p class="muted">No orders yet. Click <strong>+ New order</strong> to start.</p>
+    {{else}}
+    <table>
+      <thead>
+        <tr><th>ID</th><th>State</th><th>Items</th><th>Created</th><th></th></tr>
+      </thead>
+      <tbody>
+        {{range .Orders}}
+        <tr>
+          <td class="mono">{{.ID}}</td>
+          <td><span class="badge {{.State}}">{{.State}}</span></td>
+          <td>
+            {{range .Items}}{{.SKU}}&times;{{.Quantity}} {{end}}
+          </td>
+          <td class="muted">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+          <td><a href="/orders/{{.ID}}">view &rarr;</a></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{end}}
+    <p class="muted">Page polls every 2s via <code>htmx</code>.</p>
+  </section>
+</div>
 {{end}}

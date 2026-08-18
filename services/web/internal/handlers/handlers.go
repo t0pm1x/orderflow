@@ -70,7 +70,9 @@ type ordersListVM struct {
 
 // PageOrdersList serves GET / (orders list). On backend failure it
 // still returns 200 with a banner so the rest of the layout (navbar,
-// live-events sidebar) stays usable.
+// live-events sidebar) stays usable. When called with ?frag=1 the
+// handler renders only the body fragment (no layout shell) so htmx
+// polling can swap just the page-content region.
 func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 	var vm ordersListVM
 	vm.Body = "ordersListBody"
@@ -82,7 +84,23 @@ func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 		vm.Orders = list.Items
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.URL.Query().Get("frag") == "1" {
+		renderFragment(w, s.Templates, "ordersListBody", vm)
+		return
+	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// renderFragment executes the named body template only (no layout
+// shell). Used by htmx polling: the poller fetches the same page
+// path with ?frag=1 and hx-swap targets the inner #page-content div,
+// so the browser gets back just the inner HTML and not the whole
+// <html> shell.
+func renderFragment(w http.ResponseWriter, t *template.Template, name string, vm any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := t.ExecuteTemplate(w, name, vm); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
