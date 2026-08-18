@@ -31,5 +31,17 @@ go.work.sum
 # OS
 Thumbs.db
 
+# Windows accidental redirect target — `> nul` from cmd.exe
+# creates a file named "nul" in the working tree.
+/nul
+
+# Demo recording artifacts (run by `make record`)
+docs/demo/logs/
+docs/demo/casts/
+
+# Service stdout/stderr logs (e.g. web.exe stdout from local runs)
+*.stdout.log
+*.stderr.log
+
 # k8s smoke test artifacts (temp kubeconfigs written by `kind get kubeconfig-path`)
 tests/k8s/kubeconfig-*
