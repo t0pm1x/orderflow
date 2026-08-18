@@ -5,12 +5,12 @@
 //
 // The saga runtime consumes three topics:
 //   - order-events:    OrderCreated (start saga),
-//                      OrderCancelled (ack), PaymentRequested (audit)
+//     OrderCancelled (ack), PaymentRequested (audit)
 //   - inventory-events: StockReserved (-> PaymentRequested),
-//                      StockReservationFailed (-> OrderCancelled),
-//                      StockReleased (audit)
+//     StockReservationFailed (-> OrderCancelled),
+//     StockReleased (audit)
 //   - payment-events:  PaymentCompleted (-> OrderConfirmed),
-//                      PaymentFailed (-> compensation)
+//     PaymentFailed (-> compensation)
 //
 // PaymentRequested is published by the saga itself (saga_outbox
 // topic = order-events), so the consumer for it is the audit-only

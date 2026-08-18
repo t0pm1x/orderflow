@@ -13,29 +13,23 @@ done
 
 echo "Creating topics..."
 
-rpk topic create order-events \
-    --brokers "$BROKER" \
-    --partitions 3 \
-    --replicas 1 \
-    --if-not-exists
+topic_exists() {
+    rpk topic list -X brokers="$BROKER" 2>/dev/null | grep -q "^$1 "
+}
 
-rpk topic create payment-events \
-    --brokers "$BROKER" \
-    --partitions 3 \
-    --replicas 1 \
-    --if-not-exists
+for t in order-events payment-events inventory-events; do
+    if topic_exists "$t"; then
+        echo "topic $t already exists, skipping"
+    else
+        rpk topic create "$t" --brokers "$BROKER" --partitions 3 --replicas 1
+    fi
+done
 
-rpk topic create inventory-events \
-    --brokers "$BROKER" \
-    --partitions 3 \
-    --replicas 1 \
-    --if-not-exists
+if topic_exists orderflow-dlq; then
+    echo "topic orderflow-dlq already exists, skipping"
+else
+    rpk topic create orderflow-dlq --brokers "$BROKER" --partitions 1 --replicas 1
+fi
 
-rpk topic create orderflow-dlq \
-    --brokers "$BROKER" \
-    --partitions 1 \
-    --replicas 1 \
-    --if-not-exists
-
-echo "Topics created:"
+echo "Topics:"
 rpk topic list -X brokers="$BROKER"

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 )
@@ -53,7 +54,13 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		c := vm.UnitPriceCents
 		in.Items[0].UnitPriceCents = &c
 	}
-	if vm.CustomerID != "" {
+	// customer_id is required by the order service; auto-generate a
+	// random UUID when the form is left blank (the placeholder text
+	// promises this). Otherwise echo what the user typed.
+	if vm.CustomerID == "" {
+		auto := uuid.NewString()
+		in.CustomerID = &auto
+	} else {
 		in.CustomerID = &vm.CustomerID
 	}
 	out, err := s.Order.Submit(r.Context(), in)

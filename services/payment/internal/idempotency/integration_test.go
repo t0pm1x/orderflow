@@ -108,5 +108,3 @@ func TestStore_BeginReleasesOnPanic(t *testing.T) {
 		t.Fatalf("begin after release: %v", err)
 	}
 }
-
-
