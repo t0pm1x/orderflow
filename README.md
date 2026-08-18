@@ -43,12 +43,12 @@ make record
 ### Web playground (optional)
 
 After `bash docs/demo/demo.sh`, the orderflow-web UI is also available at
-[http://localhost:8083](http://localhost:8083) — list orders, create new
+[http://localhost:8085](http://localhost:8085) — list orders, create new
 ones, fire a forced-fail payment webhook, and watch `order-events` arrive
 in the sidebar.
 
 Build it on its own: `make run-web` (requires Order/Payment/Inventory
-services to already be running on :8080/:8081/:8082).
+services to already be running on :8081/:8082/:8083).
 
 ### Local verification (pre-push)
 
@@ -128,10 +128,10 @@ make build
 # → bin/order, bin/payment, bin/inventory, bin/saga, bin/web
 
 # Run a single service
-make run-order    # → POST /v1/orders on :8080
-make run-payment
-make run-inventory
-make run-saga
+make run-order    # → POST /v1/orders on :8081
+make run-payment  # → :8082
+make run-inventory # → :8083
+make run-saga     # → :8084
 
 # Test
 make test
