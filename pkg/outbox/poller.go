@@ -136,6 +136,23 @@ func (p *Poller) Run(ctx context.Context) error {
 				return err // triggers rollback in RunInTx
 			}
 			p.metrics.ObservePublish(ctx, len(recs), nil)
+
+			// Mark the rows SENT inside the same tx so the row's
+			// status flip and the row's lock release commit
+			// atomically. Without this call, the next poll re-fetches
+			// the same rows and re-publishes them — an infinite
+			// duplicate loop. (Regression introduced by the v1.1.0-pre
+			// refactor that moved MarkSent from a post-loop call
+			// site into the RunInTx closure without ever wiring the
+			// new MarkSentTx call.)
+			ids := make([]string, len(recs))
+			for i, r := range recs {
+				ids[i] = r.EventID
+			}
+			if err := p.src.MarkSentTx(ctx, tx, ids); err != nil {
+				p.metrics.ObservePublish(ctx, len(recs), err)
+				return err // triggers rollback; rows stay PENDING
+			}
 			for _, r := range recs {
 				p.attempts.Delete(r.EventID)
 			}
