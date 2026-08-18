@@ -1,6 +1,6 @@
 {{define "orderDetailBody"}}
 {{if and .Order (not (or (eq .Order.State "cancelled") (eq .Order.State "failed") (eq .Order.State "confirmed")))}}
-<div id="page-content" hx-get="/orders/{{.Order.ID}}?frag=1" hx-trigger="every 1s" hx-swap="innerHTML">
+<div id="page-content" hx-get="/orders/{{.Order.ID}}?frag=1" hx-trigger="every 1s" hx-swap="outerHTML">
 {{else}}
 <div id="page-content">
 {{end}}

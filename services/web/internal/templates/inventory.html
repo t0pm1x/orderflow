@@ -1,5 +1,5 @@
 {{define "inventoryBody"}}
-<div id="page-content" hx-get="/inventory?frag=1" hx-trigger="every 3s" hx-swap="innerHTML">
+<div id="page-content" hx-get="/inventory?frag=1" hx-trigger="every 3s" hx-swap="outerHTML">
   <section>
     <h1>Inventory</h1>
     {{if .BackendDown}}<div class="error">Inventory backend unavailable: {{.Error}}</div>
