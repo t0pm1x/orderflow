@@ -1,0 +1,13 @@
+# Build context for the web Dockerfile — skip workspace noise
+# (other modules' go.mod/go.sum drift from `go work sync`),
+# demo logs, build outputs, .git, .superpowers scratch.
+.git/
+.superpowers/
+bin/
+docs/demo/logs/
+nul
+*.log
+
+# Skip unrelated workspace modules' go.mod/go.sum drift (not used by web build but irrelevant to COPY . . target).
+# Actually we DON'T skip them: COPY . . needs everything for go.work resolution.
+# We only skip .git and demo scratch.
