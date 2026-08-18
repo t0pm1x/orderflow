@@ -8,10 +8,16 @@ LOG_DIR="${ROOT}/docs/demo/logs"
 mkdir -p "${LOG_DIR}"
 EXAMPLE_BODY="${ROOT}/examples/order.json"
 
+# Web UI listens on :8085 in this demo because order/payment/inventory/saga
+# already occupy :8081/:8082/:8083/:8084. Override WEB_ADDR to change.
+WEB_ADDR="${WEB_ADDR:-:8085}"
+WEB_URL="http://localhost${WEB_ADDR}"
+
 # --- cleanup on exit ---
 cleanup() {
   set +e
   echo "==> tearing down"
+  if [[ -n "${WEB_PID:-}" ]]; then kill "${WEB_PID}" 2>/dev/null || true; fi
   if [[ -n "${ORDER_PID:-}" ]]; then kill "${ORDER_PID}" 2>/dev/null || true; fi
   if [[ -n "${PAYMENT_PID:-}" ]]; then kill "${PAYMENT_PID}" 2>/dev/null || true; fi
   if [[ -n "${INV_PID:-}" ]]; then kill "${INV_PID}" 2>/dev/null || true; fi
@@ -56,6 +62,14 @@ DATABASE_URL="postgres://orderflow:orderflow@localhost:5432/order_order?sslmode=
   HTTP_ADDR=":8084" \
   ./bin/saga     >"${LOG_DIR}/saga.log"     2>&1 & SAGA_PID=$!
 
+echo "==> starting orderflow-web playground on ${WEB_URL}"
+ORDER_URL="http://localhost:8081" \
+  PAYMENT_URL="http://localhost:8082" \
+  INVENTORY_URL="http://localhost:8083" \
+  KAFKA_BROKERS="localhost:9092" \
+  HTTP_ADDR="${WEB_ADDR}" \
+  ./bin/web      >"${LOG_DIR}/web.log"      2>&1 & WEB_PID=$!
+
 echo "==> waiting 10s for services to boot"
 sleep 10
 
@@ -75,13 +89,50 @@ while [[ $(date +%s) -lt ${DEADLINE} ]]; do
   STATE=$(curl -sS "http://localhost:8081/v1/orders/${ORDER_ID}" | jq -r .state)
   echo "    state=${STATE}"
   if [[ "${STATE}" == "confirmed" ]]; then
-    echo "OK: order reached 'confirmed' state"
-    exit 0
+    CONFIRMED=1
+    break
   fi
   sleep 1
 done
 
-echo "FAIL: order did not reach 'confirmed' within 60s"
-echo "logs:"
-ls -1 "${LOG_DIR}"
-exit 1
+if [[ "${CONFIRMED:-0}" != "1" ]]; then
+  echo "FAIL: order did not reach 'confirmed' within 60s"
+  echo "logs:"
+  ls -1 "${LOG_DIR}"
+  exit 1
+fi
+
+echo "OK: order reached 'confirmed' state"
+
+# --- open browser (best effort, never fatal) ---
+open_browser() {
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Linux)   xdg-open "${WEB_URL}"  >/dev/null 2>&1 || true ;;
+    Darwin)  open   "${WEB_URL}"  >/dev/null 2>&1 || true ;;
+    MINGW*|MSYS*|CYGWIN*)
+      cmd.exe /c start "" "${WEB_URL}" >/dev/null 2>&1 || true ;;
+  esac
+}
+open_browser &
+
+# --- park until the user wants to teardown ---
+cat <<EOF
+
+============================================================
+ orderflow-web playground is live at ${WEB_URL}
+
+   /                 orders list
+   /orders/new       submit a new order
+   /orders/{id}      order detail (polls every 1s while non-terminal)
+   /inventory        per-SKU stock viewer
+   /payments/sim     force-success / force-fail webhook simulator
+   /events/stream    live saga event tail (SSE)
+
+ service logs: ${LOG_DIR}/
+   $(ls -1 "${LOG_DIR}" | sed 's/^/   - /')
+
+ Press Enter to tear everything down...
+============================================================
+EOF
+read -r _
+echo "==> user requested teardown"
