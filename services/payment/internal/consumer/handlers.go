@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -53,12 +54,14 @@ func NewHandler(pool *pgxpool.Pool, logger *slog.Logger) *Handler {
 
 // globalHandler is wired by SetHandler at startup. When nil, Registry
 // falls back to the v0.4.x stub behavior so unit tests that don't
-// have a Postgres fixture still work.
-var globalHandler *Handler
+// have a Postgres fixture still work. Accesses are synchronized via
+// atomic.Pointer so SetHandler in main and Registry in the consumer
+// goroutine never race on the pointer write.
+var globalHandler atomic.Pointer[Handler]
 
 // SetHandler wires h as the active handler. Call once at startup
 // after the DB pool is built.
-func SetHandler(h *Handler) { globalHandler = h }
+func SetHandler(h *Handler) { globalHandler.Store(h) }
 
 // Registry returns the Payment Service's handler registry. When the
 // real handler has been wired via SetHandler it dispatches to it;
@@ -68,9 +71,9 @@ func Registry(logger *slog.Logger) pkgconsumer.HandlerRegistry {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if globalHandler != nil {
+	if h := globalHandler.Load(); h != nil {
 		return pkgconsumer.HandlerRegistry{
-			"PaymentRequested": globalHandler.PaymentRequested,
+			"PaymentRequested": h.PaymentRequested,
 		}
 	}
 	stub := func(eventType string) pkgconsumer.Handler {

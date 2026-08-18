@@ -67,15 +67,10 @@ func applyMigrations(t *testing.T, url string) {
 // real-handler code path without leaking state across tests.
 func withGlobalDeps(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	prev := globalDeps
-	t.Cleanup(func() { globalDeps = prev })
-	globalDeps = &handlerDeps{
-		pool:   pool,
-		repo:   nil, // constructed lazily by SetPool; mirror that here
-		writer: nil,
-	}
-	// SetPool constructs the deps; reuse that path so the handler
-	// sees the same shape as in main.go.
+	prev := loadDeps()
+	t.Cleanup(func() { globalDeps.Store(prev) })
+	// SetPool constructs the deps via Store (atomic.Pointer); reuse
+	// that path so the handler sees the same shape as in main.go.
 	SetPool(pool)
 }
 

@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,7 +42,13 @@ type handlerDeps struct {
 	writer *inventoryoutbox.PGWriter
 }
 
-var globalDeps *handlerDeps
+// globalDeps holds the per-handler data dependencies. Accesses go
+// through atomic.Pointer so SetPool in main and Registry in the
+// consumer goroutine never race on the pointer write. (atomic.Pointer
+// over a mutex because the consumer hot path needs to read this on
+// every Kafka record — RWMutex would be fine but atomic.Pointer
+// is lock-free.)
+var globalDeps atomic.Pointer[handlerDeps]
 
 // SetPool configures the consumer handlers' data dependencies. main.go
 // must call this once after pgxpool is ready and before consumer.Start.
@@ -48,15 +56,25 @@ var globalDeps *handlerDeps
 // preserving the stub behavior used by tests).
 func SetPool(pool *pgxpool.Pool) {
 	if pool == nil {
-		globalDeps = nil
+		globalDeps.Store(nil)
 		return
 	}
-	globalDeps = &handlerDeps{
+	globalDeps.Store(&handlerDeps{
 		pool:   pool,
 		repo:   repository.NewPGRepo(pool),
 		writer: inventoryoutbox.NewPGWriter(),
-	}
+	})
 }
+
+// loadDeps is a small helper that returns the current globalDeps
+// pointer or nil. Callers that need to access deps must do so through
+// this helper so the atomic load is uniform.
+func loadDeps() *handlerDeps { return globalDeps.Load() }
+
+// suppress unused warning when this file's other helpers
+// already import sync/atomic; the import is intentional and used
+// for future sync requirements.
+var _ = sync.Mutex{}
 
 // Registry returns the Inventory Service's handler registry.
 func Registry(logger *slog.Logger) pkgconsumer.HandlerRegistry {
@@ -74,7 +92,8 @@ func Registry(logger *slog.Logger) pkgconsumer.HandlerRegistry {
 // (or StockReservationFailed when stock is insufficient).
 func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 	return func(ctx context.Context, env *events.Envelope) error {
-		if globalDeps == nil {
+		deps := loadDeps()
+		if deps == nil {
 			logger.Info("orderflow-inventory received event (no DB pool)",
 				"event_type", "StockReserveRequested",
 				"event_id", env.EventID,
@@ -112,7 +131,7 @@ func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 			Payload:       payload,
 			Headers:       map[string]string{},
 		}
-		err = globalDeps.repo.ReserveStock(ctx, p.SKU, p.Quantity, outRec)
+		err = deps.repo.ReserveStock(ctx, p.SKU, p.Quantity, outRec)
 		if errors.Is(err, repository.ErrInsufficientStock) {
 			return emitStockReservationFailed(ctx, p.OrderID, p.SKU, "insufficient_stock", logger)
 		}
@@ -131,7 +150,8 @@ func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 // counter and the downstream event commit (or roll back) together.
 func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 	return func(ctx context.Context, env *events.Envelope) error {
-		if globalDeps == nil {
+		deps := loadDeps()
+		if deps == nil {
 			logger.Info("orderflow-inventory received event (no DB pool)",
 				"event_type", "StockReleaseRequested",
 				"event_id", env.EventID,
@@ -178,7 +198,7 @@ func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 			Payload:       payload,
 			Headers:       map[string]string{},
 		}
-		if err := globalDeps.repo.ReleaseStock(ctx, p.SKU, p.Quantity, outRec); err != nil {
+		if err := deps.repo.ReleaseStock(ctx, p.SKU, p.Quantity, outRec); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				logger.Warn("inventory StockReleaseRequested: sku not found",
 					"sku", p.SKU, "order_id", p.OrderID)
@@ -212,8 +232,15 @@ func emitStockReservationFailed(ctx context.Context, orderID, sku, reason string
 		Payload:       payload,
 		Headers:       map[string]string{},
 	}
-	if err := pgx.BeginFunc(ctx, globalDeps.pool, func(tx pgx.Tx) error {
-		return globalDeps.writer.Append(ctx, tx, outRec)
+	deps := loadDeps()
+	if deps == nil {
+		// No deps wired — nothing we can do; let the consumer
+		// mark the record for retry so it lands somewhere once
+		// the pool is up.
+		return errors.New("inventory: deps not wired")
+	}
+	if err := pgx.BeginFunc(ctx, deps.pool, func(tx pgx.Tx) error {
+		return deps.writer.Append(ctx, tx, outRec)
 	}); err != nil {
 		logger.Error("inventory emit StockReservationFailed", "err", err)
 		return err
