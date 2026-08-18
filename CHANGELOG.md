@@ -34,6 +34,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-18
+
+### Fixed — Senior-review pass
+
+This batch addresses findings from a Staff/Senior-level audit
+covering distributed-systems correctness, concurrency, and
+observability. The platform was previously end-to-end functional
+but unsafe under realistic failure modes (multiple replicas, restart
+loops, partial writes, retry storms). All changes preserve the
+existing API surface and saga state machine.
+
+- **Consumer offsets never committed** (`pkg/consumer/consumer.go`):
+  `CommitMarkedOffsets` was a no-op because no record was ever
+  marked. Added `MarkCommitRecords(rec)` after every successful
+  dispatch (and after DLQ exhaustion) so franz-go actually
+  advances the offset on each commit.
+- **No deduper wired in any service**: even with offsets fixed, the
+  in-memory deduper lost state on restart. Added
+  `pkg/consumer.RedisDeduper` (7-day TTL) and a
+  `NewDeduperFromRedisURL` helper; all 4 service binaries accept
+  and wire a deduper. Falls back to `NoopDeduper` when REDIS_URL
+  is unset so local development keeps working.
+- **Saga state-update and outbox.Append on separate transactions**:
+  every saga handler in `services/saga/internal/consumer/handlers.go`
+  could leave the saga advanced without the matching event emitted
+  on a transient failure. Refactored to wrap state-update +
+  emit in a single `pgx.BeginFunc`. Added tx-aware
+  `InsertTx`/`UpdateStateTx`/`GetTx` to the saga repository.
+- **Inventory never released stock on compensation**:
+  `StockReleaseRequestedPayload` carried only `OrderID` and
+  `ReservationID`, so the inventory handler couldn't decrement
+  `stock_items.reserved`. Every cancelled order leaked a phantom
+  reservation. Added `SKU` and `Quantity` to the payload; saga
+  emits one StockReleaseRequested per item; inventory now calls
+  `repo.ReleaseStock` atomically with the outbox row.
+- **Outbox poller double-published on multi-replica deploys**:
+  plain `SELECT ... WHERE status='PENDING'` had no row lock.
+  Two replicas would both pick up the same rows. Added
+  `FOR UPDATE SKIP LOCKED` and changed the `Source` interface to
+  `RunInTx` so fetch + publish + mark happen under one row lock.
+- **Payment events published to wrong topic**: `const topic = "order-events"`
+  in the payment consumer contradicted the spec / Helm. Now
+  publishes to `payment-events`; saga subscribes to it.
+- **Idempotency in-flight duplicates returned 200 with `"in-flight"`
+  body**: introduced `ErrInFlight` and mapped it to HTTP 409
+  Conflict. Stripe-style concurrent-retry semantics.
+- **`docker compose up` failed with "relation does not exist"**:
+  init scripts only created extensions. Mounted per-service
+  migrations and apply them after extensions.
+- **`Repository.Insert` ignored request context**: client
+  cancellation mid-write still committed. Added ctx to the
+  Repository interface; PGRepo honors it.
+- **Order consumer flipped cancelled orders back to confirmed** on
+  redelivered events: added `WHERE state NOT IN ('confirmed', 'cancelled')`
+  guard on `UPDATE orders`.
+- **Payment consumer deduped on paymentID (fresh UUID per delivery),
+  never on order_id**: added migration `0003_payment_order_unique.sql`
+  (UNIQUE constraint) and switched to `ON CONFLICT (order_id) DO NOTHING`.
+- **Consumer goroutines not tracked**: under Kubernetes rolling
+  deploys, main could exit while the consumer was still processing.
+  All 4 runners now take a `*sync.WaitGroup` and block shutdown on
+  it.
+
+### Housekeeping
+- README port claims now match code/Helm defaults (8081/8082/8083/8084).
+- Dropped `StatePaymentPending`/`StatePaymentComplete` saga constants
+  (declared but never wired in `transitionTable`).
+- Saga consumer `itemsJSON` error now propagated (was `_ =`).
+- Repository `List` clamp widened to 500 to match handler.
+- pkg/consumer swallowed errors now logged via slog.Warn.
+- `.gitignore` extended for Windows redirect targets (`nul`),
+  demo recording artifacts, and stray service logs.
+
+### Deferred (v1.2+)
+- Outbox-retry chaos assertion (currently asserts only that the
+  order service stays healthy after Kafka kill; full recovery
+  assertion blocked on broker-discovery in service binaries).
+- ghcr.io publishing pipeline.
+
 ## [1.1.0-pre] - 2026-08-17
 
 ### Fixed
