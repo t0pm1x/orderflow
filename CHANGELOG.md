@@ -34,6 +34,162 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-18
+
+### Fixed — adversarial-audit follow-up
+
+A senior/staff-level adversarial audit (see `docs/superpowers/portfolio/`)
+uncovered one critical regression and three production-stopping bugs
+that the v1.1.0-pre batch missed. All fixes preserve the existing
+API surface; new handler-level tests close the testing gap that
+allowed the regression to slip past.
+
+- **CRITICAL — outbox poller never marked rows SENT** (v1.1.0-pre
+  regression). The refactor that moved publish-and-mark into a
+  RunInTx closure under FOR UPDATE SKIP LOCKED also moved the
+  MarkSent call site out of the closure without wiring the new
+  tx-aware MarkSentTx. The poller was returning nil from the
+  closure, the row's status flip never happened, and the next
+  poll re-fetched and re-published the same rows forever. Fix:
+  collect the batch's event IDs and call src.MarkSentTx inside
+  the closure on success — the row's status flip and the row's
+  lock release commit atomically.
+
+- **CRITICAL — saga handlers re-emitted downstream events on
+  Kafka redelivery** (4 of 6 handlers). StockReservedHandler,
+  PaymentCompletedHandler, PaymentFailedHandler, and
+  StockReservationFailedHandler called an unguarded
+  UpdateStateTx (matching any state) and then unconditionally
+  emitted a downstream event. On every Kafka rebalance /
+  restart / duplicate delivery, the handler:
+  1. bumped updated_at (no-op on state)
+  2. emitted a fresh outbox row
+
+  Worst case: a second PaymentRequested for the same order
+  caused a second provider.Charge() in the payment service
+  (the DB-level payments.order_id dedupe runs AFTER the charge).
+  Fix: new repository method TransitionStateTx(ctx, tx, orderID,
+  from, to) that returns (true, nil) on transition, (false, nil)
+  when state is already past `from` (idempotent replay — handler
+  must NOT emit a downstream event in this branch). Each of the
+  4 non-idempotent handlers now checks the result and skips
+  outbox emission on a false return.
+
+- **CRITICAL — TTL sweep `compensate` had no state guard**. A
+  saga already in `state='compensated'` (e.g. set by
+  PaymentFailedHandler between the sweep's SELECT and UPDATE)
+  would still match the sweep's UPDATE, and the sweep would
+  emit a second StockReleaseRequested + OrderCancelled. Fix:
+  add `AND state NOT IN ('completed', 'compensated')` to the
+  WHERE clause, check RowsAffected, and skip outbox emission
+  when 0.
+
+- **CRITICAL — `ReleaseStock` SQL had no `WHERE reserved >= qty`
+  guard**. A buggy producer emitting a larger release than the
+  original reservation would drive stock_items.reserved negative
+  and inflate available on every subsequent release — permanent
+  counter corruption. Fix: add `AND reserved >= \$2` to the
+  WHERE clause; RowsAffected=0 (over-release or unknown SKU)
+  returns ErrNotFound so the consumer ack-skips.
+
+- **Payment webhook had no terminal-state guard** (P1-#1). A
+  late webhook with status='failed' against a payment already
+  in StatusCaptured would overwrite the status AND emit
+  PaymentFailed. Fix: new Repository method
+  UpdateStatusFromNonTerminal(id, to, events) that runs
+  UPDATE … WHERE id=\$1 AND status NOT IN ('captured',
+  'failed'); RowsAffected=0 when the row is already terminal, in
+  which case no outbox row is emitted.
+
+- **Order consumer's terminal-state guard excluded 'failed'**
+  (P1-#2). Pre-v1.1.1 SQL excluded only 'confirmed' and
+  'cancelled', letting a late OrderConfirmed event resurrect a
+  'failed' order to 'confirmed'. StateFailed is reachable via
+  the saga TTL sweep, so it must be protected by the same guard.
+  Fix: add 'failed' to the NOT IN clause.
+
+- **Idempotency middleware cached empty body on empty response**
+  (P1-#7). A handler that returned without writing (panic
+  recovered, ctx cancelled mid-flight, or simply a no-op
+  handler) had its empty body cached via Complete(). The next
+  retry got HTTP 200 with body='', falsely reporting success
+  to the saga. Fix: if buf.status==0, call Release() instead of
+  Complete() so the next retry hits the handler.
+
+- **Idempotency middleware crashed on handler panic**. A panic
+  inside next.ServeHTTP propagated out of the middleware,
+  leaving the in-flight marker in Redis for the full TTL (24h
+  by default) — operators saw 409s pile up. Fix: wrap
+  next.ServeHTTP in defer recover(), log, and Release the
+  reservation so a retry can succeed once the underlying bug
+  is fixed.
+
+- **Consumer dispatch crashed on handler panic** (P1-#6). A
+  single panic killed the consumer goroutine silently and
+  events piled up in Kafka retention until Kubernetes noticed
+  the failed liveness probe. Fix: defer recover() in dispatch,
+  log with event_id / event_type / offset / partition, mark the
+  record for commit so the panic doesn't loop on retry.
+
+- **Webhook had no max body size** (P1-#9). json.NewDecoder on
+  r.Body would allocate the entire JSON object in memory before
+  any size check. Fix: cap the body at 64 KiB via
+  http.MaxBytesReader.
+
+- **Global vars `globalHandler` / `globalDeps` were plain
+  pointers** (P1-#10). Go's memory model doesn't guarantee that
+  a pointer write is visible atomically to readers on other
+  CPUs — a concurrent read in the consumer goroutine could
+  observe a torn pointer. Fix: switch to atomic.Pointer[Handler]
+  / atomic.Pointer[handlerDeps]. The Store/Load semantics are
+  well-defined across goroutines and lock-free on the hot
+  path (every Kafka record).
+
+- **events.Client.Publish ignored ctx**. The convenience
+  Publish method used context.Background() and a slow Kafka
+  produce kept the service goroutine alive past the SIGTERM
+  grace period. Fix: Publish now takes ctx and forwards it to
+  PublishRaw.
+
+### Tests
+- `services/saga/internal/consumer/handlers_idempotency_test.go`:
+  the first handler-level (not just registry-level) tests in
+  the saga package. They exercise the FULL handler with a real
+  PostgreSQL transaction and would have caught P0-#2 if they
+  had existed.
+
+- `services/payment/internal/webhook/handler_test.go`:
+  TestWebhook_TerminalGuard_LateFailedAfterCaptured,
+  TestWebhook_TerminalGuard_LateCapturedAfterFailed,
+  TestWebhook_TerminalGuard_SameStatusReplay.
+
+- `pkg/consumer/consumer_test.go`:
+  TestDispatch_RecoversHandlerPanic.
+
+- `services/payment/internal/idempotency/middleware_test.go`:
+  TestMiddleware_EmptyBodyReleases,
+  TestMiddleware_HandlerPanicRecovers.
+
+- `pkg/outbox/poller_test.go`: extended
+  TestPoller_PollsAndPublishesOnce to assert MarkSentTx was
+  called. The test now FAILS if MarkSentTx is removed (catches
+  the v1.1.0-pre regression).
+
+### Deferred to v1.2+
+- P1-#3: per-Pod attempts counter (sync.Map in the poller). The
+  saga's DB attempts column is incremented by MarkFailedTx but
+  unused for the DLQ decision; order/payment/inventory don't
+  even have an attempts column. Fix requires schema changes
+  (0002 migration for each of the 3 outbox tables) plus
+  refactoring the poller to read attempts from the row.
+- P1-#4: KafkaPublisher.Publish is documented as "batched into
+  a single Kafka producer transaction" but actually makes N
+  separate PublishRaw calls. Fix requires adding
+  BeginTransaction/EndTransaction to the KafkaClient interface
+  and adopting franz-go's transaction API.
+- Webhook body-size-vs-strict-mode + idempotency-key body
+  mismatch (Stripe-style 422).
+
 ## [1.1.1] - 2026-08-18
 
 ### Fixed — Senior-review pass
