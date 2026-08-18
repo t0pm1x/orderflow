@@ -120,24 +120,33 @@ func (r *PGRepo) ReserveStock(ctx context.Context, sku string, qty int, ev outbo
 }
 
 // ReleaseStock atomically increments available, decrements
-// reserved, and appends an outbox event. Missing sku surfaces as
-// ErrNotFound; concurrent modification is not possible here
-// because we do not pin a specific version on the UPDATE (callers
-// that need stricter guarantees should re-read and retry).
+// reserved, and appends an outbox event. The WHERE clause pins
+// reserved >= qty so a buggy producer emitting a larger release
+// than the original reservation cannot drive reserved negative
+// (which would silently inflate available on every subsequent
+// release — a permanent stock-counter corruption).
+//
+// Missing sku OR over-release surfaces as ErrNotFound (callers
+// (e.g. the inventory consumer) ack-and-skip on ErrNotFound so
+// the poison event doesn't loop on the consumer).
 func (r *PGRepo) ReleaseStock(ctx context.Context, sku string, qty int, ev outbox.Record) error {
+	if qty <= 0 {
+		return fmt.Errorf("inventory: release qty must be positive (got %d)", qty)
+	}
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx,
 			`UPDATE stock_items
 			    SET available = available + $1,
 			        reserved  = reserved - $2,
 			        version   = version + 1
-			  WHERE sku = $3`,
+			  WHERE sku = $3
+			    AND reserved >= $2`,
 			qty, qty, sku)
 		if err != nil {
 			return err
 		}
 		if ct.RowsAffected() == 0 {
-			return fmt.Errorf("%w: %s", ErrNotFound, sku)
+			return fmt.Errorf("%w: %s (reserved < qty)", ErrNotFound, sku)
 		}
 		return r.writer.Append(ctx, tx, ev)
 	})
