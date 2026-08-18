@@ -102,7 +102,7 @@ jobs:
             cmd/inventory/go.sum
             cmd/saga/go.sum
 
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v9
         with:
           working-directory: ${{ matrix.module }}
           args: --path-mode=abs --timeout=5m
