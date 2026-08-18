@@ -30,10 +30,18 @@ type Saga struct {
 // consumer handlers depend on this so they can be unit-tested with
 // a fake (the handler tests use a small inline fake, not a mock
 // library — keeps stdlib-only).
+//
+// InsertTx / UpdateStateTx / GetTx accept an explicit pgx.Tx so
+// callers can wrap the state change and a downstream outbox Append
+// in the same transaction. The non-Tx variants remain for callers
+// that don't need atomicity.
 type Repository interface {
 	Insert(ctx context.Context, s *Saga) error
+	InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) error
 	Get(ctx context.Context, orderID string) (*Saga, error)
+	GetTx(ctx context.Context, tx pgx.Tx, orderID string) (*Saga, error)
 	UpdateState(ctx context.Context, orderID string, state saga.State) error
+	UpdateStateTx(ctx context.Context, tx pgx.Tx, orderID string, state saga.State) error
 	SetReservationID(ctx context.Context, orderID, reservationID string) error
 }
 
@@ -71,6 +79,19 @@ func (r *PGRepo) Insert(ctx context.Context, s *Saga) error {
 	return err
 }
 
+// InsertTx is the tx-aware variant of Insert. The caller owns the
+// transaction lifecycle — typically pgx.BeginFunc wrapping both the
+// Insert and a downstream outbox.Append so the saga row and its
+// events commit (or roll back) atomically.
+func (r *PGRepo) InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '5 minutes')`,
+		s.OrderID, string(s.State), s.Items, s.TotalCents, s.ReservationID,
+	)
+	return err
+}
+
 // Get reads a saga row by order_id. Returns ErrNotFound when the
 // row doesn't exist (so handlers can skip events that race ahead of
 // the saga row).
@@ -92,10 +113,49 @@ func (r *PGRepo) Get(ctx context.Context, orderID string) (*Saga, error) {
 	return &s, nil
 }
 
+// GetTx is the tx-aware variant of Get — reads a saga row inside an
+// open transaction.
+func (r *PGRepo) GetTx(ctx context.Context, tx pgx.Tx, orderID string) (*Saga, error) {
+	row := tx.QueryRow(ctx,
+		`SELECT order_id, state, items, total_cents, reservation_id
+		   FROM order_sagas WHERE order_id = $1`, orderID)
+	var (
+		s     Saga
+		state string
+	)
+	if err := row.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	s.State = saga.State(state)
+	return &s, nil
+}
+
 // UpdateState transitions the saga row's state column. Returns
 // ErrNotFound when the row doesn't exist (vs. a real SQL error).
 func (r *PGRepo) UpdateState(ctx context.Context, orderID string, state saga.State) error {
 	ct, err := r.pool.Exec(ctx,
+		`UPDATE order_sagas SET state = $1, updated_at = NOW() WHERE order_id = $2`,
+		string(state), orderID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateStateTx is the tx-aware variant of UpdateState. Use this
+// when the state change must commit atomically with downstream writes
+// (typically the saga's outbox Append). The handler-level contract
+// is "state and emitted event commit together or neither does" —
+// without it, a crash between the two writes leaves the saga stuck
+// until the cross-restart TTL sweep compensates (5-min latency).
+func (r *PGRepo) UpdateStateTx(ctx context.Context, tx pgx.Tx, orderID string, state saga.State) error {
+	ct, err := tx.Exec(ctx,
 		`UPDATE order_sagas SET state = $1, updated_at = NOW() WHERE order_id = $2`,
 		string(state), orderID)
 	if err != nil {

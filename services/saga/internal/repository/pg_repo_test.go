@@ -239,7 +239,79 @@ func TestPGRepo_Get_MissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// TestPGRepo_ListExpired_ReturnsOnlyExpiredAndNonTerminal pins the
+// TestPGRepo_InsertTx_RollbackUndoesInsert: when a caller wraps
+// InsertTx in pgx.BeginFunc and the surrounding tx is rolled back,
+// the row must NOT persist. This is the contract the saga consumer
+// handlers rely on to keep state-update and outbox-Append atomic —
+// without it, a transient failure between UpdateState and Append
+// would leave the saga advanced without the matching event.
+func TestPGRepo_InsertTx_RollbackUndoesInsert(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+	ctx := context.Background()
+
+	s := &Saga{
+		OrderID: "88888888-8888-8888-8888-888888888888",
+		State:   "initiated",
+		Items:   []byte(`[]`),
+	}
+
+	// InsertTx inside a transaction we deliberately rollback.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := repo.InsertTx(ctx, tx, s); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("InsertTx: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	if _, err := repo.Get(ctx, s.OrderID); err != ErrNotFound {
+		t.Errorf("after rollback: Get should return ErrNotFound; got %v", err)
+	}
+}
+
+// TestPGRepo_UpdateStateTx_RollbackUndoesUpdate: same contract for
+// UpdateStateTx — the saga's state column must not change if the
+// caller rolls back. Without this, the saga could reach StateCompleted
+// while the corresponding OrderConfirmed event never gets emitted.
+func TestPGRepo_UpdateStateTx_RollbackUndoesUpdate(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+	ctx := context.Background()
+
+	s := &Saga{
+		OrderID: "99999999-9999-9999-9999-999999999999",
+		State:   "initiated",
+		Items:   []byte(`[]`),
+	}
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := repo.UpdateStateTx(ctx, tx, s.OrderID, "completed"); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("UpdateStateTx: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	got, err := repo.Get(ctx, s.OrderID)
+	if err != nil {
+		t.Fatalf("Get after rollback: %v", err)
+	}
+	if got.State != "initiated" {
+		t.Errorf("after rollback: state must remain initiated; got %q", got.State)
+	}
+}
 // TTL sweep contract: ListExpired must return only sagas whose
 // expires_at is in the past AND whose state is neither "completed"
 // nor "compensated". Sagas that expired but are already terminal

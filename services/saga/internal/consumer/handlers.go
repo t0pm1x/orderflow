@@ -4,9 +4,10 @@
 // PaymentFailed / StockReleased drive compensation.
 //
 // Handlers persist state changes via repository.PGRepo and emit
-// downstream events via outbox.PGWriter. The two writes happen in
-// the same pgx.Tx (see emit) so a handler that crashes mid-step
-// leaves no orphan rows.
+// downstream events via outbox.PGWriter. State-update and outbox
+// Append happen in the same pgx.Tx (see withTx) so a handler that
+// crashes mid-step leaves no orphan rows — the saga row only advances
+// if the matching event is queued for publish.
 package consumer
 
 import (
@@ -70,7 +71,9 @@ func (h *Handler) Registry() pkgconsumer.HandlerRegistry {
 
 // OrderCreatedHandler starts a new saga. Inserts the saga row in
 // StateInitiated and emits StockReserveRequested for the order's
-// first item (multi-item flow is out of scope for v0.5.0).
+// first item (multi-item flow is out of scope for v0.5.0). Both
+// writes share one pgx.BeginFunc so the saga row only commits if
+// the outbox event is queued.
 func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID    string `json:"order_id"`
@@ -93,23 +96,31 @@ func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope)
 	first := p.Items[0]
 
 	reservationID := uuid.NewString()
-	itemsJSON, _ := json.Marshal(p.Items)
-
-	if err := h.repo.Insert(ctx, &repository.Saga{
-		OrderID:       p.OrderID,
-		State:         sagapkg.StateInitiated,
-		Items:         itemsJSON,
-		TotalCents:    p.TotalCents,
-		ReservationID: reservationID,
-	}); err != nil {
+	itemsJSON, err := json.Marshal(p.Items)
+	if err != nil {
 		return err
 	}
 
-	return h.emit(ctx, p.OrderID, "StockReserveRequested", sagaev.StockReserveRequestedPayload{
-		OrderID:       p.OrderID,
-		SKU:           first.SKU,
-		Quantity:      first.Quantity,
-		ReservationID: reservationID,
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		if err := h.repo.InsertTx(ctx, tx, &repository.Saga{
+			OrderID:       p.OrderID,
+			State:         sagapkg.StateInitiated,
+			Items:         itemsJSON,
+			TotalCents:    p.TotalCents,
+			ReservationID: reservationID,
+		}); err != nil {
+			return err
+		}
+		payload, perr := json.Marshal(sagaev.StockReserveRequestedPayload{
+			OrderID:       p.OrderID,
+			SKU:           first.SKU,
+			Quantity:      first.Quantity,
+			ReservationID: reservationID,
+		})
+		if perr != nil {
+			return perr
+		}
+		return h.appendOutbox(ctx, tx, "StockReserveRequested", p.OrderID, payload)
 	})
 }
 
@@ -117,7 +128,8 @@ func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope)
 // emits PaymentRequested with the saga's stored total. The
 // AmountCents comes from the saga row, not the StockReserved
 // payload, because the inventory event doesn't carry the order
-// total (separate aggregate).
+// total (separate aggregate). State change + outbox Append share
+// one transaction.
 func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -125,26 +137,32 @@ func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return err
 	}
-	s, err := h.repo.Get(ctx, p.OrderID)
-	if err != nil {
-		if err == repository.ErrNotFound {
-			h.logger.Warn("StockReserved for unknown saga", "order_id", p.OrderID)
-			return nil
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		s, err := h.repo.GetTx(ctx, tx, p.OrderID)
+		if err != nil {
+			if err == repository.ErrNotFound {
+				h.logger.Warn("StockReserved for unknown saga", "order_id", p.OrderID)
+				return nil
+			}
+			return err
 		}
-		return err
-	}
-	if err := h.repo.UpdateState(ctx, p.OrderID, sagapkg.StateStockReserved); err != nil {
-		return err
-	}
-	return h.emit(ctx, p.OrderID, "PaymentRequested", sagaev.PaymentRequestedPayload{
-		OrderID:        p.OrderID,
-		AmountCents:    s.TotalCents,
-		IdempotencyKey: uuid.NewString(),
+		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateStockReserved); err != nil {
+			return err
+		}
+		payload, perr := json.Marshal(sagaev.PaymentRequestedPayload{
+			OrderID:        p.OrderID,
+			AmountCents:    s.TotalCents,
+			IdempotencyKey: uuid.NewString(),
+		})
+		if perr != nil {
+			return perr
+		}
+		return h.appendOutbox(ctx, tx, "PaymentRequested", p.OrderID, payload)
 	})
 }
 
 // PaymentCompletedHandler is the happy-path terminal: advance to
-// StateCompleted and emit OrderConfirmed.
+// StateCompleted and emit OrderConfirmed — atomically.
 func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -152,24 +170,29 @@ func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envel
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return err
 	}
-	if err := h.repo.UpdateState(ctx, p.OrderID, sagapkg.StateCompleted); err != nil {
-		if err == repository.ErrNotFound {
-			h.logger.Warn("PaymentCompleted for unknown saga", "order_id", p.OrderID)
-			return nil
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateCompleted); err != nil {
+			if err == repository.ErrNotFound {
+				h.logger.Warn("PaymentCompleted for unknown saga", "order_id", p.OrderID)
+				return nil
+			}
+			return err
 		}
-		return err
-	}
-	return h.emit(ctx, p.OrderID, "OrderConfirmed", sagaev.OrderConfirmedPayload{
-		OrderID:     p.OrderID,
-		ConfirmedAt: nowRFC3339(),
+		payload, perr := json.Marshal(sagaev.OrderConfirmedPayload{
+			OrderID:     p.OrderID,
+			ConfirmedAt: nowRFC3339(),
+		})
+		if perr != nil {
+			return perr
+		}
+		return h.appendOutbox(ctx, tx, "OrderConfirmed", p.OrderID, payload)
 	})
 }
 
 // PaymentFailedHandler triggers compensation. The saga transitions
-// to StateCompensated, then emits StockReleaseRequested (so
-// inventory releases the reservation) and OrderCancelled (so the
-// order service can mark the order as cancelled). ReservationID
-// comes from the saga row — PaymentFailed doesn't carry it.
+// to StateCompensated and emits StockReleaseRequested + OrderCancelled
+// — all in one transaction. ReservationID comes from the saga row
+// because PaymentFailed doesn't carry it.
 func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -177,36 +200,46 @@ func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return err
 	}
-	s, err := h.repo.Get(ctx, p.OrderID)
-	if err != nil {
-		if err == repository.ErrNotFound {
-			h.logger.Warn("PaymentFailed for unknown saga", "order_id", p.OrderID)
-			return nil
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		s, err := h.repo.GetTx(ctx, tx, p.OrderID)
+		if err != nil {
+			if err == repository.ErrNotFound {
+				h.logger.Warn("PaymentFailed for unknown saga", "order_id", p.OrderID)
+				return nil
+			}
+			return err
 		}
-		return err
-	}
-	if err := h.repo.UpdateState(ctx, p.OrderID, sagapkg.StateCompensated); err != nil {
-		return err
-	}
-	if err := h.emit(ctx, p.OrderID, "StockReleaseRequested", sagaev.StockReleaseRequestedPayload{
-		OrderID:       p.OrderID,
-		ReservationID: s.ReservationID,
-	}); err != nil {
-		return err
-	}
-	return h.emit(ctx, p.OrderID, "OrderCancelled", sagaev.OrderCancelledPayload{
-		OrderID: p.OrderID,
-		Reason:  "payment_failed",
-		Source:  "saga",
+		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateCompensated); err != nil {
+			return err
+		}
+		releasePayload, perr := json.Marshal(sagaev.StockReleaseRequestedPayload{
+			OrderID:       p.OrderID,
+			ReservationID: s.ReservationID,
+		})
+		if perr != nil {
+			return perr
+		}
+		if err := h.appendOutbox(ctx, tx, "StockReleaseRequested", p.OrderID, releasePayload); err != nil {
+			return err
+		}
+		cancelPayload, perr := json.Marshal(sagaev.OrderCancelledPayload{
+			OrderID: p.OrderID,
+			Reason:  "payment_failed",
+			Source:  "saga",
+		})
+		if perr != nil {
+			return perr
+		}
+		return h.appendOutbox(ctx, tx, "OrderCancelled", p.OrderID, cancelPayload)
 	})
 }
 
 // StockReleasedHandler is the compensation ack from inventory. The
 // saga is already in StateCompensated by the time this fires — we
-// just touch updated_at so observability tools see the chain
-// close. Note: the brief labels this terminal "fully_compensated"
-// but the state machine defines StateCompensated as terminal
-// already, so we keep it consistent with state.go.
+// touch updated_at so observability tools see the chain close.
+// Note: the brief labels this terminal "fully_compensated" but the
+// state machine defines StateCompensated as terminal already, so
+// we keep it consistent with state.go.
 func (h *Handler) StockReleasedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -226,6 +259,7 @@ func (h *Handler) StockReleasedHandler(ctx context.Context, env *events.Envelope
 // StockReservationFailedHandler is the inventory-side failure
 // path: saga never started, so no compensation is needed — just
 // emit OrderCancelled so the order service can mark it failed.
+// State change and outbox Append share one tx.
 func (h *Handler) StockReservationFailedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -233,17 +267,23 @@ func (h *Handler) StockReservationFailedHandler(ctx context.Context, env *events
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return err
 	}
-	if err := h.repo.UpdateState(ctx, p.OrderID, sagapkg.StateCompensated); err != nil {
-		if err == repository.ErrNotFound {
-			h.logger.Warn("StockReservationFailed for unknown saga", "order_id", p.OrderID)
-			return nil
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateCompensated); err != nil {
+			if err == repository.ErrNotFound {
+				h.logger.Warn("StockReservationFailed for unknown saga", "order_id", p.OrderID)
+				return nil
+			}
+			return err
 		}
-		return err
-	}
-	return h.emit(ctx, p.OrderID, "OrderCancelled", sagaev.OrderCancelledPayload{
-		OrderID: p.OrderID,
-		Reason:  "stock_failed",
-		Source:  "saga",
+		payload, perr := json.Marshal(sagaev.OrderCancelledPayload{
+			OrderID: p.OrderID,
+			Reason:  "stock_failed",
+			Source:  "saga",
+		})
+		if perr != nil {
+			return perr
+		}
+		return h.appendOutbox(ctx, tx, "OrderCancelled", p.OrderID, payload)
 	})
 }
 
@@ -255,25 +295,18 @@ func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// emit writes a single outbox row inside a fresh pgx.Tx. The tx
-// commits and the row goes to PENDING for the poller to publish.
-// Returns the tx error directly; the poller's retry semantics
-// handle transient errors.
-func (h *Handler) emit(ctx context.Context, aggregateID, eventType string, payload any) error {
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		return h.writer.Append(ctx, tx, platformoutbox.Record{
-			EventID:       uuid.NewString(),
-			EventType:     eventType,
-			AggregateID:   aggregateID,
-			AggregateType: "Order",
-			SchemaVersion: "1.0",
-			Topic:         outbox.Topic,
-			Payload:       payloadBytes,
-			Headers:       map[string]string{},
-		})
+// appendOutbox writes a single outbox row inside the supplied tx.
+// Used by every handler that needs to atomically advance saga state
+// AND queue the matching downstream event.
+func (h *Handler) appendOutbox(ctx context.Context, tx pgx.Tx, eventType, aggregateID string, payload []byte) error {
+	return h.writer.Append(ctx, tx, platformoutbox.Record{
+		EventID:       uuid.NewString(),
+		EventType:     eventType,
+		AggregateID:   aggregateID,
+		AggregateType: "Order",
+		SchemaVersion: "1.0",
+		Topic:         outbox.Topic,
+		Payload:       payload,
+		Headers:       map[string]string{},
 	})
 }
