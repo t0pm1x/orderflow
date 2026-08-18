@@ -56,6 +56,17 @@ func NewHandler(pool *pgxpool.Pool, logger *slog.Logger) *Handler {
 	}
 }
 
+// WithRepoAndWriter returns a copy of h that uses the supplied repo
+// and writer. Used by handler-level integration tests to inject
+// dependencies without exposing internal struct fields. Production
+// code uses NewHandler.
+func (h *Handler) WithRepoAndWriter(repo *repository.PGRepo, writer *outbox.PGWriter) *Handler {
+	cp := *h
+	cp.repo = repo
+	cp.writer = writer
+	return &cp
+}
+
 // Registry returns the saga handler registry. Every event the saga
 // runtime consumes has a handler here; the consumer acks-and-skips
 // unknown event_types (pkg/consumer behavior).
@@ -129,8 +140,13 @@ func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope)
 // emits PaymentRequested with the saga's stored total. The
 // AmountCents comes from the saga row, not the StockReserved
 // payload, because the inventory event doesn't carry the order
-// total (separate aggregate). State change + outbox Append share
-// one transaction.
+// total (separate aggregate).
+//
+// Idempotency: TransitionStateTx matches state='initiated' so a
+// redelivered StockReserved (Kafka rebalance, consumer restart
+// after the tx committed but before the offset was marked) is a
+// no-op — no second PaymentRequested is emitted, no double
+// charge downstream.
 func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -147,8 +163,14 @@ func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope
 			}
 			return err
 		}
-		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateStockReserved); err != nil {
+		advanced, err := h.repo.TransitionStateTx(ctx, tx, p.OrderID, sagapkg.StateInitiated, sagapkg.StateStockReserved)
+		if err != nil {
 			return err
+		}
+		if !advanced {
+			h.logger.Info("StockReserved: saga already past initiated, skipping emit",
+				"order_id", p.OrderID, "current_state", s.State)
+			return nil
 		}
 		payload, perr := json.Marshal(sagaev.PaymentRequestedPayload{
 			OrderID:        p.OrderID,
@@ -164,6 +186,11 @@ func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope
 
 // PaymentCompletedHandler is the happy-path terminal: advance to
 // StateCompleted and emit OrderConfirmed — atomically.
+//
+// Idempotency: TransitionStateTx matches any non-terminal state
+// (initiated or stock_reserved). A redelivered PaymentCompleted
+// (replay or duplicate consumer) is a no-op for both state and
+// outbox emission.
 func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -172,12 +199,30 @@ func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envel
 		return err
 	}
 	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateCompleted); err != nil {
-			if err == repository.ErrNotFound {
-				h.logger.Warn("PaymentCompleted for unknown saga", "order_id", p.OrderID)
-				return nil
+		// Try the two legal pre-terminal states in order. Either
+		// match advances the saga; both are non-terminal so
+		// either can transition to StateCompleted.
+		var advanced bool
+		var currentState string
+		for _, from := range []sagapkg.State{sagapkg.StateStockReserved, sagapkg.StateInitiated} {
+			ok, err := h.repo.TransitionStateTx(ctx, tx, p.OrderID, from, sagapkg.StateCompleted)
+			if err != nil {
+				if err == repository.ErrNotFound {
+					h.logger.Warn("PaymentCompleted for unknown saga", "order_id", p.OrderID)
+					return nil
+				}
+				return err
 			}
-			return err
+			if ok {
+				advanced = true
+				break
+			}
+			currentState = string(from)
+		}
+		if !advanced {
+			h.logger.Info("PaymentCompleted: saga already terminal, skipping emit",
+				"order_id", p.OrderID, "tried_from", currentState)
+			return nil
 		}
 		payload, perr := json.Marshal(sagaev.OrderConfirmedPayload{
 			OrderID:     p.OrderID,
@@ -195,6 +240,10 @@ func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envel
 // in the saga row + OrderCancelled — all in one transaction. SKU
 // and Quantity come from the saga row because PaymentFailed doesn't
 // carry them.
+//
+// Idempotency: TransitionStateTx matches any non-terminal state
+// (initiated or stock_reserved). A redelivered PaymentFailed is
+// a silent no-op.
 func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -211,8 +260,21 @@ func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope
 			}
 			return err
 		}
-		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateCompensated); err != nil {
+		advanced, err := h.repo.TransitionStateTx(ctx, tx, p.OrderID, sagapkg.StateStockReserved, sagapkg.StateCompensated)
+		if err != nil {
 			return err
+		}
+		if !advanced {
+			// Try the other non-terminal state (initiated → failed before stock reserved).
+			ok2, err2 := h.repo.TransitionStateTx(ctx, tx, p.OrderID, sagapkg.StateInitiated, sagapkg.StateCompensated)
+			if err2 != nil {
+				return err2
+			}
+			if !ok2 {
+				h.logger.Info("PaymentFailed: saga already terminal, skipping emit",
+					"order_id", p.OrderID)
+				return nil
+			}
 		}
 		if err := emitReleaseForItems(ctx, tx, h, p.OrderID, s.ReservationID, s.Items); err != nil {
 			return err
@@ -285,9 +347,12 @@ func (h *Handler) StockReleasedHandler(ctx context.Context, env *events.Envelope
 }
 
 // StockReservationFailedHandler is the inventory-side failure
-// path: saga never started, so no compensation is needed — just
-// emit OrderCancelled so the order service can mark it failed.
-// State change and outbox Append share one tx.
+// path: saga is in StateInitiated (never got stock reserved), so
+// we transition directly to StateCompensated and emit
+// OrderCancelled so the order service can mark it failed.
+//
+// Idempotency: TransitionStateTx matches state='initiated'. A
+// redelivered StockReservationFailed is a silent no-op.
 func (h *Handler) StockReservationFailedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -296,12 +361,18 @@ func (h *Handler) StockReservationFailedHandler(ctx context.Context, env *events
 		return err
 	}
 	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateCompensated); err != nil {
+		advanced, err := h.repo.TransitionStateTx(ctx, tx, p.OrderID, sagapkg.StateInitiated, sagapkg.StateCompensated)
+		if err != nil {
 			if err == repository.ErrNotFound {
 				h.logger.Warn("StockReservationFailed for unknown saga", "order_id", p.OrderID)
 				return nil
 			}
 			return err
+		}
+		if !advanced {
+			h.logger.Info("StockReservationFailed: saga already past initiated, skipping emit",
+				"order_id", p.OrderID)
+			return nil
 		}
 		payload, perr := json.Marshal(sagaev.OrderCancelledPayload{
 			OrderID: p.OrderID,

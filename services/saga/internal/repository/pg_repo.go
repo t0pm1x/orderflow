@@ -8,6 +8,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,6 +43,12 @@ type Repository interface {
 	GetTx(ctx context.Context, tx pgx.Tx, orderID string) (*Saga, error)
 	UpdateState(ctx context.Context, orderID string, state saga.State) error
 	UpdateStateTx(ctx context.Context, tx pgx.Tx, orderID string, state saga.State) error
+	// TransitionStateTx updates state only if the row's current
+	// state matches `from`. Returns (true, nil) on transition,
+	// (false, nil) when state is already past `from` (idempotent
+	// replay — handler should NOT emit a downstream event in this
+	// branch), (false, ErrNotFound) when the row doesn't exist.
+	TransitionStateTx(ctx context.Context, tx pgx.Tx, orderID string, from, to saga.State) (bool, error)
 	SetReservationID(ctx context.Context, orderID, reservationID string) error
 }
 
@@ -165,6 +172,50 @@ func (r *PGRepo) UpdateStateTx(ctx context.Context, tx pgx.Tx, orderID string, s
 		return ErrNotFound
 	}
 	return nil
+}
+
+// TransitionStateTx is the tx-aware variant of a guarded state
+// transition: the row is updated only if its current state equals
+// `from`. Returns (true, nil) on success, (false, nil) when the
+// row's state is already past `from` (i.e. another tx beat us to it,
+// or this is a Kafka replay the consumer has already processed).
+// Returns (false, ErrNotFound) when the saga row doesn't exist.
+//
+// This is the contract the saga handlers need for idempotent
+// outbox emission: each downstream event is emitted only on the
+// FIRST observation of the source transition. Replays are silent
+// no-ops. The pre-v1.1 handlers used an unguarded UPDATE which
+// let the same logical event fan out into multiple outbox rows on
+// every Kafka redelivery — surfacing as duplicate PaymentRequested
+// (and double-charge) in production.
+func (r *PGRepo) TransitionStateTx(ctx context.Context, tx pgx.Tx, orderID string, from, to saga.State) (bool, error) {
+	ct, err := tx.Exec(ctx,
+		`UPDATE order_sagas
+		    SET state = $1, updated_at = NOW()
+		  WHERE order_id = $2
+		    AND state = $3`,
+		string(to), orderID, string(from))
+	if err != nil {
+		return false, err
+	}
+	switch ct.RowsAffected() {
+	case 1:
+		return true, nil
+	case 0:
+		// Distinguish 'no row' from 'row but state already past'.
+		var current string
+		if err := tx.QueryRow(ctx,
+			`SELECT state FROM order_sagas WHERE order_id = $1`, orderID,
+		).Scan(&current); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false, ErrNotFound
+			}
+			return false, err
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("TransitionStateTx: unexpected RowsAffected=%d for order_id=%s", ct.RowsAffected(), orderID)
+	}
 }
 
 // SetReservationID updates the reservation_id column. Used when
