@@ -22,9 +22,11 @@ import (
 	"github.com/t0pm1x/orderflow/services/payment/internal/provider"
 )
 
-// topic is the Kafka topic the Payment Service emits to and (the
-// saga publishes PaymentRequested on the same topic).
-const topic = "order-events"
+// topic is the Kafka topic the Payment Service emits
+// PaymentCompleted / PaymentFailed to. The saga service subscribes
+// to this topic (alongside order-events + inventory-events) so it
+// sees the payment result for the saga it started.
+const topic = "payment-events"
 
 // Handler is the real Payment Service handler for PaymentRequested.
 // It calls the mock provider, persists the payment row, and emits

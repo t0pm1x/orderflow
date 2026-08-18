@@ -1,18 +1,20 @@
 // Package consumer runner: wires pkg/consumer.New for the Saga
-// Service. Reads its env config (KAFKA_BROKER, GROUP_ID), creates
+// Service. It reads its env config (KAFKA_BROKER, GROUP_ID), creates
 // the franz-go client, starts the consumer in a goroutine, and
 // returns a shutdown handle.
 //
-// The saga runtime consumes order-events and inventory-events.
-// order-events: OrderCreated (start), PaymentCompleted (-> OrderConfirmed),
-// PaymentFailed (-> compensation), OrderCancelled (ack).
-// inventory-events: StockReserved (-> PaymentRequested),
-// StockReservationFailed (-> OrderCancelled), StockReleased (audit).
+// The saga runtime consumes three topics:
+//   - order-events:    OrderCreated (start saga),
+//                      OrderCancelled (ack), PaymentRequested (audit)
+//   - inventory-events: StockReserved (-> PaymentRequested),
+//                      StockReservationFailed (-> OrderCancelled),
+//                      StockReleased (audit)
+//   - payment-events:  PaymentCompleted (-> OrderConfirmed),
+//                      PaymentFailed (-> compensation)
 //
-// PaymentRequested lands on order-events (the saga publishes there
-// via its outbox poller), so the saga does not subscribe to
-// payment-events directly. The full spec alignment is left for
-// v1.1; single-topic per service keeps the wire simple.
+// PaymentRequested is published by the saga itself (saga_outbox
+// topic = order-events), so the consumer for it is the audit-only
+// path — the saga doesn't act on it because it's the author.
 package consumer
 
 import (
@@ -53,6 +55,7 @@ func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string
 		Topics: []string{
 			"order-events",
 			"inventory-events",
+			"payment-events",
 		},
 		Deduper: deduper,
 	}, h.Registry())
