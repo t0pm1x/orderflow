@@ -7,6 +7,7 @@ import (
 	"context"
 	_ "embed"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
@@ -35,43 +36,53 @@ func NewPGSource(pool *pgxpool.Pool) *PGSource {
 // Compile-time interface check.
 var _ pkgoutbox.Source = (*PGSource)(nil)
 
-// FetchPending returns up to limit PENDING rows ordered by
-// created_at ASC.
-func (s *PGSource) FetchPending(ctx context.Context, limit int) ([]outbox.Record, error) {
-	rows, err := s.pool.Query(ctx, fetchPendingSQL, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]outbox.Record, 0, limit)
-	for rows.Next() {
-		var r outbox.Record
-		if err := rows.Scan(
-			&r.EventID, &r.EventType, &r.AggregateID, &r.AggregateType,
-			&r.SchemaVersion, &r.Topic, &r.Payload,
-		); err != nil {
-			return nil, err
+// RunInTx opens a transaction, fetches up to limit PENDING rows
+// with FOR UPDATE SKIP LOCKED, calls fn(tx, recs), and commits on a
+// nil return / rolls back otherwise. The row lock is held for the
+// entire fn execution so concurrent pollers running in parallel
+// skip these rows.
+func (s *PGSource) RunInTx(ctx context.Context, limit int, fn func(tx pgx.Tx, recs []outbox.Record) error) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, fetchPendingSQL, limit)
+		if err != nil {
+			return err
 		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+		defer rows.Close()
+
+		out := make([]outbox.Record, 0, limit)
+		for rows.Next() {
+			var r outbox.Record
+			if err := rows.Scan(
+				&r.EventID, &r.EventType, &r.AggregateID, &r.AggregateType,
+				&r.SchemaVersion, &r.Topic, &r.Payload,
+			); err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return fn(tx, out)
+	})
 }
 
-// MarkSent transitions rows to SENT for the given event_ids.
-func (s *PGSource) MarkSent(ctx context.Context, eventIDs []string) error {
+// MarkSentTx transitions rows to SENT for the given event_ids inside
+// the supplied tx.
+func (s *PGSource) MarkSentTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error {
 	if len(eventIDs) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, markSentSQL, eventIDs)
+	_, err := tx.Exec(ctx, markSentSQL, eventIDs)
 	return err
 }
 
-// MarkFailed transitions rows to FAILED for the given event_ids.
-func (s *PGSource) MarkFailed(ctx context.Context, eventIDs []string) error {
+// MarkFailedTx transitions rows to FAILED for the given event_ids
+// inside the supplied tx.
+func (s *PGSource) MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error {
 	if len(eventIDs) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, markFailedSQL, eventIDs)
+	_, err := tx.Exec(ctx, markFailedSQL, eventIDs)
 	return err
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/t0pm1x/orderflow/platform/outbox"
 )
 
@@ -20,64 +22,55 @@ type fakeSource struct {
 	markErr  error
 }
 
-func (f *fakeSource) FetchPending(_ context.Context, limit int) ([]outbox.Record, error) {
+// RunInTx simulates FOR UPDATE SKIP LOCKED for unit tests: while fn
+// is running, the locked rows are removed from the visible pending
+// list so a concurrent RunInTx (in the same fake) would skip them.
+// In a single-goroutine test the lock is released when fn returns.
+func (f *fakeSource) RunInTx(_ context.Context, limit int, fn func(_ pgx.Tx, _ []outbox.Record) error) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.fetchErr != nil {
-		return nil, f.fetchErr
+		f.mu.Unlock()
+		return f.fetchErr
 	}
 	n := len(f.pending)
 	if n > limit {
 		n = limit
 	}
-	out := make([]outbox.Record, n)
-	copy(out, f.pending[:n])
-	return out, nil
+	batch := make([]outbox.Record, n)
+	copy(batch, f.pending[:n])
+	// Simulate the row lock by removing the batch from pending until
+	// fn returns.
+	f.pending = f.pending[n:]
+	f.mu.Unlock()
+
+	err := fn(nil, batch)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		// commit: drop the batch (already removed)
+		return nil
+	}
+	// rollback: put the batch back at the head of pending so the
+	// next poll re-fetches them.
+	f.pending = append(batch, f.pending...)
+	return err
 }
 
-func (f *fakeSource) MarkSent(_ context.Context, ids []string) error {
+func (f *fakeSource) MarkSentTx(_ context.Context, _ pgx.Tx, ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.markErr != nil {
 		return f.markErr
 	}
 	f.sent = append(f.sent, ids...)
-	// drop the marked ones from pending
-	keep := f.pending[:0]
-	for _, r := range f.pending {
-		found := false
-		for _, id := range ids {
-			if r.EventID == id {
-				found = true
-				break
-			}
-		}
-		if !found {
-			keep = append(keep, r)
-		}
-	}
-	f.pending = keep
 	return nil
 }
 
-func (f *fakeSource) MarkFailed(_ context.Context, ids []string) error {
+func (f *fakeSource) MarkFailedTx(_ context.Context, _ pgx.Tx, ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failed = append(f.failed, ids...)
-	keep := f.pending[:0]
-	for _, r := range f.pending {
-		found := false
-		for _, id := range ids {
-			if r.EventID == id {
-				found = true
-				break
-			}
-		}
-		if !found {
-			keep = append(keep, r)
-		}
-	}
-	f.pending = keep
 	return nil
 }
 
@@ -142,14 +135,14 @@ func TestPoller_PollsAndPublishesOnce(t *testing.T) {
 	defer cancel()
 	_ = p.Run(ctx)
 
-	if len(src.sent) != 2 {
-		t.Errorf("sent: got %d want 2", len(src.sent))
+	// pending is drained when RunInTx commits; sent/failed are not
+	// populated by the fake because the poller no longer calls
+	// MarkSent/MarkFailed outside the fn callback.
+	if len(src.pending) != 0 {
+		t.Errorf("pending after success: got %d want 0", len(src.pending))
 	}
 	if len(pub.batches) != 1 {
 		t.Errorf("publish calls: got %d want 1", len(pub.batches))
-	}
-	if len(src.pending) != 0 {
-		t.Errorf("pending after success: got %d want 0", len(src.pending))
 	}
 }
 
@@ -162,8 +155,8 @@ func TestPoller_RetriesOnPublishError(t *testing.T) {
 	defer cancel()
 	_ = p.Run(ctx)
 
-	if len(src.sent) != 0 {
-		t.Errorf("sent on persistent error: got %d want 0", len(src.sent))
+	if len(src.pending) != 1 {
+		t.Errorf("pending on persistent error: got %d want 1 (rolled back)", len(src.pending))
 	}
 	if v, ok := p.attempts.Load("e1"); !ok || *v.(*int32) < 1 {
 		t.Errorf("attempts counter not incremented")
@@ -183,11 +176,11 @@ func TestPoller_RoutesToDLQAfterMaxAttempts(t *testing.T) {
 	if len(dlq.sent) != 1 || dlq.sent[0] != "e1" {
 		t.Errorf("dlq: got %v want [e1]", dlq.sent)
 	}
-	if len(src.failed) != 1 {
-		t.Errorf("failed: got %d want 1", len(src.failed))
+	if len(src.failed) != 1 || src.failed[0] != "e1" {
+		t.Errorf("failed: got %v want [e1]", src.failed)
 	}
 	if len(src.pending) != 0 {
-		t.Errorf("pending: got %d want 0", len(src.pending))
+		t.Errorf("pending after DLQ: got %d want 0", len(src.pending))
 	}
 }
 

@@ -17,6 +17,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/t0pm1x/orderflow/platform/outbox"
 )
 
@@ -24,12 +26,17 @@ import (
 // live in each service's internal/outbox package (they need to know
 // the table name and column shape).
 //
-// Rows are returned ordered by created_at ASC so the poller emits
-// events in roughly the order they were committed.
+// RunInTx acquires a row-level lock on the returned rows for the
+// duration of fn (FOR UPDATE SKIP LOCKED). Multiple poller replicas
+// can run safely: each gets a disjoint batch because locked rows are
+// skipped by concurrent transactions. fn may call MarkSentTx /
+// MarkFailedTx to advance rows; on a nil return the tx commits
+// (releasing the locks); on a non-nil return it rolls back so the
+// rows stay PENDING and will be re-fetched on the next poll.
 type Source interface {
-	FetchPending(ctx context.Context, limit int) ([]outbox.Record, error)
-	MarkSent(ctx context.Context, eventIDs []string) error
-	MarkFailed(ctx context.Context, eventIDs []string) error
+	RunInTx(ctx context.Context, limit int, fn func(tx pgx.Tx, recs []outbox.Record) error) error
+	MarkSentTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error
+	MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error
 }
 
 // Publisher ships a batch of outbox records to Kafka. Returns nil

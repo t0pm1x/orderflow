@@ -4,3 +4,4 @@ FROM inventory_outbox
 WHERE status = 'PENDING'
 ORDER BY created_at ASC
 LIMIT $1
+FOR UPDATE SKIP LOCKED

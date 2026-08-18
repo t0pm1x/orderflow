@@ -12,6 +12,7 @@ package outbox
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
@@ -19,7 +20,7 @@ import (
 )
 
 // Topic is the Kafka topic the saga service publishes all emitted
-// events to. Source.FetchPending stamps it on every returned Record.
+// events to. Source stamps it on every Record returned by RunInTx.
 const Topic = "order-events"
 
 const fetchPendingSQL = `SELECT id, event_id, aggregate_id, aggregate_type,
@@ -27,7 +28,8 @@ const fetchPendingSQL = `SELECT id, event_id, aggregate_id, aggregate_type,
                          FROM saga_outbox
                         WHERE status = 'PENDING'
                         ORDER BY created_at ASC
-                        LIMIT $1`
+                        LIMIT $1
+                        FOR UPDATE SKIP LOCKED`
 
 const markSentSQL = `UPDATE saga_outbox
                          SET status = 'SENT', sent_at = NOW()
@@ -53,55 +55,63 @@ func NewPGSource(pool *pgxpool.Pool) *PGSource {
 // Compile-time interface check.
 var _ pkgoutbox.Source = (*PGSource)(nil)
 
-// FetchPending returns up to limit PENDING rows ordered by
-// created_at ASC. Topic is stamped to "order-events" on every
-// record so the KafkaPublisher (pkg/outbox) routes correctly
-// without reading it from the row.
-func (s *PGSource) FetchPending(ctx context.Context, limit int) ([]outbox.Record, error) {
-	rows, err := s.pool.Query(ctx, fetchPendingSQL, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]outbox.Record, 0, limit)
-	for rows.Next() {
-		var (
-			r       outbox.Record
-			rowID   int64
-			payload []byte
-			headers []byte
-		)
-		if err := rows.Scan(
-			&rowID, &r.EventID, &r.AggregateID, &r.AggregateType,
-			&r.EventType, &payload, &headers,
-		); err != nil {
-			return nil, err
+// RunInTx opens a transaction, fetches up to limit PENDING rows
+// with FOR UPDATE SKIP LOCKED, calls fn(tx, recs), and commits on a
+// nil return / rolls back otherwise. Topic is stamped to
+// "order-events" on every record so the KafkaPublisher (pkg/outbox)
+// routes correctly without reading it from the row.
+func (s *PGSource) RunInTx(ctx context.Context, limit int, fn func(tx pgx.Tx, recs []outbox.Record) error) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, fetchPendingSQL, limit)
+		if err != nil {
+			return err
 		}
-		r.Payload = payload
-		r.Topic = Topic
-		out = append(out, r)
-	}
-	return out, rows.Err()
+		defer rows.Close()
+
+		out := make([]outbox.Record, 0, limit)
+		for rows.Next() {
+			var (
+				r       outbox.Record
+				rowID   int64
+				payload []byte
+				headers []byte
+			)
+			if err := rows.Scan(
+				&rowID, &r.EventID, &r.AggregateID, &r.AggregateType,
+				&r.EventType, &payload, &headers,
+			); err != nil {
+				return err
+			}
+			r.Payload = payload
+			r.Topic = Topic
+			out = append(out, r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return fn(tx, out)
+	})
 }
 
-// MarkSent transitions rows to SENT for the given event_ids. No-op
-// when eventIDs is empty (avoids a useless roundtrip).
-func (s *PGSource) MarkSent(ctx context.Context, eventIDs []string) error {
+// MarkSentTx transitions rows to SENT for the given event_ids inside
+// the supplied tx. Pairs with RunInTx so the row's status and the
+// row's lock release are committed atomically.
+func (s *PGSource) MarkSentTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error {
 	if len(eventIDs) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, markSentSQL, eventIDs)
+	_, err := tx.Exec(ctx, markSentSQL, eventIDs)
 	return err
 }
 
-// MarkFailed bumps the attempt counter for the given event_ids and
-// records the failure reason. The row stays PENDING; the poller's
-// MaxAttempts logic decides when to DLQ it.
-func (s *PGSource) MarkFailed(ctx context.Context, eventIDs []string) error {
+// MarkFailedTx bumps the attempt counter for the given event_ids
+// inside the supplied tx and records the failure reason. The row
+// stays PENDING until the poller's MaxAttempts logic routes it to
+// the DLQ (via MarkFailedTx + dlq.Send).
+func (s *PGSource) MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error {
 	if len(eventIDs) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, markFailedSQL, "publish failed", eventIDs)
+	_, err := tx.Exec(ctx, markFailedSQL, "publish failed", eventIDs)
 	return err
 }

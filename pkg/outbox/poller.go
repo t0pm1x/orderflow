@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 
 	"github.com/t0pm1x/orderflow/platform/outbox"
@@ -97,6 +98,14 @@ func (p *Poller) Stop() {
 // called or ctx is cancelled. Returns nil on clean shutdown.
 //
 // One Run loop = one outbox table. Each service starts its own.
+//
+// Concurrency: src.RunInTx acquires FOR UPDATE SKIP LOCKED on the
+// fetched rows for the duration of the publish-and-mark sequence.
+// Two replicas running this loop will each see a disjoint batch of
+// rows because locked rows are skipped by the other transaction.
+// This is the production concurrency contract; the test fake
+// implements the same invariant by holding pending rows while fn
+// runs.
 func (p *Poller) Run(ctx context.Context) error {
 	close(p.runningCh)
 	defer p.resetAttemptsForTest()
@@ -111,46 +120,43 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 
 		start := time.Now()
-		recs, err := p.src.FetchPending(ctx, p.cfg.BatchSize)
-		p.metrics.ObservePoll(ctx, len(recs), time.Since(start), err)
-		if err != nil {
-			// Transient error: back off and retry.
-			if !p.sleep(ctx) {
-				return nil
+		err := p.src.RunInTx(ctx, p.cfg.BatchSize, func(tx pgx.Tx, recs []outbox.Record) error {
+			p.metrics.ObservePoll(ctx, len(recs), time.Since(start), nil)
+			if len(recs) == 0 {
+				return errEmptyBatch
 			}
-			continue
-		}
-		if len(recs) == 0 {
-			if !p.sleep(ctx) {
-				return nil
-			}
-			continue
-		}
 
-		if err := p.publishBatch(ctx, recs); err != nil {
-			p.metrics.ObservePublish(ctx, len(recs), err)
-			p.handlePublishFailure(ctx, recs, err)
+			if err := p.publishBatch(ctx, recs); err != nil {
+				p.metrics.ObservePublish(ctx, len(recs), err)
+				// Roll back so the rows stay PENDING and we re-fetch
+				// on the next poll. handlePublishFailure still runs
+				// (in-memory attempt counter + DLQ) so a poison pill
+				// eventually lands in the DLQ topic.
+				p.handlePublishFailure(ctx, tx, recs, err)
+				return err // triggers rollback in RunInTx
+			}
+			p.metrics.ObservePublish(ctx, len(recs), nil)
+			for _, r := range recs {
+				p.attempts.Delete(r.EventID)
+			}
+			return nil
+		})
+		if err != nil && !errors.Is(err, errEmptyBatch) {
+			p.metrics.ObservePoll(ctx, 0, time.Since(start), err)
 			if !p.sleep(ctx) {
 				return nil
 			}
 			continue
 		}
-		p.metrics.ObservePublish(ctx, len(recs), nil)
-
-		ids := make([]string, len(recs))
-		for i, r := range recs {
-			ids[i] = r.EventID
-		}
-		if err := p.src.MarkSent(ctx, ids); err != nil {
-			// MarkSent failure: rows stay PENDING and will be
-			// re-published on the next poll. At-least-once.
-			p.metrics.ObservePublish(ctx, len(recs), err)
-		}
-		for _, r := range recs {
-			p.attempts.Delete(r.EventID)
+		if !p.sleep(ctx) {
+			return nil
 		}
 	}
 }
+
+// errEmptyBatch signals an empty fetch so the poller's outer loop
+// can sleep without rolling back the tx.
+var errEmptyBatch = errors.New("outbox: empty batch")
 
 // resetAttemptsForTest is exposed for tests; in production it's a
 // no-op via defer.
@@ -183,8 +189,14 @@ func (p *Poller) sleep(ctx context.Context) bool {
 
 // handlePublishFailure bumps the per-event attempt counter and, on
 // MaxAttempts exceeded, routes the row to the DLQ. Rows still under
-// the cap stay PENDING.
-func (p *Poller) handlePublishFailure(ctx context.Context, recs []outbox.Record, cause error) {
+// the cap stay PENDING — they're re-fetched on the next poll because
+// the outer RunInTx rolls back when this function returns non-nil.
+//
+// DLQ transitions are recorded via MarkFailedTx inside the locked
+// tx so the row's status flips to FAILED atomically with the row
+// lock release. That way two pollers never both see the same row
+// past MaxAttempts and double-DLQ.
+func (p *Poller) handlePublishFailure(ctx context.Context, tx pgx.Tx, recs []outbox.Record, cause error) {
 	for _, r := range recs {
 		cur := p.loadAttempts(r.EventID)
 		next := cur + 1
@@ -193,7 +205,7 @@ func (p *Poller) handlePublishFailure(ctx context.Context, recs []outbox.Record,
 			if p.dlq != nil {
 				_ = p.dlq.Send(ctx, r, cause.Error())
 				p.metrics.ObserveDLQ(ctx, r, cause.Error())
-				_ = p.src.MarkFailed(ctx, []string{r.EventID})
+				_ = p.src.MarkFailedTx(ctx, tx, []string{r.EventID})
 				p.attempts.Delete(r.EventID)
 			}
 			// Without a DLQ we leave the row PENDING; it will keep
