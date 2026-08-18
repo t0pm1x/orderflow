@@ -5,6 +5,7 @@ use (
 	./cmd/order
 	./cmd/payment
 	./cmd/saga
+	./cmd/web
 	./pkg/consumer
 	./pkg/outbox
 	./pkg/platform
@@ -13,5 +14,6 @@ use (
 	./services/order
 	./services/payment
 	./services/saga
+	./services/web
 	./tests
 )
