@@ -110,3 +110,59 @@ func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("HX-Redirect", "/orders/"+id)
 	w.WriteHeader(http.StatusOK)
 }
+
+type inventoryRow struct {
+	SKU       string
+	Available int
+	Reserved  int
+	Version   int64
+	Missing   bool
+}
+
+type inventoryVM struct {
+	Body        string
+	Rows        []inventoryRow
+	BackendDown bool
+	Error       string
+}
+
+// PageInventory serves GET /inventory. The inventory service only
+// exposes per-SKU reads, so the SKU list is derived from the most
+// recent orders' items (List, limit 50). Missing/unknown SKUs show
+// as "—" so the page still surfaces order-side activity even when
+// the inventory backend has gaps.
+func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
+	vm := inventoryVM{Body: "inventoryBody"}
+	list, err := s.Order.List(r.Context(), "", 50)
+	if err != nil {
+		vm.BackendDown = true
+		vm.Error = err.Error()
+	} else {
+		seen := make(map[string]struct{})
+		for _, o := range list.Items {
+			for _, it := range o.Items {
+				if it.SKU == "" {
+					continue
+				}
+				if _, ok := seen[it.SKU]; ok {
+					continue
+				}
+				seen[it.SKU] = struct{}{}
+				row := inventoryRow{SKU: it.SKU}
+				stock, gerr := s.Inventory.GetStock(r.Context(), it.SKU)
+				if gerr != nil || stock == nil {
+					row.Missing = true
+				} else {
+					row.Available = stock.Available
+					row.Reserved = stock.Reserved
+					row.Version = stock.Version
+				}
+				vm.Rows = append(vm.Rows, row)
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}

@@ -46,19 +46,33 @@ type fakePaymentClient struct{}
 
 func (f *fakePaymentClient) FireWebhook(_ context.Context, _ backend.PaymentWebhook) error { return nil }
 
-type fakeInventoryClient struct{}
-
-func (f *fakeInventoryClient) GetStock(_ context.Context, _ string) (*backend.StockItem, error) {
-	return nil, nil
+type fakeInventoryClient struct {
+	stock map[string]*backend.StockItem
+	err   error
 }
 
-func newTestSet(t *testing.T, oc backend.OrderClient) http.Handler {
+func (f *fakeInventoryClient) GetStock(_ context.Context, sku string) (*backend.StockItem, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	item, ok := f.stock[sku]
+	if !ok {
+		return nil, fmt.Errorf("not found: %s", sku)
+	}
+	return item, nil
+}
+
+func newTestSetWith(t *testing.T, oc backend.OrderClient, ic backend.InventoryClient) http.Handler {
 	t.Helper()
 	bus := events.NewBus()
-	h := handlers.NewSet(oc, &fakePaymentClient{}, &fakeInventoryClient{}, bus)
+	h := handlers.NewSet(oc, &fakePaymentClient{}, ic, bus)
 	r := chi.NewRouter()
 	h.Routes(r)
 	return r
+}
+
+func newTestSet(t *testing.T, oc backend.OrderClient) http.Handler {
+	return newTestSetWith(t, oc, &fakeInventoryClient{})
 }
 
 func TestOrdersList_OK(t *testing.T) {
@@ -264,5 +278,60 @@ func TestOrderCancel_OK(t *testing.T) {
 	}
 	if oc.cancelCalls != 1 {
 		t.Errorf("Cancel calls: got %d want 1", oc.cancelCalls)
+	}
+}
+
+func TestInventory_OK(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-1", State: backend.OrderStatePending,
+				Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 2}}},
+			{ID: "ord-2", State: backend.OrderStateReserved,
+				Items: []backend.OrderItem{{SKU: "SKU-002", Quantity: 1}}},
+		}},
+	}
+	ic := &fakeInventoryClient{
+		stock: map[string]*backend.StockItem{
+			"SKU-001": {SKU: "SKU-001", Available: 99, Reserved: 1, Version: 3},
+			"SKU-002": {SKU: "SKU-002", Available: 50, Reserved: 0, Version: 1},
+		},
+	}
+	srv := httptest.NewServer(newTestSetWith(t, oc, ic))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/inventory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(b.String(), "SKU-001") {
+		t.Errorf("missing SKU-001: %s", b.String())
+	}
+	if !strings.Contains(b.String(), "99") {
+		t.Errorf("missing available qty 99: %s", b.String())
+	}
+}
+
+func TestInventory_BackendError(t *testing.T) {
+	oc := &fakeOrderClient{listErr: fmt.Errorf("upstream 503")}
+	srv := httptest.NewServer(newTestSetWith(t, oc, &fakeInventoryClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/inventory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	low := strings.ToLower(b.String())
+	if !strings.Contains(low, "unavailable") && !strings.Contains(low, "backend") {
+		t.Errorf("expected backend notice: %s", b.String())
 	}
 }
