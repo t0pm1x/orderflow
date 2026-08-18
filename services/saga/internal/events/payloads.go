@@ -36,9 +36,16 @@ type OrderConfirmedPayload struct {
 // StockReleaseRequestedPayload is emitted when the saga enters the
 // compensation flow and asks inventory to release the stock it
 // reserved for this order.
+//
+// SKU and Quantity were added in v1.1 — without them, the inventory
+// service couldn't decrement the stock_items.reserved counter, and
+// every cancelled order leaked a phantom reservation. Multi-item
+// orders emit one StockReleaseRequested per item.
 type StockReleaseRequestedPayload struct {
 	OrderID       string `json:"order_id"`
 	ReservationID string `json:"reservation_id"`
+	SKU           string `json:"sku"`
+	Quantity      int    `json:"quantity"`
 }
 
 // OrderCancelledPayload is emitted alongside StockReleaseRequested

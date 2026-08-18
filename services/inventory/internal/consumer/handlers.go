@@ -123,11 +123,12 @@ func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 	}
 }
 
-// stockReleaseRequested handles StockReleaseRequested events. Per
-// the design note in v0.5.0, this is a no-op on the stock_items
-// row (the saga does not publish SKU/quantity in the release event);
-// we only emit a StockReleased event so downstream services can
-// observe the compensation.
+// stockReleaseRequested handles StockReleaseRequested events. The
+// saga now publishes SKU and quantity on the release payload
+// (sub-stage v1.1 fix; previously the stock_items.reserved counter
+// leaked on every cancelled order). The handler releases the stock
+// and emits a StockReleased event, both in one transaction so the
+// counter and the downstream event commit (or roll back) together.
 func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 	return func(ctx context.Context, env *events.Envelope) error {
 		if globalDeps == nil {
@@ -140,13 +141,28 @@ func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 		var p struct {
 			OrderID       string `json:"order_id"`
 			ReservationID string `json:"reservation_id"`
+			SKU           string `json:"sku"`
+			Quantity      int    `json:"quantity"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			logger.Error("inventory StockReleaseRequested: decode payload", "err", err)
 			return err
 		}
+		if p.SKU == "" || p.Quantity <= 0 {
+			// Old producers (pre-v1.1) didn't carry SKU/qty. Log
+			// and ack-skip — operators see the stock_items.reserved
+			// counter drift up via /metrics and can manually
+			// reconcile after upgrading the producer.
+			logger.Warn("inventory StockReleaseRequested: missing SKU or quantity (legacy producer?)",
+				"event_id", env.EventID,
+				"order_id", p.OrderID,
+				"reservation_id", p.ReservationID)
+			return nil
+		}
 		payload, err := json.Marshal(map[string]any{
 			"reservation_id": p.ReservationID,
+			"sku":            p.SKU,
+			"quantity":       p.Quantity,
 			"reason":         "order_cancelled",
 		})
 		if err != nil {
@@ -162,9 +178,15 @@ func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 			Payload:       payload,
 			Headers:       map[string]string{},
 		}
-		return pgx.BeginFunc(ctx, globalDeps.pool, func(tx pgx.Tx) error {
-			return globalDeps.writer.Append(ctx, tx, outRec)
-		})
+		if err := globalDeps.repo.ReleaseStock(ctx, p.SKU, p.Quantity, outRec); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				logger.Warn("inventory StockReleaseRequested: sku not found",
+					"sku", p.SKU, "order_id", p.OrderID)
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 }
 

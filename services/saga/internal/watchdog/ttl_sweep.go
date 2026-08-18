@@ -102,23 +102,17 @@ func (t *TTLSweep) RunOnce(ctx context.Context) {
 }
 
 // compensate transitions a single expired saga to compensated and
-// emits the same two outbox rows PaymentFailedHandler emits:
-// StockReleaseRequested (so inventory releases the reservation)
-// and OrderCancelled with reason="timeout" (so the order service
-// marks the order cancelled). All three writes happen in one tx so
-// the saga state and its events commit/rollback atomically —
-// preventing the half-state of "compensated with no events
-// emitted" that would leave stock stranded. Marshal errors are
-// returned (not panicked) so a malformed payload aborts the tx
-// cleanly instead of crashing the whole saga service mid-tx.
+// emits the same outbox rows PaymentFailedHandler emits: one
+// StockReleaseRequested per item the saga reserved (so inventory
+// decrements stock_items.reserved) and OrderCancelled with
+// reason="timeout" (so the order service marks the order cancelled).
+// All writes happen in one tx so the saga state and its events
+// commit/rollback atomically — preventing the half-state of
+// "compensated with no events emitted" that would leave stock
+// stranded. Marshal errors are returned (not panicked) so a
+// malformed payload aborts the tx cleanly instead of crashing the
+// whole saga service mid-tx.
 func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
-	releasePayload, err := json.Marshal(sagaev.StockReleaseRequestedPayload{
-		OrderID:       s.OrderID,
-		ReservationID: s.ReservationID,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal StockReleaseRequested: %w", err)
-	}
 	cancelPayload, err := json.Marshal(sagaev.OrderCancelledPayload{
 		OrderID: s.OrderID,
 		Reason:  "timeout",
@@ -135,20 +129,10 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 			  WHERE order_id = $1`, s.OrderID); err != nil {
 			return err
 		}
-		releaseRec := platformoutbox.Record{
-			EventID:       uuid.NewString(),
-			AggregateID:   s.OrderID,
-			AggregateType: "Order",
-			EventType:     "StockReleaseRequested",
-			SchemaVersion: "1.0",
-			Topic:         sagaoutbox.Topic,
-			Payload:       releasePayload,
-			Headers:       map[string]string{},
-		}
-		if err := t.writer.Append(ctx, tx, releaseRec); err != nil {
+		if err := appendReleaseEvents(ctx, tx, t.writer, s); err != nil {
 			return err
 		}
-		cancelRec := platformoutbox.Record{
+		return t.writer.Append(ctx, tx, platformoutbox.Record{
 			EventID:       uuid.NewString(),
 			AggregateID:   s.OrderID,
 			AggregateType: "Order",
@@ -157,7 +141,47 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 			Topic:         sagaoutbox.Topic,
 			Payload:       cancelPayload,
 			Headers:       map[string]string{},
-		}
-		return t.writer.Append(ctx, tx, cancelRec)
+		})
 	})
+}
+
+// appendReleaseEvents emits one StockReleaseRequested per item the
+// saga reserved. Decodes the saga row's JSONB items blob; emits
+// nothing when the items list is empty (the OrderCreatedHandler
+// already ack-skips empty-item payloads so this should be rare).
+func appendReleaseEvents(ctx context.Context, tx pgx.Tx, writer *sagaoutbox.PGWriter, s *repository.Saga) error {
+	var items []struct {
+		SKU      string `json:"sku"`
+		Quantity int    `json:"quantity"`
+	}
+	if err := json.Unmarshal(s.Items, &items); err != nil {
+		return fmt.Errorf("decode saga items for release: %w", err)
+	}
+	for _, it := range items {
+		if it.Quantity <= 0 || it.SKU == "" {
+			continue
+		}
+		payload, perr := json.Marshal(sagaev.StockReleaseRequestedPayload{
+			OrderID:       s.OrderID,
+			ReservationID: s.ReservationID,
+			SKU:           it.SKU,
+			Quantity:      it.Quantity,
+		})
+		if perr != nil {
+			return fmt.Errorf("marshal StockReleaseRequested: %w", perr)
+		}
+		if err := writer.Append(ctx, tx, platformoutbox.Record{
+			EventID:       uuid.NewString(),
+			AggregateID:   s.OrderID,
+			AggregateType: "Order",
+			EventType:     "StockReleaseRequested",
+			SchemaVersion: "1.0",
+			Topic:         sagaoutbox.Topic,
+			Payload:       payload,
+			Headers:       map[string]string{},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

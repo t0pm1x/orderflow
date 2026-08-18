@@ -13,6 +13,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"time"
@@ -190,9 +191,10 @@ func (h *Handler) PaymentCompletedHandler(ctx context.Context, env *events.Envel
 }
 
 // PaymentFailedHandler triggers compensation. The saga transitions
-// to StateCompensated and emits StockReleaseRequested + OrderCancelled
-// — all in one transaction. ReservationID comes from the saga row
-// because PaymentFailed doesn't carry it.
+// to StateCompensated and emits one StockReleaseRequested per item
+// in the saga row + OrderCancelled — all in one transaction. SKU
+// and Quantity come from the saga row because PaymentFailed doesn't
+// carry them.
 func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -212,14 +214,7 @@ func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope
 		if err := h.repo.UpdateStateTx(ctx, tx, p.OrderID, sagapkg.StateCompensated); err != nil {
 			return err
 		}
-		releasePayload, perr := json.Marshal(sagaev.StockReleaseRequestedPayload{
-			OrderID:       p.OrderID,
-			ReservationID: s.ReservationID,
-		})
-		if perr != nil {
-			return perr
-		}
-		if err := h.appendOutbox(ctx, tx, "StockReleaseRequested", p.OrderID, releasePayload); err != nil {
+		if err := emitReleaseForItems(ctx, tx, h, p.OrderID, s.ReservationID, s.Items); err != nil {
 			return err
 		}
 		cancelPayload, perr := json.Marshal(sagaev.OrderCancelledPayload{
@@ -232,6 +227,39 @@ func (h *Handler) PaymentFailedHandler(ctx context.Context, env *events.Envelope
 		}
 		return h.appendOutbox(ctx, tx, "OrderCancelled", p.OrderID, cancelPayload)
 	})
+}
+
+// emitReleaseForItems writes one StockReleaseRequested per item the
+// saga reserved. Decodes the JSONB items blob (set when the saga was
+// created on OrderCreated); emits nothing when the row has no items
+// (e.g. empty items in payload — the OrderCreatedHandler already
+// ack-skips that case so this should not happen in practice).
+func emitReleaseForItems(ctx context.Context, tx pgx.Tx, h *Handler, orderID, reservationID string, itemsJSON []byte) error {
+	var items []struct {
+		SKU      string `json:"sku"`
+		Quantity int    `json:"quantity"`
+	}
+	if err := json.Unmarshal(itemsJSON, &items); err != nil {
+		return fmt.Errorf("decode saga items for release: %w", err)
+	}
+	for _, it := range items {
+		if it.Quantity <= 0 || it.SKU == "" {
+			continue
+		}
+		releasePayload, perr := json.Marshal(sagaev.StockReleaseRequestedPayload{
+			OrderID:       orderID,
+			ReservationID: reservationID,
+			SKU:           it.SKU,
+			Quantity:      it.Quantity,
+		})
+		if perr != nil {
+			return perr
+		}
+		if err := h.appendOutbox(ctx, tx, "StockReleaseRequested", orderID, releasePayload); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // StockReleasedHandler is the compensation ack from inventory. The
