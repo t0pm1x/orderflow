@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,10 @@ import (
 )
 
 type fakeOrderClient struct {
-	listResp *backend.OrderList
-	listErr  error
+	listResp   *backend.OrderList
+	listErr    error
+	submitResp *backend.Order
+	submitErr  error
 }
 
 func (f *fakeOrderClient) List(ctx context.Context, _ backend.OrderState, _ int) (*backend.OrderList, error) {
@@ -27,7 +30,7 @@ func (f *fakeOrderClient) Get(_ context.Context, _ string) (*backend.Order, erro
 	return nil, nil
 }
 func (f *fakeOrderClient) Submit(_ context.Context, _ backend.OrderSubmit) (*backend.Order, error) {
-	return nil, nil
+	return f.submitResp, f.submitErr
 }
 func (f *fakeOrderClient) Cancel(_ context.Context, _ string) error { return nil }
 
@@ -106,3 +109,90 @@ type fakeErr struct{}
 func (fakeErr) Error() string { return "upstream timeout" }
 
 var errFake = fakeErr{}
+
+func TestOrderNew_GET(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(b.String(), `name="sku"`) {
+		t.Error("form missing sku field")
+	}
+	if !strings.Contains(b.String(), `name="quantity"`) {
+		t.Error("form missing quantity")
+	}
+}
+
+func TestOrderSubmit_OK_RedirectsViaHTMX(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "order-99",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("HX-Redirect"); got != "/orders/order-99" {
+		t.Errorf("HX-Redirect: got %q want /orders/order-99", got)
+	}
+}
+
+func TestOrderSubmit_ValidationError(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	form := strings.NewReader("sku=&quantity=0")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	low := strings.ToLower(b.String())
+	if !strings.Contains(low, "required") && !strings.Contains(low, "invalid") {
+		t.Errorf("expected validation error: %s", b.String())
+	}
+}
+
+func TestOrderSubmit_Upstream5xx(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.submitErr = fmt.Errorf("upstream 503")
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 502 {
+		t.Fatalf("status: got %d want 502", resp.StatusCode)
+	}
+}

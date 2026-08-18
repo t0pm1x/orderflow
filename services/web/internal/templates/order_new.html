@@ -1,0 +1,29 @@
+{{define "orderNewBody"}}
+<section>
+  <h1>New order</h1>
+  {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+  <form class="sheet" method="post" action="/v1/orders"
+        hx-post="/v1/orders" hx-target="this" hx-swap="outerHTML">
+    <div>
+      <label for="sku">SKU</label>
+      <input id="sku" name="sku" required minlength="1" maxlength="64" value="{{.SKU}}">
+    </div>
+    <div>
+      <label for="quantity">Quantity</label>
+      <input id="quantity" name="quantity" type="number" required min="1" max="10000" value="{{if .Quantity}}{{.Quantity}}{{else}}1{{end}}">
+    </div>
+    <div>
+      <label for="unit_price_cents">Unit price (cents, optional)</label>
+      <input id="unit_price_cents" name="unit_price_cents" type="number" min="0" value="{{if .UnitPriceCents}}{{.UnitPriceCents}}{{end}}">
+    </div>
+    <div>
+      <label for="customer_id">Customer ID (UUID, optional)</label>
+      <input id="customer_id" name="customer_id" placeholder="auto-generate if blank" value="{{.CustomerID}}">
+    </div>
+    <div class="row">
+      <button type="submit">Submit order</button>
+      <a class="btn secondary" href="/">Cancel</a>
+    </div>
+  </form>
+</section>
+{{end}}

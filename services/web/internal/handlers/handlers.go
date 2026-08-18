@@ -33,7 +33,7 @@ type Set struct {
 // by the orders-list page (Task 5).
 func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 	inventory backend.InventoryClient, bus *events.Bus) *Set {
-	t := template.Must(template.ParseFS(templates.FS, "layout.html", "orders_list.html"))
+	t := template.Must(template.ParseFS(templates.FS, "layout.html", "orders_list.html", "order_new.html"))
 	return &Set{
 		Order:     order,
 		Payment:   payment,
@@ -50,10 +50,13 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 // the corresponding handler method exists on the type.
 func (s *Set) Routes(r chi.Router) {
 	r.Get("/", s.PageOrdersList)
+	r.Get("/orders/new", s.PageOrderNew)
+	r.Post("/v1/orders", s.ActionOrderSubmit)
 }
 
 // ordersListVM is the view model for the GET / page.
 type ordersListVM struct {
+	Body        string
 	Orders      []backend.Order
 	BackendDown bool
 	Error       string
@@ -64,6 +67,7 @@ type ordersListVM struct {
 // live-events sidebar) stays usable.
 func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 	var vm ordersListVM
+	vm.Body = "ordersListBody"
 	list, err := s.Order.List(r.Context(), "", 50)
 	if err != nil {
 		vm.BackendDown = true
