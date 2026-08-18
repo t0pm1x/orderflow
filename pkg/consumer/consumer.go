@@ -40,11 +40,22 @@ type Handler func(ctx context.Context, env *events.Envelope) error
 // forward-compatible producer doesn't block the consumer group.
 type HandlerRegistry map[string]Handler
 
+// consumerClient is the subset of *kgo.Client the Consumer uses.
+// Defined as an interface so unit tests can substitute a fake
+// without dialing a real broker — the production wiring still passes
+// a real *kgo.Client from kgo.NewClient.
+type consumerClient interface {
+	PollFetches(ctx context.Context) kgo.Fetches
+	MarkCommitRecords(records ...*kgo.Record)
+	CommitMarkedOffsets(ctx context.Context) error
+	Close()
+}
+
 // Consumer is one service's subscription to one or more Kafka
 // topics. Construct it once at startup; Run blocks until ctx is
 // cancelled.
 type Consumer struct {
-	client   *kgo.Client
+	client   consumerClient
 	registry HandlerRegistry
 
 	dlq     DLQ
@@ -223,12 +234,27 @@ func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	}
 	if lastErr != nil {
 		c.toDLQ(ctx, &env, lastErr.Error(), rec)
+		// Mark even on DLQ so the poison pill doesn't come back
+		// on every restart — DLQ is the terminal state for the
+		// record. Operators triage the DLQ topic out-of-band.
+		c.markRecord(rec)
 		return
 	}
 
 	if c.deduper != nil {
 		_ = c.deduper.Mark(ctx, env.EventID)
 	}
+	c.markRecord(rec)
+}
+
+// markRecord asks franz-go to include rec in the next
+// CommitMarkedOffsets call. No-op when client is nil (unit-test
+// path that exercises dispatch without a real broker).
+func (c *Consumer) markRecord(rec *kgo.Record) {
+	if c.client == nil {
+		return
+	}
+	c.client.MarkCommitRecords(rec)
 }
 
 func (c *Consumer) toDLQ(ctx context.Context, env *events.Envelope, reason string, rec *kgo.Record) {

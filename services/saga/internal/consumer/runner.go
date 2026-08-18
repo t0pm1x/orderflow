@@ -35,10 +35,14 @@ const Topic = "order-events"
 // groupID are unset (e.g. local 'go run' without docker-compose),
 // returns a no-op shutdown and a nil error -- the same disabled
 // pattern services/{order,payment,inventory}/internal/consumer use.
-func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, pool *pgxpool.Pool) (func(context.Context) error, error) {
+// deduper may be nil — pkgconsumer.New substitutes a NoopDeduper.
+func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, pool *pgxpool.Pool, deduper pkgconsumer.Deduper) (func(context.Context) error, error) {
 	if kafkaBroker == "" || groupID == "" || pool == nil {
 		logger.Info("saga consumer disabled: KAFKA_BROKER, GROUP_ID, or pool not set")
 		return func(context.Context) error { return nil }, nil
+	}
+	if deduper == nil {
+		deduper = pkgconsumer.NoopDeduper{}
 	}
 
 	h := NewHandler(pool, logger)
@@ -50,6 +54,7 @@ func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string
 			"order-events",
 			"inventory-events",
 		},
+		Deduper: deduper,
 	}, h.Registry())
 	if err != nil {
 		return nil, fmt.Errorf("saga consumer: %w", err)

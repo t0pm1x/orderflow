@@ -29,6 +29,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	pkgconsumer "github.com/t0pm1x/orderflow/consumer"
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
 	"github.com/t0pm1x/orderflow/platform"
 	"github.com/t0pm1x/orderflow/platform/events"
@@ -111,7 +112,12 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("postgres ping: %w", err)
 		}
 
-		consumerClose, err = svcconsumer.Start(ctx, logger, broker, groupID, pool)
+		deduper, derr := pkgconsumer.NewDeduperFromRedisURL(envOrDefault("REDIS_URL", ""), "orderflow-saga:dedup:", 0)
+		if derr != nil {
+			logger.Warn("saga deduper disabled: bad REDIS_URL", "err", derr)
+			deduper = pkgconsumer.NoopDeduper{}
+		}
+		consumerClose, err = svcconsumer.Start(ctx, logger, broker, groupID, pool, deduper)
 		if err != nil {
 			pool.Close()
 			return fmt.Errorf("consumer start: %w", err)

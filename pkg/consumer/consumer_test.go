@@ -17,6 +17,121 @@ import (
 	"github.com/t0pm1x/orderflow/platform/events"
 )
 
+// fakeClient satisfies the consumerClient interface so unit tests
+// can exercise dispatch without a real broker.
+type fakeClient struct {
+	marked    []*kgo.Record
+	committed atomic.Int32
+	mu        sync.Mutex
+}
+
+func (f *fakeClient) MarkCommitRecords(recs ...*kgo.Record) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.marked = append(f.marked, recs...)
+}
+
+func (f *fakeClient) CommitMarkedOffsets(_ context.Context) error {
+	f.committed.Add(1)
+	return nil
+}
+
+func (f *fakeClient) Close() {}
+
+func (f *fakeClient) PollFetches(_ context.Context) kgo.Fetches { return kgo.Fetches{} }
+
+// fakeDLQ is a minimal DLQ impl for tests.
+type fakeDLQ struct {
+	mu   sync.Mutex
+	sent []string
+}
+
+func (d *fakeDLQ) Send(_ context.Context, _ *events.Envelope, reason string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sent = append(d.sent, reason)
+	return nil
+}
+
+func orderCreatedRecord() *kgo.Record {
+	return &kgo.Record{
+		Key:   []byte("o1"),
+		Value: []byte(`{"event_id":"e1","event_type":"OrderCreated","aggregate_id":"o1","aggregate_type":"Order","schema_version":"1.0","payload":{}}`),
+	}
+}
+
+// TestDispatch_MarksRecordForCommit_OnSuccess: the consumer must
+// MarkCommitRecords for each record whose handler returns nil. Without
+// this, franz-go's CommitMarkedOffsets() is a no-op and offsets never
+// advance — every restart would replay the whole topic.
+func TestDispatch_MarksRecordForCommit_OnSuccess(t *testing.T) {
+	fc := &fakeClient{}
+	c := &Consumer{
+		client: fc,
+		registry: HandlerRegistry{
+			"OrderCreated": func(_ context.Context, _ *events.Envelope) error { return nil },
+		},
+		maxAttempts: 1,
+	}
+	c.dispatch(context.Background(), orderCreatedRecord())
+	if len(fc.marked) != 1 {
+		t.Fatalf("dispatch must mark record on success; got %d marks", len(fc.marked))
+	}
+}
+
+// TestDispatch_MarksRecordForCommit_AfterDLQ: a record that exhausts
+// retries and lands in DLQ must still be marked, otherwise the poison
+// pill reappears after the next restart and the consumer is stuck.
+func TestDispatch_MarksRecordForCommit_AfterDLQ(t *testing.T) {
+	fc := &fakeClient{}
+	dlq := &fakeDLQ{}
+	c := &Consumer{
+		client: fc,
+		registry: HandlerRegistry{
+			"OrderCreated": func(_ context.Context, _ *events.Envelope) error {
+				return errors.New("boom")
+			},
+		},
+		dlq:          dlq,
+		maxAttempts:  2,
+		retryBackoff: time.Millisecond,
+	}
+	c.dispatch(context.Background(), orderCreatedRecord())
+	if len(fc.marked) != 1 {
+		t.Fatalf("dispatch must mark record after DLQ; got %d marks", len(fc.marked))
+	}
+	if len(dlq.sent) != 1 {
+		t.Fatalf("DLQ must receive the poison pill; got %d", len(dlq.sent))
+	}
+}
+
+// TestDispatch_MarksRecordForCommit_AfterRetryThenSuccess: a record
+// that fails once then succeeds must still be marked exactly once.
+func TestDispatch_MarksRecordForCommit_AfterRetryThenSuccess(t *testing.T) {
+	fc := &fakeClient{}
+	var calls atomic.Int32
+	c := &Consumer{
+		client: fc,
+		registry: HandlerRegistry{
+			"OrderCreated": func(_ context.Context, _ *events.Envelope) error {
+				if calls.Add(1) < 2 {
+					return errors.New("transient")
+				}
+				return nil
+			},
+		},
+		maxAttempts:  3,
+		retryBackoff: time.Millisecond,
+	}
+	c.dispatch(context.Background(), orderCreatedRecord())
+	if got := calls.Load(); got != 2 {
+		t.Errorf("handler invocations: got %d want 2", got)
+	}
+	if len(fc.marked) != 1 {
+		t.Errorf("must mark exactly once; got %d", len(fc.marked))
+	}
+}
+
 // TestInMemoryDeduper_SeenAndMark: dedup behavior contract.
 func TestInMemoryDeduper_SeenAndMark(t *testing.T) {
 	d := NewInMemoryDeduper()
@@ -40,13 +155,6 @@ func TestNoopDeduper_AlwaysFalse(t *testing.T) {
 	}
 	if err := d.Mark(ctx, "e1"); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func orderCreatedRecord() *kgo.Record {
-	return &kgo.Record{
-		Key:   []byte("o1"),
-		Value: []byte(`{"event_id":"e1","event_type":"OrderCreated","aggregate_id":"o1","aggregate_type":"Order","schema_version":"1.0","payload":{}}`),
 	}
 }
 
@@ -152,19 +260,6 @@ func TestDispatch_DecodeErrorDLQs(t *testing.T) {
 	if len(dlq.sent) != 1 {
 		t.Errorf("decode errors must DLQ; got %d", len(dlq.sent))
 	}
-}
-
-// fakeDLQ is a minimal DLQ impl for tests.
-type fakeDLQ struct {
-	mu   sync.Mutex
-	sent []string
-}
-
-func (d *fakeDLQ) Send(_ context.Context, _ *events.Envelope, reason string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.sent = append(d.sent, reason)
-	return nil
 }
 
 // mustEncode JSON-encodes an envelope for tests; panics on error.

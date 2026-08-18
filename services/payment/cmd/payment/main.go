@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	pkgconsumer "github.com/t0pm1x/orderflow/consumer"
 	pkgoutbox "github.com/t0pm1x/orderflow/outbox"
 	"github.com/t0pm1x/orderflow/platform"
 	"github.com/t0pm1x/orderflow/platform/events"
@@ -88,7 +89,12 @@ func Run(ctx context.Context) error {
 	}
 	defer func() { _ = outboxClose(context.Background()) }()
 
-	consumerClose, err := svcconsumer.Start(ctx, logger, broker, groupID)
+	deduper, derr := pkgconsumer.NewDeduperFromRedisURL(envOrDefault("REDIS_URL", ""), "orderflow-payment:dedup:", 0)
+	if derr != nil {
+		logger.Warn("payment deduper disabled: bad REDIS_URL", "err", derr)
+		deduper = pkgconsumer.NoopDeduper{}
+	}
+	consumerClose, err := svcconsumer.Start(ctx, logger, broker, groupID, deduper)
 	if err != nil {
 		return fmt.Errorf("consumer start: %w", err)
 	}
