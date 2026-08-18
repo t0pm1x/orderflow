@@ -168,10 +168,17 @@ func (h *Handler) PaymentRequested(ctx context.Context, env *events.Envelope) er
 	)
 
 	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		// Dedupe on order_id (the saga's aggregate). The pre-v1.1
+		// code deduped on paymentID (a fresh UUID per delivery),
+		// which never collided on redelivery — duplicate payments
+		// rows were written. The v1.1 migration
+		// (0003_payment_order_unique.sql) adds a UNIQUE constraint
+		// on order_id so ON CONFLICT (order_id) DO NOTHING actually
+		// dedupes.
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO payments (id, order_id, amount_cents, status, error_code, last_four)
 			 VALUES ($1, $2, $3, $4, $5, $6)
-			 ON CONFLICT (id) DO NOTHING`,
+			 ON CONFLICT (order_id) DO NOTHING`,
 			paymentID, p.OrderID, p.AmountCents, result.Status, result.ErrorCode, lastFour,
 		); err != nil {
 			return fmt.Errorf("insert payment: %w", err)
