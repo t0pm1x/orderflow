@@ -3,20 +3,16 @@
 // the franz-go client, starts the consumer in a goroutine, and
 // returns a shutdown handle.
 //
-// The saga runtime consumes two topics:
-//   - order-events:    OrderCreated (start), PaymentCompleted (→
-//                      OrderConfirmed), PaymentFailed (→ compensation),
-//                      OrderCancelled (ack)
-//   - inventory-events: StockReserved (→ PaymentRequested),
-//                       StockReservationFailed (→ OrderCancelled),
-//                       StockReleased (audit)
+// The saga runtime consumes order-events and inventory-events.
+// order-events: OrderCreated (start), PaymentCompleted (-> OrderConfirmed),
+// PaymentFailed (-> compensation), OrderCancelled (ack).
+// inventory-events: StockReserved (-> PaymentRequested),
+// StockReservationFailed (-> OrderCancelled), StockReleased (audit).
 //
 // PaymentRequested lands on order-events (the saga publishes there
-// via its outbox poller), so the saga doesn't need to subscribe to
-// payment-events directly even though payment-events is where the
-// spec says payment-side traffic ultimately belongs. That alignment
-// with the spec is left for v1.1; for now single-topic per service
-// keeps the wire simple and the chain testable end-to-end.
+// via its outbox poller), so the saga does not subscribe to
+// payment-events directly. The full spec alignment is left for
+// v1.1; single-topic per service keeps the wire simple.
 package consumer
 
 import (
@@ -37,7 +33,7 @@ const Topic = "order-events"
 // Start wires the Saga Service consumer. Returns a shutdown func
 // that closes the underlying franz-go client. When kafkaBroker or
 // groupID are unset (e.g. local 'go run' without docker-compose),
-// returns a no-op shutdown and a nil error — the same disabled
+// returns a no-op shutdown and a nil error -- the same disabled
 // pattern services/{order,payment,inventory}/internal/consumer use.
 func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string, pool *pgxpool.Pool) (func(context.Context) error, error) {
 	if kafkaBroker == "" || groupID == "" || pool == nil {
@@ -67,4 +63,3 @@ func Start(ctx context.Context, logger *slog.Logger, kafkaBroker, groupID string
 
 	return func(context.Context) error { c.Stop(); return nil }, nil
 }
-// CI lint cache-bust — reformat trigger
