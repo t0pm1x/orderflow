@@ -63,13 +63,18 @@ func NewClient(brokers []string, group string, opts ...kgo.Opt) (*Client, error)
 	return &Client{kgo: c}, nil
 }
 
-// Publish sends an envelope to the given topic.
-func (c *Client) Publish(topic string, env *Envelope) error {
+// Publish sends an envelope to the given topic. ctx is used by the
+// underlying Kafka producer — a cancelled ctx aborts the produce
+// so a graceful-shutdown deadline can release the goroutine.
+// Previously this ignored ctx and used context.Background(), which
+// meant a Kafka stall could keep the producer (and thus the
+// service) alive past the SIGTERM grace period.
+func (c *Client) Publish(ctx context.Context, topic string, env *Envelope) error {
 	body, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
-	return c.PublishRaw(context.Background(), topic, env.AggregateID, body, nil)
+	return c.PublishRaw(ctx, topic, env.AggregateID, body, nil)
 }
 
 // PublishRaw sends a pre-marshalled JSON body to topic with key,
