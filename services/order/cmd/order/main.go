@@ -162,8 +162,14 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// pkg/outbox.Poller.Run returns nil on both clean
+			// shutdown (ctx cancel / Stop) and on transient source
+			// errors that the loop already backs off from. A
+			// non-nil return here means the goroutine itself
+			// exited unexpectedly — log and let wg.Wait surface
+			// it to main.
 			if err := poller.Run(ctx); err != nil {
-				logger.Error("poller exited", "err", err)
+				logger.Error("poller exited with error", "err", err)
 			}
 		}()
 	} else {

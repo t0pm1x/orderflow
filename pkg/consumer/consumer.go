@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -159,10 +160,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 				if errors.Is(e.Err, context.Canceled) {
 					return nil
 				}
-				// Best-effort: log via returned error chain. The
-				// outbox poller observes via metrics; consumers
-				// don't yet have a metrics hook (sub-stage 3.8.c).
-				_ = e // intentionally swallowed; loop continues
+				// Non-fatal fetch errors are logged via the slog
+				// default logger (a no-op until InitTracing installs
+				// one); the loop continues so a transient broker
+				// hiccup doesn't kill the consumer.
+				slog.Default().Warn("consumer: poll fetch error",
+					"topic", e.Topic, "partition", e.Partition, "err", e.Err)
 			}
 		}
 		fetches.EachRecord(func(rec *kgo.Record) {
@@ -170,7 +173,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 		})
 		// Best-effort commit; ctx cancellation during shutdown is the
 		// common failure mode and the next session rebalances offsets.
-		_ = c.client.CommitMarkedOffsets(ctx)
+		// Errors are not fatal — franz-go retries the commit on the
+		// next iteration and the records are at worst re-processed.
+		if err := c.client.CommitMarkedOffsets(ctx); err != nil &&
+			!errors.Is(err, context.Canceled) {
+			slog.Default().Warn("consumer: commit offsets", "err", err)
+		}
 	}
 }
 
@@ -242,7 +250,15 @@ func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	}
 
 	if c.deduper != nil {
-		_ = c.deduper.Mark(ctx, env.EventID)
+		// Mark errors mean the next restart will reprocess this
+		// event. The application handlers must be idempotent at
+		// the DB layer (ON CONFLICT, optimistic version check,
+		// etc.). The poller's deduper.Seen() check is the soft
+		// dedup; the DB-level guard is the hard one.
+		if err := c.deduper.Mark(ctx, env.EventID); err != nil {
+			slog.Default().Warn("consumer: deduper mark failed",
+				"event_id", env.EventID, "err", err)
+		}
 	}
 	c.markRecord(rec)
 }
@@ -270,5 +286,11 @@ func (c *Consumer) toDLQ(ctx context.Context, env *events.Envelope, reason strin
 			AggregateType: "Unknown",
 		}
 	}
-	_ = c.dlq.Send(ctx, env, reason)
+	if err := c.dlq.Send(ctx, env, reason); err != nil {
+		// DLQ failure means the poison pill stays in the topic.
+		// We've marked the record for commit so we won't loop on
+		// it; operators can replay from the DLQ topic manually.
+		slog.Default().Warn("consumer: dlq send failed",
+			"event_id", env.EventID, "reason", reason, "err", err)
+	}
 }
