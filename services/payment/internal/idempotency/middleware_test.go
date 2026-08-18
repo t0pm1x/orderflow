@@ -163,3 +163,84 @@ func TestMiddleware_4xxIsCached(t *testing.T) {
 		t.Fatalf("replay expected cached 4xx body, got %q", rec2.Body.String())
 	}
 }
+
+// TestMiddleware_EmptyBodyReleases is the regression guard for
+// P1-#7 from the v1.1.1 audit: a handler that returns without
+// writing anything (e.g. panics that are recovered, or a
+// request whose context is cancelled mid-flight) must NOT cache
+// an empty body. Pre-fix, the middleware called Complete with
+// the empty body, so the next retry got HTTP 200 with body="".
+// The downstream consumer (the saga) saw the 200 and treated the
+// request as completed without the handler ever having done
+// any work.
+func TestMiddleware_EmptyBodyReleases(t *testing.T) {
+	s, _ := newMiniredisStore(t)
+	mw := Middleware(s)
+
+	noWriteHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		// Intentionally do nothing — simulate a panic recovered
+		// upstream or a context-cancelled write.
+	})
+
+	req1 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+	req1.Header.Set(HeaderIDKey, "key-empty")
+	rec1 := httptest.NewRecorder()
+	mw(noWriteHandler).ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first call: expected 200 (default before any write), got %d", rec1.Code)
+	}
+
+	// Second call: must hit the handler (reservation was released),
+	// NOT replay an empty body.
+	called := false
+	spy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("real-handler"))
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+	req2.Header.Set(HeaderIDKey, "key-empty")
+	rec2 := httptest.NewRecorder()
+	mw(spy).ServeHTTP(rec2, req2)
+	if !called {
+		t.Fatal("handler should be called after empty-body release; got replay instead")
+	}
+	if rec2.Body.String() != "real-handler" {
+		t.Errorf("body: got %q want %q", rec2.Body.String(), "real-handler")
+	}
+}
+
+// TestMiddleware_HandlerPanicRecovers: a handler that panics
+// must not crash the middleware. Pre-fix, the panic propagated
+// out of next.ServeHTTP and crashed the goroutine. With the
+// recover, the middleware releases the reservation so a retry
+// can succeed.
+func TestMiddleware_HandlerPanicRecovers(t *testing.T) {
+	s, _ := newMiniredisStore(t)
+	mw := Middleware(s)
+
+	panicHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("handler bug")
+	})
+
+	req1 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+	req1.Header.Set(HeaderIDKey, "key-panic")
+	rec1 := httptest.NewRecorder()
+	// Must not panic out of this call.
+	mw(panicHandler).ServeHTTP(rec1, req1)
+
+	// Second call: handler must run (reservation was released).
+	called := false
+	spy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("recovered"))
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+	req2.Header.Set(HeaderIDKey, "key-panic")
+	rec2 := httptest.NewRecorder()
+	mw(spy).ServeHTTP(rec2, req2)
+	if !called {
+		t.Fatal("handler should be called after panic-release")
+	}
+}

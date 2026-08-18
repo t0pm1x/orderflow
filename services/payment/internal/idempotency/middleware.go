@@ -7,7 +7,9 @@ package idempotency
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 )
 
@@ -36,6 +38,10 @@ const HeaderReplayed = "Idempotent-Replayed"
 //     - on success, capture the handler's response.
 //  3. After the handler runs:
 //     - if status >= 500, Store.Release so a retry can succeed.
+//     - if status == 0 (handler panicked or ctx cancelled without
+//     writing anything), Store.Release — caching an empty body
+//     would let a retry see HTTP 200 with empty payload, falsely
+//     reporting success.
 //     - otherwise, Store.Complete with the captured body bytes.
 //
 // The captured body is the raw bytes the handler wrote; status and
@@ -69,10 +75,42 @@ func Middleware(s *Store) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Run the handler under a recover. A panic leaves the
+			// in-flight marker in Redis for the full TTL (24h by
+			// default) — the operator sees the broken requests pile up
+			// in 409s. Recovery releases the reservation so a retry
+			// can succeed once the underlying bug is fixed.
 			buf := &responseBuffer{ResponseWriter: w}
-			next.ServeHTTP(buf, r)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Default().Error("idempotency: handler panic",
+							"key", key, "panic", r)
+						_ = s.Release(context.Background(), res)
+						// Best-effort: surface the panic to the
+						// client. We're inside a panic so the
+						// response writer is in an undefined state;
+						// returning 500 via the wrapped writer is
+						// best-effort.
+						defer func() {
+							_ = recover()
+						}()
+						http.Error(buf, "internal server error", http.StatusInternalServerError)
+					}
+				}()
+				next.ServeHTTP(buf, r)
+			}()
 
 			if buf.status >= 500 {
+				_ = s.Release(r.Context(), res)
+				return
+			}
+			if buf.status == 0 {
+				// Handler didn't write anything (panic recovered,
+				// ctx cancelled mid-flight, or returned without
+				// writing). Don't cache an empty body — the
+				// downstream retry would otherwise see HTTP 200
+				// with empty payload, falsely reporting success.
 				_ = s.Release(r.Context(), res)
 				return
 			}
