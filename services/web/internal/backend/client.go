@@ -20,9 +20,11 @@ type PaymentClient interface {
 	FireWebhook(ctx context.Context, w PaymentWebhook) error
 }
 
-// InventoryClient talks to the Inventory Service.
+// InventoryClient talks to the Inventory Service. The live API only
+// exposes single-SKU reads; the web UI derives SKUs to fetch from
+// order items (Task 8).
 type InventoryClient interface {
-	ListStock(ctx context.Context) ([]StockItem, error)
+	GetStock(ctx context.Context, sku string) (*StockItem, error)
 }
 
 // HTTPClient implements all three clients against the configured

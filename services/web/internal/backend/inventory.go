@@ -6,15 +6,15 @@ import (
 	"net/http"
 )
 
-func (c *HTTPClient) ListStock(ctx context.Context) ([]StockItem, error) {
+func (c *HTTPClient) GetStock(ctx context.Context, sku string) (*StockItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.inventoryURL+"/v1/inventory/stock", nil)
+		fmt.Sprintf("%s/v1/inventory/stock/%s", c.inventoryURL, sku), nil)
 	if err != nil {
-		return nil, fmt.Errorf("inventory list: %w", err)
+		return nil, fmt.Errorf("inventory get: %w", err)
 	}
-	var out []StockItem
+	var out StockItem
 	if err := c.do(req, &out); err != nil {
-		return nil, fmt.Errorf("inventory list: %w", err)
+		return nil, fmt.Errorf("inventory get: %w", err)
 	}
-	return out, nil
+	return &out, nil
 }

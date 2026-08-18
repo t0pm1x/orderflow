@@ -49,17 +49,17 @@ type OrderList struct {
 	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
-// StockItem is a best-effort decode of GET /v1/inventory/stock.
-// The OpenAPI spec doesn't define it explicitly; the existing
-// handler at services/inventory/internal/api/handler.go returns
-// `[]Stock{...}` with fields sku, available_qty, reserved_qty,
-// version. We match that local contract.
+// StockItem matches `model.Stock` in
+// services/inventory/internal/model/stock.go:12-18, which is what
+// `GET /v1/inventory/stock/{sku}` returns. The inventory service
+// only exposes single-SKU reads; deriving the SKU list for the UI
+// is the handler layer's problem (Task 8).
 type StockItem struct {
-	SKU         string  `json:"sku"`
-	Available   int64   `json:"available_qty"`
-	Reserved    int64   `json:"reserved_qty"`
-	Version     int64   `json:"version"`
-	Description *string `json:"description,omitempty"`
+	SKU       string    `json:"sku"`
+	Available int       `json:"available"`
+	Reserved  int       `json:"reserved"`
+	Version   int64     `json:"version"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // PaymentWebhook matches `PaymentWebhook` in api/openapi.yaml:302-316.
