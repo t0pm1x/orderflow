@@ -131,7 +131,7 @@ func (d *recordingDLQ) Send(_ context.Context, r outbox.Record, reason string) e
 // poller and double-DLQ. This test pins the safe behavior.
 func TestPoller_RoutesToDLQAfterMaxAttempts_PG(t *testing.T) {
 	pool := testPGPool(t)
-	seedPendingOutboxRow(t, pool, "e-pg-dlq-1", 2) // attempts=2, MaxAttempts=3
+	seedPendingOutboxRow(t, pool, "00000000-0000-0000-0000-000000000001", 2) // attempts=2, MaxAttempts=3
 
 	src := NewPGSource(pool)
 	pub := &alwaysErrPublisher{err: errors.New("kafka down")}
@@ -147,8 +147,8 @@ func TestPoller_RoutesToDLQAfterMaxAttempts_PG(t *testing.T) {
 	defer cancel()
 	_ = poller.Run(ctx)
 
-	if len(dlq.sent) != 1 || dlq.sent[0] != "e-pg-dlq-1" {
-		t.Errorf("dlq: got %v want [e-pg-dlq-1]", dlq.sent)
+	if len(dlq.sent) != 1 || dlq.sent[0] != "00000000-0000-0000-0000-000000000001" {
+		t.Errorf("dlq: got %v want [00000000-0000-0000-0000-000000000001]", dlq.sent)
 	}
 
 	// Row should now be FAILED with attempts=3 (incremented by
@@ -157,7 +157,7 @@ func TestPoller_RoutesToDLQAfterMaxAttempts_PG(t *testing.T) {
 	var attempts int
 	err := pool.QueryRow(context.Background(),
 		`SELECT status, attempts FROM saga_outbox WHERE event_id = $1`,
-		"e-pg-dlq-1").Scan(&status, &attempts)
+		"00000000-0000-0000-0000-000000000001").Scan(&status, &attempts)
 	if err != nil {
 		t.Fatalf("query saga_outbox: %v", err)
 	}
