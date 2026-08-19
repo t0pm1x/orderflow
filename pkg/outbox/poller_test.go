@@ -14,12 +14,13 @@ import (
 )
 
 type fakeSource struct {
-	mu       sync.Mutex
-	pending  []outbox.Record
-	sent     []string
-	failed   []string
-	fetchErr error
-	markErr  error
+	mu         sync.Mutex
+	pending    []outbox.Record
+	sent       []string
+	failed     []string
+	fetchErr   error
+	markErr    error
+	dbAttempts map[string]int
 }
 
 // RunInTx simulates FOR UPDATE SKIP LOCKED for unit tests: while fn
@@ -72,6 +73,23 @@ func (f *fakeSource) MarkFailedTx(_ context.Context, _ pgx.Tx, ids []string) err
 	defer f.mu.Unlock()
 	f.failed = append(f.failed, ids...)
 	return nil
+}
+
+// AttemptsOfTx reports the attempts counter for the given event_ids
+// from the fake's pending slice (which doubles as a state machine
+// for tests that need it). Tests that exercise DLQ thresholds should
+// pre-seed attempts via the AttemptsOfTx response map.
+func (f *fakeSource) AttemptsOfTx(_ context.Context, _ pgx.Tx, ids []string) (map[string]int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dbAttempts == nil {
+		f.dbAttempts = map[string]int{}
+	}
+	out := make(map[string]int, len(ids))
+	for _, id := range ids {
+		out[id] = f.dbAttempts[id]
+	}
+	return out, nil
 }
 
 type fakePublisher struct {
@@ -154,16 +172,20 @@ func TestPoller_PollsAndPublishesOnce(t *testing.T) {
 }
 
 func TestPoller_RetriesOnPublishError(t *testing.T) {
+	// MaxAttempts high enough that the 80ms test window cannot
+	// trigger the FAILED/DLQ transition; this asserts the under-cap
+	// rollback path. After cap, the row leaves pending (see
+	// TestPoller_DoesNotDoubleDLQOnPersistentBrokerDown).
 	src := &fakeSource{pending: []outbox.Record{rec("e1")}}
 	pub := &fakePublisher{alwaysErr: errors.New("kafka down")}
-	p := New(PollerConfig{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 10}, src, pub, nil, nil)
+	p := New(PollerConfig{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 1000}, src, pub, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	_ = p.Run(ctx)
 
 	if len(src.pending) != 1 {
-		t.Errorf("pending on persistent error: got %d want 1 (rolled back)", len(src.pending))
+		t.Errorf("pending on persistent error: got %d want 1 (rolled back under cap)", len(src.pending))
 	}
 	if v, ok := p.attempts.Load("e1"); !ok || *v.(*int32) < 1 {
 		t.Errorf("attempts counter not incremented")
@@ -188,6 +210,32 @@ func TestPoller_RoutesToDLQAfterMaxAttempts(t *testing.T) {
 	}
 	if len(src.pending) != 0 {
 		t.Errorf("pending after DLQ: got %d want 0", len(src.pending))
+	}
+}
+
+// TestPoller_DoesNotDoubleDLQOnPersistentBrokerDown is the v1.1.3
+// regression net: before the fix, the poller rolled back the
+// MarkFailedTx inside the same tx as the publish failure, so the
+// row stayed PENDING and the in-memory attempts counter kept
+// incrementing on each poll — the DLQ.Send fired once every 3
+// polls (~33 fires in 500ms). With the fix, MarkFailedTx is
+// committed (status='FAILED') and the row stops being re-fetched,
+// so the DLQ sees exactly one entry.
+func TestPoller_DoesNotDoubleDLQOnPersistentBrokerDown(t *testing.T) {
+	src := &fakeSource{pending: []outbox.Record{rec("e1")}}
+	pub := &fakePublisher{alwaysErr: errors.New("kafka down")}
+	dlq := &fakeDLQ{}
+	p := New(PollerConfig{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 3}, src, pub, dlq, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = p.Run(ctx)
+
+	if len(dlq.sent) != 1 {
+		t.Errorf("dlq.sent: got %d want 1 (pre-fix: ~33 fires because rollback-undid MarkFailedTx and the row kept re-fetching)", len(dlq.sent))
+	}
+	if len(src.failed) != 1 {
+		t.Errorf("MarkFailedTx calls: got %d want 1", len(src.failed))
 	}
 }
 
@@ -234,5 +282,36 @@ func TestPoller_BatchSizeRespected(t *testing.T) {
 	// timing decides when the last 1-row batch lands.
 	if got := int(atomic.LoadInt32(&pub.calls)); got < 3 {
 		t.Errorf("publish calls: got %d want ≥3", got)
+	}
+}
+
+// TestPoller_DBQueriesAttemptsForDLQ is the v1.1.4 regression net:
+// the poller's DLQ-budget decision must read attempts from the DB
+// row (Source.AttemptsOfTx), not rely solely on the in-memory
+// sync.Map. Simulating a "fresh pod, but the DB row is already
+// past MaxAttempts because a previous pod started the budget"
+// scenario: pre-seed dbAttempts[e1]=MaxAttempts-1; with one
+// publish failure the row crosses the threshold on the very first
+// poll in the new pod, not after MaxAttempts new failures.
+func TestPoller_DBQueriesAttemptsForDLQ(t *testing.T) {
+	src := &fakeSource{
+		pending:    []outbox.Record{rec("e1")},
+		dbAttempts: map[string]int{"e1": 4}, // pre-seed: previous pod almost crossed
+	}
+	pub := &fakePublisher{alwaysErr: errors.New("kafka down")}
+	dlq := &fakeDLQ{}
+	// MaxAttempts=5; e1 starts with dbAttempts=4, so the FIRST
+	// observed failure increments to 5 and DLQ-fires.
+	p := New(PollerConfig{Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond, MaxAttempts: 5}, src, pub, dlq, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	_ = p.Run(ctx)
+
+	if len(dlq.sent) != 1 || dlq.sent[0] != "e1" {
+		t.Errorf("dlq: got %v want [e1] (DB seed attempts=4 + 1 publish failure must cross MaxAttempts=5)", dlq.sent)
+	}
+	if len(src.failed) != 1 {
+		t.Errorf("MarkFailedTx calls: got %d want 1", len(src.failed))
 	}
 }

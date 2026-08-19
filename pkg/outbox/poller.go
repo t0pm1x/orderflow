@@ -63,7 +63,7 @@ type Poller struct {
 	pub       Publisher
 	dlq       DLQ
 	metrics   Metrics
-	attempts  sync.Map // event_id -> int (atomic-stored via *int32)
+	attempts  sync.Map // event_id -> int (atomic-stored via *int32). Deprecated: superseded by source-row attempts; kept for the v1.1.2 attempt-counter fast path while DB-attempts propagates to all 5 services.
 	stopCh    chan struct{}
 	stopped   atomic.Bool
 	runningCh chan struct{}
@@ -106,6 +106,18 @@ func (p *Poller) Stop() {
 // This is the production concurrency contract; the test fake
 // implements the same invariant by holding pending rows while fn
 // runs.
+//
+// Failure handling (v1.1.3 fix):
+//
+//   - publish succeeded → MarkSentTx, COMMIT.
+//   - publish failed, every row still under retry budget → no
+//     MarkFailedTx, ROLLBACK so rows stay PENDING for the next poll.
+//   - publish failed, at least one row past MaxAttempts →
+//     MarkFailedTx (status='FAILED' so the row stops being
+//     re-fetched) plus DLQ.Send, COMMIT so the FAILED transition
+//     sticks. Pre-v1.1.3 this branch also called ROLLBACK which
+//     undid the MarkFailedTx, leaving the row PENDING forever and
+//     causing DLQ.Send to fire on every subsequent poll.
 func (p *Poller) Run(ctx context.Context) error {
 	close(p.runningCh)
 	defer p.resetAttemptsForTest()
@@ -126,14 +138,39 @@ func (p *Poller) Run(ctx context.Context) error {
 				return errEmptyBatch
 			}
 
+			// Read the DB-authoritative retry budget inside the
+			// locked tx. v1.1.4 fix: the in-memory sync.Map is
+			// still used as a fast-path cache, but the DB column
+			// is the source of truth so a pod restart that
+			// wipes p.attempts doesn't silently re-DLQ a row
+			// that had already crossed the threshold (or skip
+			// DLQ-ing a row that has reset budget because of a
+			// mid-cycle MarkFailedTx commit fail).
+			ids := make([]string, len(recs))
+			for i, r := range recs {
+				ids[i] = r.EventID
+			}
+			dbAttempts, dbErr := p.src.AttemptsOfTx(ctx, tx, ids)
+			if dbErr != nil {
+				return dbErr // rollback
+			}
+
 			if err := p.publishBatch(ctx, recs); err != nil {
 				p.metrics.ObservePublish(ctx, len(recs), err)
-				// Roll back so the rows stay PENDING and we re-fetch
-				// on the next poll. handlePublishFailure still runs
-				// (in-memory attempt counter + DLQ) so a poison pill
-				// eventually lands in the DLQ topic.
-				p.handlePublishFailure(ctx, tx, recs, err)
-				return err // triggers rollback in RunInTx
+				// For rows past MaxAttempts, MarkFailedTx sets
+				// status='FAILED' so the row stops being re-fetched.
+				// For rows still under the cap, MarkFailedTx is
+				// skipped and we ROLLBACK so they stay PENDING and
+				// get re-tried on the next poll.
+				//
+				// Returning nil here commits the FAILED transition;
+				// returning the err rolls back. handlePublishFailure
+				// decides per row.
+				committable := p.handlePublishFailure(ctx, tx, recs, err, dbAttempts)
+				if committable {
+					return nil // commit: FAILED rows now terminal; no re-fetch
+				}
+				return err // rollback: rows stay PENDING, retried next poll
 			}
 			p.metrics.ObservePublish(ctx, len(recs), nil)
 
@@ -144,11 +181,7 @@ func (p *Poller) Run(ctx context.Context) error {
 			// duplicate loop. (Regression introduced by the v1.1.0-pre
 			// refactor that moved MarkSent from a post-loop call
 			// site into the RunInTx closure without ever wiring the
-			// new MarkSentTx call.)
-			ids := make([]string, len(recs))
-			for i, r := range recs {
-				ids[i] = r.EventID
-			}
+			// new MarkSentTx call.) Re-uses `ids` from above.
 			if err := p.src.MarkSentTx(ctx, tx, ids); err != nil {
 				p.metrics.ObservePublish(ctx, len(recs), err)
 				return err // triggers rollback; rows stay PENDING
@@ -205,24 +238,54 @@ func (p *Poller) sleep(ctx context.Context) bool {
 }
 
 // handlePublishFailure bumps the per-event attempt counter and, on
-// MaxAttempts exceeded, routes the row to the DLQ. Rows still under
-// the cap stay PENDING — they're re-fetched on the next poll because
-// the outer RunInTx rolls back when this function returns non-nil.
+// MaxAttempts exceeded, routes the row to the DLQ and marks it
+// FAILED so the next poll skips it. Rows still under the cap stay
+// PENDING — they're re-fetched on the next poll because the outer
+// RunInTx rolls back when committable=false.
+//
+// The retry-budget source of truth is the DB column (`attempts`),
+// not the in-memory sync.Map. The closure pre-reads dbAttempts via
+// Source.AttemptsOfTx inside the locked tx; the in-memory cache is
+// a fast path that mirrors the DB value within a single pod's
+// lifetime but does not survive a restart. Taking max(in-memory,
+// DB) makes the cache safe to repopulate from zero without under-
+// counting.
 //
 // DLQ transitions are recorded via MarkFailedTx inside the locked
 // tx so the row's status flips to FAILED atomically with the row
-// lock release. That way two pollers never both see the same row
-// past MaxAttempts and double-DLQ.
-func (p *Poller) handlePublishFailure(ctx context.Context, tx pgx.Tx, recs []outbox.Record, cause error) {
+// lock release. The caller (Run) commits the tx when this function
+// returns true so the FAILED transition persists across restarts.
+//
+// Returns true when at least one row crossed the MaxAttempts
+// threshold and was marked FAILED + DLQ'd. The caller should commit
+// the tx in that case. Returns false when every row is still under
+// the retry budget (no MarkFailedTx was called); the caller rolls
+// back so the rows stay PENDING and a subsequent poll retries them.
+func (p *Poller) handlePublishFailure(ctx context.Context, tx pgx.Tx, recs []outbox.Record, cause error, dbAttempts map[string]int) bool {
+	anyCrossed := false
 	for _, r := range recs {
-		cur := p.loadAttempts(r.EventID)
+		memCur := p.loadAttempts(r.EventID)
+		dbCur := dbAttempts[r.EventID] // 0 when the row has no DB attempts yet
+		cur := memCur
+		if dbCur > cur {
+			cur = dbCur
+		}
 		next := cur + 1
 		p.storeAttempts(r.EventID, next)
 		if next >= p.cfg.MaxAttempts {
+			anyCrossed = true
 			if p.dlq != nil {
 				_ = p.dlq.Send(ctx, r, cause.Error())
 				p.metrics.ObserveDLQ(ctx, r, cause.Error())
-				_ = p.src.MarkFailedTx(ctx, tx, []string{r.EventID})
+				// MarkFailedTx sets status='FAILED' on the source
+				// row AND increments attempts via the inlined
+				// "attempts = attempts + 1" SQL. The commit-
+				// after-this-path ensures both transitions are
+				// durable so the row stops being re-fetched and
+				// the next pod sees the actual attempt count.
+				if err := p.src.MarkFailedTx(ctx, tx, []string{r.EventID}); err != nil {
+					p.metrics.ObservePublish(ctx, len(recs), err)
+				}
 				p.attempts.Delete(r.EventID)
 			}
 			// Without a DLQ we leave the row PENDING; it will keep
@@ -230,6 +293,7 @@ func (p *Poller) handlePublishFailure(ctx context.Context, tx pgx.Tx, recs []out
 			// pre-DLQ behavior. Operators see the lag grow.
 		}
 	}
+	return anyCrossed
 }
 
 func (p *Poller) loadAttempts(id string) int {

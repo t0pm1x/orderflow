@@ -37,7 +37,8 @@ const markSentSQL = `UPDATE saga_outbox
                          AND status = 'PENDING'`
 
 const markFailedSQL = `UPDATE saga_outbox
-                          SET attempts = attempts + 1,
+                          SET status = 'FAILED',
+                              attempts = attempts + 1,
                               last_error = COALESCE($1, last_error)
                         WHERE event_id = ANY($2)
                           AND status = 'PENDING'`
