@@ -11,8 +11,8 @@ The orderflow platform must coordinate a multi-step business transaction that sp
 The relevant flow (per spec §"Saga Flow"):
 
 1. Order created (state=`pending`)
-2. Inventory stock reserved in Redis with TTL
-3. Payment charged (mock provider)
+2. Inventory stock reserved in Postgres (`stock_items.reserved`) via optimistic locking
+3. Payment charged (mock provider); Redis used for payment-webhook idempotency
 4. Order confirmed
 5. On any failure: release stock, refund payment, cancel order
 
