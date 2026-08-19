@@ -1763,7 +1763,7 @@ loop:
 				idIdx := strings.Index(body, "id: replay-evt-42")
 				evIdx := strings.Index(body, "event: OrderCreated")
 				dataIdx := strings.Index(body, "data: ")
-				if !(idIdx >= 0 && evIdx > idIdx && dataIdx > evIdx) {
+				if idIdx < 0 || evIdx <= idIdx || dataIdx <= evIdx {
 					t.Errorf("SSE frame out of order (id=%d event=%d data=%d), body: %s", idIdx, evIdx, dataIdx, body)
 				}
 				break loop
@@ -2333,7 +2333,7 @@ func TestPageInventory_PreservesSKUOrder(t *testing.T) {
 	if idx0 < 0 || idx1 < 0 || idx2 < 0 {
 		t.Fatalf("missing SKUs in body: 0=%d 1=%d 2=%d", idx0, idx1, idx2)
 	}
-	if !(idx0 < idx1 && idx1 < idx2) {
+	if idx0 >= idx1 || idx1 >= idx2 {
 		t.Errorf("SKU order not preserved: SKU-000=%d SKU-001=%d SKU-002=%d", idx0, idx1, idx2)
 	}
 }
