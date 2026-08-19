@@ -724,6 +724,31 @@ func TestOrderDetail_NotFound(t *testing.T) {
 	}
 }
 
+// TestOrderDetail_TransportError_502 covers P2.7: when Order.Get
+// fails with a non-HTTPError (transport branch), the helper maps
+// it to 502 — never 404. This pins the regression that any
+// upstream failure mode other than a typed upstream 404 surfaces
+// as 502. The earlier "all errors → 404" code path is dead; this
+// test guards it from being reintroduced (e.g. by a refactor that
+// drops the helper and falls back to a hardcoded http.Error).
+func TestOrderDetail_TransportError_502(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.getErr = errFake // naked error, not *backend.HTTPError
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/22222222-2222-4222-8222-222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 502 {
+		t.Fatalf("status: got %d want 502 (transport error must not collapse to 404)", resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		t.Fatalf("status: 404 leak — transport error must not return 404 (P2.7 regression)")
+	}
+}
+
 func TestOrderCancel_OK(t *testing.T) {
 	oc := &fakeOrderClient{}
 	oc.cancelCalls = 0

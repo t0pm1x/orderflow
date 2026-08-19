@@ -239,11 +239,11 @@ type orderDetailVM struct {
 
 // PageOrderDetail serves GET /orders/{id}. It rejects non-UUID
 // ids with 400 before hitting the backend; on a valid id with
-// upstream failure it returns 404 (not found / unreachable) with
-// the layout shell + banner so the navbar stays usable. When
-// called with ?frag=1 the handler renders only the body fragment
-// (no layout shell) so htmx polling can swap just the
-// page-content region.
+// upstream failure it surfaces the status via mapUpstreamError
+// (404 only when upstream is 404; transport errors and upstream
+// 5xx map to 502) so the navbar stays usable. When called with
+// ?frag=1 the handler renders only the body fragment (no layout
+// shell) so htmx polling can swap just the page-content region.
 // PageOrderDetail serves GET /orders/{id} — renders the order
 // detail page. While the order is non-terminal the page polls
 // itself every 1s via htmx; otherwise it renders once.
