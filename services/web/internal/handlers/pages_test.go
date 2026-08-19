@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,7 @@ type fakeOrderClient struct {
 	getErr       error
 	getCalls     int
 	cancelCalls  int
+	cancelErr    error
 	lastCancel   string
 	lastSubmit   *backend.OrderSubmit
 }
@@ -59,6 +61,9 @@ func (f *fakeOrderClient) Submit(_ context.Context, in backend.OrderSubmit) (*ba
 func (f *fakeOrderClient) Cancel(_ context.Context, id string) error {
 	f.cancelCalls++
 	f.lastCancel = id
+	if f.cancelErr != nil {
+		return f.cancelErr
+	}
 	return nil
 }
 func (f *fakeOrderClient) submitCalls() int { return f.submitCallsN }
@@ -68,12 +73,16 @@ func ptrInt64(v int64) *int64 { return &v }
 type fakePaymentClient struct {
 	lastWebhook *backend.PaymentWebhook
 	fireCallsN  int
+	fireErr     error
 }
 
 func (f *fakePaymentClient) FireWebhook(_ context.Context, w backend.PaymentWebhook) error {
 	f.fireCallsN++
 	cp := w
 	f.lastWebhook = &cp
+	if f.fireErr != nil {
+		return f.fireErr
+	}
 	return nil
 }
 func (f *fakePaymentClient) fireCalls() int { return f.fireCallsN }
@@ -97,7 +106,7 @@ func (f *fakeInventoryClient) GetStock(_ context.Context, sku string) (*backend.
 func newTestSetWith(t *testing.T, oc backend.OrderClient, ic backend.InventoryClient) http.Handler {
 	t.Helper()
 	bus := events.NewBus()
-	h := handlers.NewSet(oc, &fakePaymentClient{}, ic, bus)
+	h := handlers.NewSet(oc, &fakePaymentClient{}, ic, bus, slog.Default())
 	r := chi.NewRouter()
 	h.Routes(r)
 	return r
@@ -301,7 +310,7 @@ func TestOrderDetail_OK(t *testing.T) {
 
 func TestOrderDetail_NotFound(t *testing.T) {
 	oc := &fakeOrderClient{}
-	oc.getErr = fmt.Errorf("upstream 404: status 404: not found")
+	oc.getErr = &backend.HTTPError{Status: 404, Body: "not found", URL: "http://order/v1/orders/22222222-2222-4222-8222-222222222222"}
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/orders/22222222-2222-4222-8222-222222222222")
@@ -489,7 +498,7 @@ func TestPaymentsSim_OK(t *testing.T) {
 func TestPaymentsFire_OK(t *testing.T) {
 	pc := &fakePaymentClient{}
 	idUUID := uuid.MustParse("66666666-6666-4666-8666-666666666666").String()
-	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
+	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus(), slog.Default())
 	r := chi.NewRouter()
 	set.Routes(r)
 	srv := httptest.NewServer(r)
@@ -718,7 +727,7 @@ func TestOrderCancel_DuplicateToken_409(t *testing.T) {
 func TestPaymentsFire_DuplicateToken_409(t *testing.T) {
 	pc := &fakePaymentClient{}
 	idUUID := uuid.MustParse("77777777-7777-4777-8777-777777777777").String()
-	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
+	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus(), slog.Default())
 	r := chi.NewRouter()
 	set.Routes(r)
 	srv := httptest.NewServer(r)
@@ -918,7 +927,7 @@ func TestOrderSubmit_BlankCustomerID_GeneratesUUID(t *testing.T) {
 // could otherwise poison the upstream idempotency cache).
 func TestPaymentsFire_BadOrderID_400(t *testing.T) {
 	pc := &fakePaymentClient{}
-	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
+	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus(), slog.Default())
 	r := chi.NewRouter()
 	set.Routes(r)
 	srv := httptest.NewServer(r)
@@ -941,5 +950,220 @@ func TestPaymentsFire_BadOrderID_400(t *testing.T) {
 	}
 	if pc.fireCalls() != 0 {
 		t.Errorf("FireWebhook called %d times, want 0 (bad order_id must NOT hit payment client)", pc.fireCalls())
+	}
+}
+
+// TestOrderSubmit_Upstream400_HidesRawBody covers the P1.1
+// contract: when the upstream returns a 4xx with a payload that
+// contains operator-debug string fragments (e.g. a stack trace),
+// the BFF must surface a generic user-friendly message and MUST
+// NOT echo any of those fragments in the rendered HTML. The body
+// is preserved server-side in the slog log, not in the response.
+func TestOrderSubmit_Upstream400_HidesRawBody(t *testing.T) {
+	rawBody := "internal debug: stack trace here — DO NOT LEAK"
+	oc := &fakeOrderClient{}
+	oc.submitErr = &backend.HTTPError{Status: 400, Body: rawBody, URL: "http://order/v1/orders"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1&idempotency_token=submit-hide-body-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "stack trace") {
+		t.Errorf("body leaked upstream payload 'stack trace': %s", body)
+	}
+	if strings.Contains(body, "internal debug") {
+		t.Errorf("body leaked upstream payload 'internal debug': %s", body)
+	}
+	if strings.Contains(body, "DO NOT LEAK") {
+		t.Errorf("body leaked upstream payload 'DO NOT LEAK': %s", body)
+	}
+}
+
+// TestOrderCancel_Upstream5xx_HidesRawBody covers the cancel
+// action's 5xx branch: when the upstream errors out with a 500 +
+// debug payload, the BFF must respond 502 with a generic "try
+// again" message and never echo the upstream body verbatim.
+func TestOrderCancel_Upstream5xx_HidesRawBody(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.cancelErr = &backend.HTTPError{Status: 500, Body: "db panic: nil pointer at saga.go:42", URL: "http://order/v1/orders/x"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	idUUID := uuid.MustParse("99999999-9999-4999-8999-999999999999").String()
+	form := strings.NewReader("idempotency_token=cancel-hide-body-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/"+idUUID, form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 502 {
+		t.Fatalf("status: got %d want 502", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "nil pointer") {
+		t.Errorf("body leaked upstream payload 'nil pointer': %s", body)
+	}
+	if strings.Contains(body, "saga.go") {
+		t.Errorf("body leaked upstream payload 'saga.go': %s", body)
+	}
+}
+
+// TestPaymentsFire_Upstream5xx_HidesRawBody mirrors the contract
+// for the payment-fire action: 5xx upstream maps to 502 + generic
+// message, and the raw body never escapes the handler.
+func TestPaymentsFire_Upstream5xx_HidesRawBody(t *testing.T) {
+	pc := &fakePaymentClient{}
+	pc.fireErr = &backend.HTTPError{Status: 500, Body: "redis: connection refused at 10.0.0.5", URL: "http://payment/webhooks"}
+	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus(), slog.Default())
+	r := chi.NewRouter()
+	set.Routes(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	idUUID := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").String()
+	form := strings.NewReader("order_id=" + idUUID + "&status=succeeded&idempotency_token=fire-hide-body-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 502 {
+		t.Fatalf("status: got %d want 502", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "connection refused") {
+		t.Errorf("body leaked upstream payload 'connection refused': %s", body)
+	}
+	if strings.Contains(body, "10.0.0.5") {
+		t.Errorf("body leaked upstream payload '10.0.0.5': %s", body)
+	}
+}
+
+// TestPageOrderDetail_UpstreamError_HidesRawBody covers the order
+// detail page: when the upstream get returns a 5xx with a debug
+// payload, the rendered HTML must not echo it. The status code
+// is 502 (mapped), and the user message is the generic "try again"
+// hint.
+func TestPageOrderDetail_UpstreamError_HidesRawBody(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.getErr = &backend.HTTPError{Status: 500, Body: "stack trace: goroutine 1 [running]: main.main", URL: "http://order/v1/orders/x"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	idUUID := uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").String()
+	resp, err := http.Get(srv.URL + "/orders/" + idUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 502 {
+		t.Fatalf("status: got %d want 502", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "stack trace") {
+		t.Errorf("body leaked upstream payload 'stack trace': %s", body)
+	}
+	if strings.Contains(body, "goroutine") {
+		t.Errorf("body leaked upstream payload 'goroutine': %s", body)
+	}
+}
+
+// TestPageOrdersList_UpstreamError_HidesRawBody covers the list
+// page: when the upstream list errors with a debug payload, the
+// banner must use the generic 502 message and never echo the body.
+func TestPageOrdersList_UpstreamError_HidesRawBody(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.listErr = &backend.HTTPError{Status: 500, Body: "internal: OOM at line 42", URL: "http://order/v1/orders"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200 (list still renders layout on backend down)", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "OOM") {
+		t.Errorf("body leaked upstream payload 'OOM': %s", body)
+	}
+	if strings.Contains(body, "line 42") {
+		t.Errorf("body leaked upstream payload 'line 42': %s", body)
+	}
+}
+
+// TestPageInventory_UpstreamError_HidesRawBody mirrors the list
+// page check for the inventory view: upstream list error must
+// surface a generic banner, never the raw body.
+func TestPageInventory_UpstreamError_HidesRawBody(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.listErr = &backend.HTTPError{Status: 500, Body: "rotate secrets and try again", URL: "http://order/v1/orders"}
+	srv := httptest.NewServer(newTestSetWith(t, oc, &fakeInventoryClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/inventory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "rotate secrets") {
+		t.Errorf("body leaked upstream payload 'rotate secrets': %s", body)
+	}
+}
+
+// TestPagePaymentsSim_UpstreamError_HidesRawBody covers the
+// payments-sim page: when both list queries fail, the banner uses
+// the generic "try again" hint and never echoes the raw debug
+// payload from the upstream.
+func TestPagePaymentsSim_UpstreamError_HidesRawBody(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.listErr = &backend.HTTPError{Status: 500, Body: "trace: mysql deadlocks — secret info", URL: "http://order/v1/orders"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/payments/sim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "mysql") {
+		t.Errorf("body leaked upstream payload 'mysql': %s", body)
+	}
+	if strings.Contains(body, "deadlocks") {
+		t.Errorf("body leaked upstream payload 'deadlocks': %s", body)
+	}
+	if strings.Contains(body, "secret info") {
+		t.Errorf("body leaked upstream payload 'secret info': %s", body)
 	}
 }

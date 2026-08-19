@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -103,22 +102,10 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	in.IdempotencyKey = token
 	out, err := s.Order.Submit(r.Context(), in)
 	if err != nil {
-		var he *backend.HTTPError
-		if errors.As(err, &he) {
-			vm.Error = fmt.Sprintf("Order service returned %d: %s", he.Status, he.Body)
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if he.Status >= http.StatusBadRequest && he.Status < 500 {
-				w.WriteHeader(http.StatusBadRequest)
-				_ = s.Templates.ExecuteTemplate(w, "layout", vm)
-				return
-			}
-			w.WriteHeader(http.StatusBadGateway)
-			_ = s.Templates.ExecuteTemplate(w, "layout", vm)
-			return
-		}
-		vm.Error = "Order service error: " + err.Error()
+		msg, status := mapUpstreamError(s.Logger, "POST /v1/orders", err)
+		vm.Error = msg
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(status)
 		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 		return
 	}
@@ -171,10 +158,11 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	vm := orderDetailVM{Body: "orderDetailBody", IdempotencyToken: newIdempotencyToken()}
 	o, err := s.Order.Get(r.Context(), id)
 	if err != nil {
+		msg, status := mapUpstreamError(s.Logger, "GET /v1/orders/{id}", err)
 		vm.BackendDown = true
-		vm.Error = err.Error()
+		vm.Error = msg
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(status)
 		if r.URL.Query().Get("frag") == "1" {
 			renderFragment(w, s.Templates, "orderDetailBody", vm)
 			return
@@ -190,7 +178,8 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.Logger.Error("template execute failed", "route", "GET /orders/{id}", "template", "layout", "err", err)
+		http.Error(w, "rendering failed", http.StatusInternalServerError)
 	}
 }
 
@@ -222,7 +211,8 @@ func (s *Set) PageOrderEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.Logger.Error("template execute failed", "route", "GET /orders/{id}/events", "template", "layout", "err", err)
+		http.Error(w, "rendering failed", http.StatusInternalServerError)
 	}
 }
 
@@ -250,17 +240,15 @@ func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Order.Cancel(r.Context(), id); err != nil {
-		var he *backend.HTTPError
-		if errors.As(err, &he) {
-			switch he.Status {
-			case http.StatusUnauthorized, http.StatusNotFound:
-				http.Error(w, err.Error(), http.StatusNotFound)
-			default:
-				http.Error(w, err.Error(), http.StatusBadGateway)
-			}
+		msg, status := mapUpstreamError(s.Logger, "DELETE /v1/orders/{id}", err)
+		if status == http.StatusNotFound {
+			// Cancel can't proceed if the order doesn't exist; fold
+			// 404 upstream into BFF 404 regardless of the helper's
+			// status (which keeps 404 as 404 in the map).
+			http.Error(w, msg, http.StatusNotFound)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, msg, status)
 		return
 	}
 	w.Header().Set("HX-Redirect", "/orders/"+id)
@@ -296,8 +284,9 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 	vm := inventoryVM{Body: "inventoryBody"}
 	list, err := s.Order.List(r.Context(), "", 50)
 	if err != nil {
+		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders (inventory)", err)
 		vm.BackendDown = true
-		vm.Error = err.Error()
+		vm.Error = msg
 	} else {
 		seen := make(map[string]struct{})
 		for _, o := range list.Items {
@@ -328,7 +317,8 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.Logger.Error("template execute failed", "route", "GET /inventory", "template", "layout", "err", err)
+		http.Error(w, "rendering failed", http.StatusInternalServerError)
 	}
 }
 
@@ -365,7 +355,7 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 	vm := paymentsSimVM{Body: "paymentsSimBody"}
 	if pending == nil && reserved == nil {
 		vm.BackendDown = true
-		vm.Error = "Order service unavailable"
+		vm.Error = "The order service is temporarily unavailable. Please try again in a moment."
 	}
 	addRows := func(items []backend.Order) {
 		for _, o := range items {
@@ -385,7 +375,8 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.Logger.Error("template execute failed", "route", "GET /payments/sim", "template", "layout", "err", err)
+		http.Error(w, "rendering failed", http.StatusInternalServerError)
 	}
 }
 
@@ -435,7 +426,8 @@ func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 		ErrorCode: errorCode,
 	}
 	if err := s.Payment.FireWebhook(r.Context(), wh); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		msg, status := mapUpstreamError(s.Logger, "POST /payments/sim/fire", err)
+		http.Error(w, msg, status)
 		return
 	}
 	w.Header().Set("HX-Redirect", "/payments/sim")

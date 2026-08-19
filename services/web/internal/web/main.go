@@ -86,7 +86,7 @@ func Run(ctx context.Context) error {
 	bus := events.NewBus()
 	defer bus.Close()
 	bc := backend.New(nil, orderURL, paymentURL, inventoryURL)
-	hSet := handlers.NewSet(bc, bc, bc, bus)
+	hSet := handlers.NewSet(bc, bc, bc, bus, logger)
 
 	stopTail, err := kafkatail.Start(ctx, logger, envOrDefault("KAFKA_BROKERS", ""), bus)
 	if err != nil {

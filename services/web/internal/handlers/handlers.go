@@ -7,6 +7,7 @@ package handlers
 
 import (
 	"html/template"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -25,6 +26,12 @@ type Set struct {
 	Inventory backend.InventoryClient
 	Bus       *events.Bus
 	Templates *template.Template
+	// Logger receives structured upstream-error context (status,
+	// body, URL) so operators can diagnose without exposing the
+	// payload in the user-facing banner. mapUpstreamError writes
+	// here; nil falls back to slog.Default() so defensive callers
+	// never panic.
+	Logger *slog.Logger
 	// replays is the in-process replay-guard cache shared by all
 	// mutating action handlers (POST /v1/orders, /v1/orders/{id},
 	// /payments/sim/fire). Initialized in NewSet so handlers can
@@ -35,9 +42,13 @@ type Set struct {
 // NewSet builds a Set with the layout + body templates parsed once.
 // The full set of body templates is registered incrementally across
 // Tasks 5-10; this constructor only needs the two files referenced
-// by the orders-list page (Task 5).
+// by the orders-list page (Task 5). The logger is for structured
+// upstream-error logging; pass slog.Default() from main.
 func NewSet(order backend.OrderClient, payment backend.PaymentClient,
-	inventory backend.InventoryClient, bus *events.Bus) *Set {
+	inventory backend.InventoryClient, bus *events.Bus, logger *slog.Logger) *Set {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	t := template.Must(template.ParseFS(templates.FS, "layout.html", "orders_list.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
 	return &Set{
 		Order:     order,
@@ -45,6 +56,7 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 		Inventory: inventory,
 		Bus:       bus,
 		Templates: t,
+		Logger:    logger,
 		replays:   newReplayCache(),
 	}
 }
@@ -88,8 +100,9 @@ func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 	vm.Body = "ordersListBody"
 	list, err := s.Order.List(r.Context(), "", 50)
 	if err != nil {
+		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders", err)
 		vm.BackendDown = true
-		vm.Error = err.Error()
+		vm.Error = msg
 	} else {
 		vm.Orders = list.Items
 	}
@@ -99,7 +112,8 @@ func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.Logger.Error("template execute failed", "route", "GET /", "template", "layout", "err", err)
+		http.Error(w, "rendering failed", http.StatusInternalServerError)
 	}
 }
 
@@ -111,6 +125,10 @@ func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 func renderFragment(w http.ResponseWriter, t *template.Template, name string, vm any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(w, name, vm); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Bubble up to the network error path — the page-status code
+		// is already set by the caller, so the caller must log with
+		// its own logger. We still map to a generic 500 here so the
+		// browser doesn't get a half-rendered fragment.
+		http.Error(w, "rendering failed", http.StatusInternalServerError)
 	}
 }
