@@ -5,7 +5,7 @@ spec:
   template:
     spec:
       containers:
-        - name: order
+        - name: orderflow-order
           resources:
             requests: { cpu: 200m, memory: 256Mi }
             limits:   { cpu: 1000m, memory: 1Gi }
@@ -17,7 +17,7 @@ spec:
   template:
     spec:
       containers:
-        - name: payment
+        - name: orderflow-payment
           resources:
             requests: { cpu: 200m, memory: 256Mi }
             limits:   { cpu: 1000m, memory: 1Gi }
@@ -29,7 +29,7 @@ spec:
   template:
     spec:
       containers:
-        - name: inventory
+        - name: orderflow-inventory
           resources:
             requests: { cpu: 200m, memory: 256Mi }
             limits:   { cpu: 1000m, memory: 1Gi }
@@ -41,7 +41,7 @@ spec:
   template:
     spec:
       containers:
-        - name: saga
+        - name: orderflow-saga
           resources:
             requests: { cpu: 200m, memory: 256Mi }
             limits:   { cpu: 1000m, memory: 1Gi }

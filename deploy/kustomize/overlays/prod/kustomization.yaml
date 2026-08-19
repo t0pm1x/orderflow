@@ -1,12 +1,10 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: orderflow-prod
-namePrefix: ""
 resources:
   - ../../base
-  - namespace.yaml
+  - hpa.yaml
+  - pdb.yaml
 patches:
   - path: replicas-patch.yaml
   - path: resources-patch.yaml
-  - path: hpa.yaml
-  - path: pdb.yaml

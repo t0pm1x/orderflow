@@ -1,8 +1,13 @@
 # GENERATED stub — helm not installed, see deploy/kustomize/README.md.
-# Regenerate via:
+# The `services.yaml` sibling file is a hand-rolled stand-in that
+# matches the shape `helm template orderflow-$svc` would produce.
+# Once helm is available, regenerate via:
+#
 #   for svc in order payment inventory saga; do
 #     helm template orderflow-$svc deploy/helm/orderflow-$svc \
 #       --include-crds \
-#       >> deploy/kustomize/base/all-services.yaml
+#       >> deploy/kustomize/base/services.yaml
 #   done
-# Each overlay then patches this bundle with its environment-specific config.
+#
+# Each overlay then patches this bundle with environment-specific
+# configuration.

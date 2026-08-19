@@ -1,47 +1,47 @@
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: dev-orderflow-order }
+metadata: { name: orderflow-order }
 spec:
   template:
     spec:
       containers:
-        - name: order
+        - name: orderflow-order
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits:   { cpu: 200m, memory: 256Mi }
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: dev-orderflow-payment }
+metadata: { name: orderflow-payment }
 spec:
   template:
     spec:
       containers:
-        - name: payment
+        - name: orderflow-payment
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits:   { cpu: 200m, memory: 256Mi }
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: dev-orderflow-inventory }
+metadata: { name: orderflow-inventory }
 spec:
   template:
     spec:
       containers:
-        - name: inventory
+        - name: orderflow-inventory
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits:   { cpu: 200m, memory: 256Mi }
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: dev-orderflow-saga }
+metadata: { name: orderflow-saga }
 spec:
   template:
     spec:
       containers:
-        - name: saga
+        - name: orderflow-saga
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits:   { cpu: 200m, memory: 256Mi }

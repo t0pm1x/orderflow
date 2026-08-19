@@ -1,7 +1,14 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# all-services.yaml is omitted while it is an instructions-only stub.
-# Regenerate the bundle, then add it to this resources list.
+# services.yaml is a stand-in bundle so the overlays render without
+# requiring `helm` to be installed on the controller's PATH. It must
+# be regenerated whenever a service's Helm values change in a way
+# that affects the rendered shape (image tag, port, env vars).
+#
+# To regenerate after a values change, run the loop in
+# deploy/kustomize/README.md and concatenate the output into
+# services.yaml (preserving the leading instruction comment).
 resources:
   - namespace.yaml
+  - services.yaml

@@ -4,8 +4,6 @@ namespace: orderflow-dev
 namePrefix: dev-
 resources:
   - ../../base
-  - namespace.yaml
 patches:
   - path: replicas-patch.yaml
   - path: resources-patch.yaml
-  - path: ingress.yaml

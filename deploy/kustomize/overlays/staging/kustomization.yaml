@@ -4,6 +4,5 @@ namespace: orderflow-staging
 namePrefix: stg-
 resources:
   - ../../base
-  - namespace.yaml
 patches:
   - path: replicas-patch.yaml

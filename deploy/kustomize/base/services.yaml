@@ -1,0 +1,222 @@
+# Stand-in for the helm-template-rendered `all-services.yaml` so the
+# kustomize base renders without requiring helm on the controller's
+# PATH. The shape MUST match what `helm template orderflow-$svc` would
+# render — the overlays' strategic-merge patches assume name
+# `orderflow-$svc` per service, an `app.kubernetes.io/name`
+# selector, and a `containers[].name` equal to the service.
+#
+# Regenerate via the procedure in deploy/kustomize/README.md when
+# the upstream Helm values change in a way that affects rendered
+# shape (image, port, env).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderflow-order
+  labels:
+    app.kubernetes.io/name: orderflow-order
+    app.kubernetes.io/instance: orderflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-order
+      app.kubernetes.io/instance: orderflow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orderflow-order
+        app.kubernetes.io/instance: orderflow
+    spec:
+      containers:
+        - name: orderflow-order
+          image: ghcr.io/t0pm1x/orderflow-order:0.2.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              value: ""
+            - name: KAFKA_BROKER
+              value: ""
+            - name: HTTP_ADDR
+              value: ":8081"
+            - name: OTEL_EXPORTER
+              value: "otlp"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "otel-collector:4317"
+            - name: LOG_LEVEL
+              value: "info"
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderflow-payment
+  labels:
+    app.kubernetes.io/name: orderflow-payment
+    app.kubernetes.io/instance: orderflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-payment
+      app.kubernetes.io/instance: orderflow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orderflow-payment
+        app.kubernetes.io/instance: orderflow
+    spec:
+      containers:
+        - name: orderflow-payment
+          image: ghcr.io/t0pm1x/orderflow-payment:0.2.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8082
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              value: ""
+            - name: KAFKA_BROKER
+              value: ""
+            - name: HTTP_ADDR
+              value: ":8082"
+            - name: REDIS_URL
+              value: ""
+            - name: OTEL_EXPORTER
+              value: "otlp"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "otel-collector:4317"
+            - name: LOG_LEVEL
+              value: "info"
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderflow-inventory
+  labels:
+    app.kubernetes.io/name: orderflow-inventory
+    app.kubernetes.io/instance: orderflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-inventory
+      app.kubernetes.io/instance: orderflow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orderflow-inventory
+        app.kubernetes.io/instance: orderflow
+    spec:
+      containers:
+        - name: orderflow-inventory
+          image: ghcr.io/t0pm1x/orderflow-inventory:0.2.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8083
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              value: ""
+            - name: KAFKA_BROKER
+              value: ""
+            - name: REDIS_URL
+              value: ""
+            - name: HTTP_ADDR
+              value: ":8083"
+            - name: OTEL_EXPORTER
+              value: "otlp"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "otel-collector:4317"
+            - name: LOG_LEVEL
+              value: "info"
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderflow-saga
+  labels:
+    app.kubernetes.io/name: orderflow-saga
+    app.kubernetes.io/instance: orderflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orderflow-saga
+      app.kubernetes.io/instance: orderflow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orderflow-saga
+        app.kubernetes.io/instance: orderflow
+    spec:
+      containers:
+        - name: orderflow-saga
+          image: ghcr.io/t0pm1x/orderflow-saga:0.2.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8084
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              value: ""
+            - name: KAFKA_BROKER
+              value: ""
+            - name: HTTP_ADDR
+              value: ":8084"
+            - name: OTEL_EXPORTER
+              value: "otlp"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "otel-collector:4317"
+            - name: LOG_LEVEL
+              value: "info"
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
