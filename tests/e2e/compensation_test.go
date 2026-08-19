@@ -89,23 +89,27 @@ func TestE2E_Compensation_PaymentDeclined_CancelsOrder(t *testing.T) {
         "payment": {"last_four": "0001"}
     }`)
 	created := postOrder(ctx, t, client, orderBase, body)
-	t.Logf("POST /v1/orders → id=%s", created.ID)
+	t.Logf("POST /v1/orders → id=%s (kafka broker=%s, expected topic=order-events, last_four=0001 forces decline)",
+		created.ID, h.KafkaBrokers[0])
 
 	// The failure path is terminal: cancelled or failed. A
 	// 'confirmed' arrival on this path means the saga consumed
 	// PaymentCompleted when it should have seen PaymentFailed —
 	// chain regression.
-	observed := waitForStateFn(ctx, t, client, orderBase, created.ID,
+	observed := waitForStateFn(ctx, t, client, orderBase, created.ID, pollingBudget,
 		func(s string) bool { return s == "cancelled" || s == "failed" },
 		func(s string) bool { return s == "confirmed" },
 	)
 
 	if len(observed) == 0 {
-		t.Fatalf("no GET /v1/orders/%s responses received within budget", created.ID)
+		t.Fatalf("no GET /v1/orders/%s responses received within %s; expected chain "+
+			"Order→outbox→kafka(order-events)→saga→inventory→payment(PaymentFailed)→saga→order(cancelled)",
+			created.ID, pollingBudget)
 	}
 	last := observed[len(observed)-1].State
 	if last != "cancelled" && last != "failed" {
-		t.Fatalf("order %s expected cancelled/failed, got %q; observed=%s",
+		t.Fatalf("order %s expected cancelled/failed, got %q; observed=%s; "+
+			"check tests/logs/{order,saga,inventory,payment}.log on the CI runner for chain stall",
 			created.ID, last, formatStates(observed))
 	}
 }

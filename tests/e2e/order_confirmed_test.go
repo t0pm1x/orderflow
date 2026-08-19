@@ -100,15 +100,19 @@ func TestE2E_OrderReachesConfirmed(t *testing.T) {
 
 	body := readRepoFile(t, "examples", "order.json")
 	created := postOrder(ctx, t, client, orderBase, body)
-	t.Logf("POST /v1/orders → id=%s", created.ID)
+	t.Logf("POST /v1/orders → id=%s (kafka broker=%s, expected topic=order-events)",
+		created.ID, h.KafkaBrokers[0])
 
 	observed := waitForState(ctx, t, client, orderBase, created.ID, "confirmed")
 
 	if len(observed) == 0 {
-		t.Fatalf("no GET /v1/orders/%s responses received within budget", created.ID)
+		t.Fatalf("no GET /v1/orders/%s responses received within %s; expected chain "+
+			"Order→outbox→kafka(order-events)→saga→inventory→payment→order",
+			created.ID, pollingBudget)
 	}
 	if observed[len(observed)-1].State != "confirmed" {
-		t.Fatalf("order %s did not reach confirmed; final state=%q, observed=%s",
+		t.Fatalf("order %s did not reach confirmed; final state=%q, observed=%s; "+
+			"check tests/logs/{order,saga,inventory,payment}.log on the CI runner for chain stall",
 			created.ID,
 			observed[len(observed)-1].State,
 			formatStates(observed))

@@ -79,6 +79,13 @@ const (
 	startupBudget    = 60 * time.Second // binary boot + first-poll latency
 	overallBudget    = 120 * time.Second
 	postStartBudget  = 30 * time.Second // readiness + first POST
+	// pollingBudget caps the GET /v1/orders/{id} wait. A
+	// healthy cold-cache chain produces a state transition
+	// within seconds; 60 s gives a wide safety margin while
+	// still failing fast on a real chain hang. The
+	// separate overallBudget covers startup + POST retry;
+	// any leftover time goes to polling.
+	pollingBudget = 60 * time.Second
 )
 
 // httpClient builds a single client per test. Timeout is a safety
@@ -287,51 +294,51 @@ func validOrderState(s string) bool {
 	return false
 }
 
-// waitForStateFn polls GET /v1/orders/{id} on a ctx-cancellable
-// interval and returns every response observed (in order). Stops
-// when the stage context is cancelled, when isDone returns true,
-// or when GET returns a 404 that won't self-heal. isFailure is
-// consulted on every observed state — if it returns true the test
-// fails with a regression-style message.
+// waitForStateFn polls GET /v1/orders/{id} until isDone returns
+// true, the per-stage budget elapses, or the parent context is
+// cancelled. Returns every response observed (in order) so the
+// caller can print the full state trace on timeout.
+//
+// A stageCtx is derived from parentCtx + budget via
+// context.WithDeadline. The per-stage budget is hard — a hung
+// HTTP request or sleep cannot outlive it.
+//
+// isFailure is consulted on every observed state — if it returns
+// true the test fails with a regression-style message. The
+// validators in the package doc for the GET 404 contract apply
+// unchanged.
 //
 // Tests pass concrete expected-state predicates:
 //
-//	waitForStateFn(ctx, t, client, base, id,
+//	waitForStateFn(ctx, t, client, base, id, pollingBudget,
 //	    func(s string) bool { return s == "confirmed" },     // done = confirmed
 //	    func(s string) bool { return s == "cancelled" },     // fail on cancelled
 //	)
 //
-// isDone returning false or isFailure returning false on a
-// pending row is fine; success is what stops the test.
-//
-// A GET 404 after POST 201 is a HARD failure: the order service's
-// handler commits the row + OrderCreated outbox row atomically
-// inside a single pgx.BeginFunc. Once 201 is written, the row is
-// in the DB and visible to subsequent reads. A 404 means the
-// order vanished — that's a real bug, not a transient.
-func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, baseURL, orderID string, isDone, isFailure func(string) bool) []orderStateResponse {
+// On timeout (stage budget exhausted) the function returns the
+// observed slice AND emits a t.Logf diagnostic with the full
+// state trace; the caller decides whether t.Fatalf is warranted
+// (the wrappers waitForState / waitForCompensation do that).
+func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, baseURL, orderID string, budget time.Duration, isDone, isFailure func(string) bool) []orderStateResponse {
 	t.Helper()
-	// Single attempt loop is bounded by the parent context's
-	// overall budget — there is no inner per-stage slice because
-	// the test only transitions through a few states and each
-	// tick is cheap. A custom stage budget could be added if a
-	// future test demands it.
+	stage, cancel, deadline := stageContext(ctx, budget)
+	defer cancel()
 	url := baseURL + "/v1/orders/" + orderID
 	var observed []orderStateResponse
 	for {
-		select {
-		case <-ctx.Done():
+		if stage.Err() != nil {
+			t.Logf("waitForStateFn(%s) timed out at %s; observed=%s",
+				url, deadline, formatStates(observed))
 			return observed
-		default:
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(stage, http.MethodGet, url, nil)
 		if err != nil {
 			t.Fatalf("waitForStateFn: build GET request: %v", err)
 		}
-		status, body, err := httpDo(ctx, client, req)
+		status, body, err := httpDo(stage, client, req)
 		if err != nil {
 			t.Logf("GET %s: %v", url, err)
-			sleepCtx(ctx, pollInterval)
+			sleepCtx(stage, pollInterval)
 			continue
 		}
 		switch status {
@@ -341,13 +348,13 @@ func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, base
 			t.Fatalf("GET %s: 404 (order %s vanished; row was committed in same tx as 201 response, so this is a real bug, not eventual consistency)", url, orderID)
 		default:
 			t.Logf("GET %s: status=%d body=%s (retry)", url, status, body)
-			sleepCtx(ctx, pollInterval)
+			sleepCtx(stage, pollInterval)
 			continue
 		}
 		var sr orderStateResponse
 		if derr := json.Unmarshal(body, &sr); derr != nil {
 			t.Logf("GET %s: decode: %v body=%s", url, derr, body)
-			sleepCtx(ctx, pollInterval)
+			sleepCtx(stage, pollInterval)
 			continue
 		}
 		observed = append(observed, sr)
@@ -362,7 +369,7 @@ func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, base
 		if isDone != nil && isDone(sr.State) {
 			return observed
 		}
-		sleepCtx(ctx, pollInterval)
+		sleepCtx(stage, pollInterval)
 	}
 }
 
@@ -376,7 +383,7 @@ func waitForState(ctx context.Context, t *testing.T, client *http.Client, baseUR
 	for _, s := range done {
 		doneSet[s] = struct{}{}
 	}
-	return waitForStateFn(ctx, t, client, baseURL, orderID,
+	return waitForStateFn(ctx, t, client, baseURL, orderID, pollingBudget,
 		func(s string) bool { _, ok := doneSet[s]; return ok },
 		func(s string) bool { return s == "cancelled" || s == "failed" },
 	)
