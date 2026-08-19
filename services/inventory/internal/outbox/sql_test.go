@@ -26,7 +26,15 @@ func TestInsertSQL_MentionsTable(t *testing.T) {
 }
 
 func TestFetchPendingSQL_OrdersByCreatedAt(t *testing.T) {
-	if !strings.Contains(strings.ToLower(fetchPendingSQL), "order by created_at") {
+	upper := strings.ToUpper(fetchPendingSQL)
+	if !strings.Contains(upper, "ORDER BY CREATED_AT") {
 		t.Errorf("fetchPendingSQL missing ORDER BY created_at:\n%s", fetchPendingSQL)
+	}
+	if !strings.Contains(fetchPendingSQL, "status = 'PENDING'") &&
+		!strings.Contains(fetchPendingSQL, "status='PENDING'") {
+		t.Errorf("fetchPendingSQL missing status filter:\n%s", fetchPendingSQL)
+	}
+	if !strings.Contains(upper, "FOR UPDATE SKIP LOCKED") {
+		t.Errorf("fetchPendingSQL missing FOR UPDATE SKIP LOCKED (regression risk: two pollers would publish the same row):\n%s", fetchPendingSQL)
 	}
 }
