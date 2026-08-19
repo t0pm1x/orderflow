@@ -75,10 +75,11 @@ func TestE2E_Compensation_PaymentDeclined_CancelsOrder(t *testing.T) {
 
 	client := httpClient()
 
-	waitForReady(ctx, t, client, orderBase)
-	waitForReady(ctx, t, client, paymentBase)
-	waitForReady(ctx, t, client, invBase)
-	waitForReady(ctx, t, client, sagaBase)
+	// See helpers_test.go on the readiness-vs-liveness split.
+	waitForOrderReady(ctx, t, client, orderBase)
+	waitForServiceUp(ctx, t, client, paymentBase)
+	waitForServiceUp(ctx, t, client, invBase)
+	waitForServiceUp(ctx, t, client, sagaBase)
 
 	// last_four=0001 forces the mock provider to decline (see
 	// services/payment/internal/provider/provider.go).

@@ -85,13 +85,18 @@ func TestE2E_OrderReachesConfirmed(t *testing.T) {
 
 	client := httpClient()
 
-	// Wait for each service to actually be serving REST. We
-	// deliberately do NOT use /healthz here — see helpers_test.go
-	// on the liveness vs readiness distinction.
-	waitForReady(ctx, t, client, orderBase)
-	waitForReady(ctx, t, client, paymentBase)
-	waitForReady(ctx, t, client, invBase)
-	waitForReady(ctx, t, client, sagaBase)
+	// order's REST handler is mounted only after its DB pool is
+	// wired; that's the real readiness signal. payment /
+	// inventory / saga expose only /healthz as a probe — there is
+	// no REST readiness endpoint for them in their command trees
+	// (see helpers_test.go for the rationale). We therefore
+	// "wait for the binary to be listening" on those three and
+	// rely on the chain's state-machine outcome to surface any
+	// deeper readiness bug.
+	waitForOrderReady(ctx, t, client, orderBase)
+	waitForServiceUp(ctx, t, client, paymentBase)
+	waitForServiceUp(ctx, t, client, invBase)
+	waitForServiceUp(ctx, t, client, sagaBase)
 
 	body := readRepoFile(t, "examples", "order.json")
 	created := retryPost(ctx, t, client, orderBase, body)

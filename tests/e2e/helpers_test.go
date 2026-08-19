@@ -8,9 +8,21 @@
 //	probe — it returns {"status":"ok"} whenever the binary is alive
 //	and the HTTP listener is bound, regardless of whether the
 //	database pool is wired or the outbox poller is healthy. Only
-//	the REST handler returning 200 proves the DB pool is wired.
-//	The tests below never poll /healthz; they poll the REST
-//	handler via GET /v1/orders via waitForReady.
+//	the order service additionally exposes GET /v1/orders (200
+//	only when its REST handler is mounted, which the main.go
+//	guarantees means the DB pool is wired).
+//
+//	There is NO /readyz endpoint in the project's architecture —
+//	inspecting services/{order,payment,inventory,saga}/cmd/*/main.go
+//	confirms this. We do not invent one. The chain's actual
+//	end-to-end readiness is proven implicitly by the order
+//	state-machine outcome (POST /v1/orders followed by state
+//	transitions through saga). See the test call sites for the
+//	split between the two probe types:
+//
+//	  waitForOrderReady()  — order REST handler mounted (200 on /v1/orders).
+//	  waitForServiceUp()   — binary listening (200 on /healthz) —
+//	                        only signal we have for payment / inventory / saga.
 //
 // Concurrency / ctx discipline:
 //
@@ -115,32 +127,60 @@ type orderStateResponse struct {
 	State string `json:"state"`
 }
 
-// waitForReady polls GET /v1/orders until it returns 200 (REST
-// handler mounted, DB pool wired) or ctx deadline elapses. We
-// deliberately do NOT use /healthz here — see the package doc
-// for the liveness vs readiness rationale.
-func waitForReady(ctx context.Context, t *testing.T, client *http.Client, baseURL string) {
+// waitUntil polls URL until it returns wantStatus, the ctx
+// deadline elapses, or the deadline budget expires — whichever
+// comes first. Errors and unexpected statuses log t.Logf and
+// retry; the loop exits only on a clean wantStatus or a real
+// timeout.
+//
+// waitUntil is the lowest-level shared helper. Prefer the
+// purpose-built wrappers below (waitForOrderReady,
+// waitForServiceUp) at the test call sites — they document the
+// intent of the probe.
+func waitUntil(ctx context.Context, t *testing.T, client *http.Client, url string, wantStatus int, budget time.Duration) {
 	t.Helper()
-	deadline := startDeadline(ctx, time.Now(), startupBudget)
-	url := baseURL + "/v1/orders"
+	deadline := startDeadline(ctx, time.Now(), budget)
 	for {
 		if time.Now().After(deadline) {
-			t.Fatalf("waitForReady(%s): GET /v1/orders did not return 200 by %s", baseURL, deadline)
+			t.Fatalf("waitUntil(%s): status %d not reached by %s", url, wantStatus, deadline)
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		status, body, err := httpDo(ctx, client, req)
 		switch {
 		case err != nil:
-			t.Logf("waitForReady(%s): GET /v1/orders err=%v", baseURL, err)
-		case status == http.StatusOK:
+			t.Logf("waitUntil(%s): err=%v", url, err)
+		case status == wantStatus:
 			return
 		case status >= 500:
-			t.Logf("waitForReady(%s): GET /v1/orders status=%d body=%s", baseURL, status, body)
+			t.Logf("waitUntil(%s): status=%d body=%s", url, status, body)
 		default:
-			t.Logf("waitForReady(%s): GET /v1/orders status=%d body=%s", baseURL, status, body)
+			t.Logf("waitUntil(%s): status=%d body=%s", url, status, body)
 		}
 		sleepCtx(ctx, pollInterval)
 	}
+}
+
+// waitForOrderReady polls GET /v1/orders until 200. The order
+// service's REST handler is mounted only after its DB pool is
+// wired; non-REST binaries return 404 because /v1/orders isn't
+// registered. Only call this against the order service.
+func waitForOrderReady(ctx context.Context, t *testing.T, client *http.Client, orderBase string) {
+	waitUntil(ctx, t, client, orderBase+"/v1/orders", http.StatusOK, startupBudget)
+}
+
+// waitForServiceUp polls GET /healthz until 200. payment,
+// inventory, and saga expose ONLY /healthz as an HTTP probe —
+// there is no REST readiness endpoint in their command trees.
+// This is therefore a *liveness* probe (binary up, listener
+// bound) — not readiness. The chain's actual readiness is proven
+// implicitly by the order's state-machine outcome (POST /v1/orders
+// followed by state transitions through saga).
+//
+// Per the project's architecture (services/{payment,inventory,
+// saga}/cmd/<svc>/main.go), no /readyz exists. We do NOT
+// invent one here.
+func waitForServiceUp(ctx context.Context, t *testing.T, client *http.Client, baseURL string) {
+	waitUntil(ctx, t, client, baseURL+"/healthz", http.StatusOK, startupBudget)
 }
 
 // readRepoFile resolves a path relative to the repo root (via
