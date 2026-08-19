@@ -269,9 +269,9 @@ func TestMiddleware_ConcurrentSameKey_ExactlyOneHandlerCall(t *testing.T) {
 	})
 
 	var (
-		wg      sync.WaitGroup
+		wg       sync.WaitGroup
 		statuses [N]int
-		bodies  [N]string
+		bodies   [N]string
 	)
 	for i := 0; i < N; i++ {
 		wg.Add(1)
@@ -295,6 +295,16 @@ func TestMiddleware_ConcurrentSameKey_ExactlyOneHandlerCall(t *testing.T) {
 	for i, st := range statuses {
 		if st != http.StatusOK && st != http.StatusConflict {
 			t.Errorf("goroutine %d status: got %d want 200 or 409; body=%q", i, st, bodies[i])
+		}
+	}
+	// No silent empty cache: any 200 response must carry a non-empty
+	// body. A regression that returns 200 with body="" (either from
+	// an empty handler or a middleware that cached an empty body) is
+	// indistinguishable from "no work happened" to the saga, and
+	// would falsely report success.
+	for i, b := range bodies {
+		if statuses[i] == http.StatusOK && b == "" {
+			t.Errorf("goroutine %d: 200 with empty body (silent-empty-cache regression)", i)
 		}
 	}
 	// Exactly one body must be "first" (the original); the rest
