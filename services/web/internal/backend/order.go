@@ -54,7 +54,12 @@ func (c *HTTPClient) Get(ctx context.Context, id string) (*Order, error) {
 
 // Submit posts a new Order to the Order service and returns the
 // resulting row. Validation (500 / 4xx) propagates as *HTTPError
-// from do so callers can branch on Status.
+// from do so callers can branch on Status. When
+// OrderSubmit.IdempotencyKey is non-empty the client also sets
+// the `Idempotency-Key` header (prefixed with `orderflow-web:` —
+// see payment.go for the prefix constant) so a future idempotency
+// middleware in the Order service can dedupe replays of the same
+// form-render token.
 func (c *HTTPClient) Submit(ctx context.Context, in OrderSubmit) (*Order, error) {
 	body, _ := json.Marshal(in)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -63,6 +68,9 @@ func (c *HTTPClient) Submit(ctx context.Context, in OrderSubmit) (*Order, error)
 		return nil, fmt.Errorf("order submit: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if in.IdempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyPrefix+in.IdempotencyKey)
+	}
 	var out Order
 	if err := c.do(req, &out); err != nil {
 		return nil, fmt.Errorf("order submit: %w", err)

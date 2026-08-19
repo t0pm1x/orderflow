@@ -16,35 +16,46 @@ import (
 )
 
 type orderNewVM struct {
-	Body           string
-	SKU            string
-	Quantity       int
-	UnitPriceCents int64
-	CustomerID     string
-	Error          string
+	Body            string
+	SKU             string
+	Quantity        int
+	UnitPriceCents  int64
+	CustomerID      string
+	IdempotencyToken string
+	Error           string
 }
 
 // PageOrderNew serves GET /orders/new — renders the create-order
 // form. Always 200; the form is empty until the user submits.
+// Generates a fresh idempotency token on every render so the
+// resulting POST is unique; the BFF replay cache catches replays
+// within the replay window.
 func (s *Set) PageOrderNew(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = s.Templates.ExecuteTemplate(w, "layout", orderNewVM{Body: "orderNewBody"})
+	_ = s.Templates.ExecuteTemplate(w, "layout", orderNewVM{
+		Body:             "orderNewBody",
+		IdempotencyToken: newIdempotencyToken(),
+	})
 }
 
 // ActionOrderSubmit serves POST /v1/orders — form submission for
 // the create-order page. On success it returns HX-Redirect to
 // /orders/{id}; on failure it re-renders the form with an Error
-// banner (4xx for validation, 502 for upstream).
+// banner (4xx for validation, 502 for upstream). The handler
+// rejects forms that omit the `idempotency_token` field (400)
+// and rejects repeat submissions of the same token within the
+// replay window (409).
 func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
 	vm := orderNewVM{
-		Body:       "orderNewBody",
-		SKU:        r.FormValue("sku"),
-		Quantity:   atoi(r.FormValue("quantity")),
-		CustomerID: r.FormValue("customer_id"),
+		Body:             "orderNewBody",
+		SKU:              r.FormValue("sku"),
+		Quantity:         atoi(r.FormValue("quantity")),
+		CustomerID:       r.FormValue("customer_id"),
+		IdempotencyToken: newIdempotencyToken(),
 	}
 	if up := r.FormValue("unit_price_cents"); up != "" {
 		vm.UnitPriceCents, _ = strconv.ParseInt(up, 10, 64)
@@ -54,6 +65,15 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		return
+	}
+	token := r.FormValue("idempotency_token")
+	if token == "" {
+		http.Error(w, "missing idempotency token", http.StatusBadRequest)
+		return
+	}
+	if s.replays.check(token) {
+		http.Error(w, "duplicate submission", http.StatusConflict)
 		return
 	}
 	in := backend.OrderSubmit{Items: []backend.OrderItem{{SKU: vm.SKU, Quantity: vm.Quantity}}}
@@ -70,6 +90,7 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	} else {
 		in.CustomerID = &vm.CustomerID
 	}
+	in.IdempotencyKey = token
 	out, err := s.Order.Submit(r.Context(), in)
 	if err != nil {
 		var he *backend.HTTPError
@@ -101,11 +122,12 @@ func atoi(s string) int {
 }
 
 type orderDetailVM struct {
-	Body        string
-	Order       *backend.Order
-	BackendDown bool
-	Error       string
-	Events      []pkgEvents.Envelope
+	Body             string
+	Order            *backend.Order
+	BackendDown      bool
+	Error            string
+	Events           []pkgEvents.Envelope
+	IdempotencyToken string
 }
 
 // PageOrderDetail serves GET /orders/{id}. On backend failure it
@@ -118,7 +140,7 @@ type orderDetailVM struct {
 // itself every 1s via htmx; otherwise it renders once.
 func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm := orderDetailVM{Body: "orderDetailBody"}
+	vm := orderDetailVM{Body: "orderDetailBody", IdempotencyToken: newIdempotencyToken()}
 	o, err := s.Order.Get(r.Context(), id)
 	if err != nil {
 		vm.BackendDown = true
@@ -180,8 +202,19 @@ func (s *Set) PageOrderEvents(w http.ResponseWriter, r *http.Request) {
 // for the Cancel button on the order detail page. On success
 // returns HX-Redirect to /orders/{id}; upstream 401/404 surface
 // as 404 BFF (cancel can't proceed if the order doesn't exist),
-// 5xx + transport errors stay 502.
+// 5xx + transport errors stay 502. The handler requires an
+// `idempotency_token` form field and rejects repeat submissions
+// within the replay window with 409.
 func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
+	token := r.FormValue("idempotency_token")
+	if token == "" {
+		http.Error(w, "missing idempotency token", http.StatusBadRequest)
+		return
+	}
+	if s.replays.check(token) {
+		http.Error(w, "duplicate submission", http.StatusConflict)
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if err := s.Order.Cancel(r.Context(), id); err != nil {
 		var he *backend.HTTPError
@@ -268,9 +301,21 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 
 type paymentsSimVM struct {
 	Body        string
-	InFlight    []backend.Order
+	InFlight    []paymentsRow
 	BackendDown bool
 	Error       string
+}
+
+// paymentsRow is the per-order view model for the payments
+// simulator table. Each row carries its own per-form tokens so
+// a double-click on force ✓ cannot trigger a duplicate force ✗
+// (and vice-versa) — the form-render contract is "one token per
+// submit button, valid for the lifetime of this page render".
+type paymentsRow struct {
+	ID            string
+	State         backend.OrderState
+	TokenForceOK  string
+	TokenForceFail string
 }
 
 // PagePaymentsSim serves GET /payments/sim. Lists in-flight orders
@@ -289,11 +334,21 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 		vm.BackendDown = true
 		vm.Error = "Order service unavailable"
 	}
+	addRows := func(items []backend.Order) {
+		for _, o := range items {
+			vm.InFlight = append(vm.InFlight, paymentsRow{
+				ID:             o.ID,
+				State:          o.State,
+				TokenForceOK:   newIdempotencyToken(),
+				TokenForceFail: newIdempotencyToken(),
+			})
+		}
+	}
 	if pending != nil {
-		vm.InFlight = append(vm.InFlight, pending.Items...)
+		addRows(pending.Items)
 	}
 	if reserved != nil {
-		vm.InFlight = append(vm.InFlight, reserved.Items...)
+		addRows(reserved.Items)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
@@ -312,10 +367,21 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 // form submission behind the force ✓/force ✗ buttons. Builds a
 // PaymentWebhook from the form and proxies to the Payment service.
 // Sets a deterministic Idempotency-Key so the upstream's
-// idempotency cache dedupes identical replays.
+// idempotency cache dedupes identical replays. The handler also
+// rejects missing/duplicate `idempotency_token` (BFF-level replay
+// guard, see ActionOrderSubmit).
 func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	token := r.FormValue("idempotency_token")
+	if token == "" {
+		http.Error(w, "missing idempotency token", http.StatusBadRequest)
+		return
+	}
+	if s.replays.check(token) {
+		http.Error(w, "duplicate submission", http.StatusConflict)
 		return
 	}
 	orderID := r.FormValue("order_id")

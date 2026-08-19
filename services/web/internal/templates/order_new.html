@@ -4,6 +4,7 @@
   {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
   <form class="sheet" method="post" action="/v1/orders"
         hx-post="/v1/orders" hx-target="this" hx-swap="outerHTML">
+    <input type="hidden" name="idempotency_token" value="{{.IdempotencyToken}}">
     <div>
       <label for="sku">SKU</label>
       <input id="sku" name="sku" required minlength="1" maxlength="64" value="{{.SKU}}">
@@ -21,7 +22,7 @@
       <input id="customer_id" name="customer_id" placeholder="auto-generate if blank" value="{{.CustomerID}}">
     </div>
     <div class="row">
-      <button type="submit">Submit order</button>
+      <button type="submit" hx-disabled-elt="this">Submit order</button>
       <a class="btn secondary" href="/">Cancel</a>
     </div>
   </form>

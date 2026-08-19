@@ -25,6 +25,11 @@ type Set struct {
 	Inventory backend.InventoryClient
 	Bus       *events.Bus
 	Templates *template.Template
+	// replays is the in-process replay-guard cache shared by all
+	// mutating action handlers (POST /v1/orders, /v1/orders/{id},
+	// /payments/sim/fire). Initialized in NewSet so handlers can
+	// always assume non-nil; tests get a fresh cache per Set.
+	replays *replayCache
 }
 
 // NewSet builds a Set with the layout + body templates parsed once.
@@ -40,6 +45,7 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 		Inventory: inventory,
 		Bus:       bus,
 		Templates: t,
+		replays:   newReplayCache(),
 	}
 }
 

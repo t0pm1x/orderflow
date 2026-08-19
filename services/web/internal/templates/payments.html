@@ -15,7 +15,8 @@
           <form method="post" action="/payments/sim/fire" hx-post="/payments/sim/fire" hx-swap="none">
             <input type="hidden" name="order_id" value="{{.ID}}">
             <input type="hidden" name="status" value="succeeded">
-            <button type="submit">force &check;</button>
+            <input type="hidden" name="idempotency_token" value="{{.TokenForceOK}}">
+            <button type="submit" hx-disabled-elt="this">force &check;</button>
           </form>
         </td>
         <td>
@@ -23,7 +24,8 @@
             <input type="hidden" name="order_id" value="{{.ID}}">
             <input type="hidden" name="status" value="failed">
             <input type="hidden" name="error_code" value="card_declined">
-            <button type="submit" class="danger">force &cross;</button>
+            <input type="hidden" name="idempotency_token" value="{{.TokenForceFail}}">
+            <button type="submit" class="danger" hx-disabled-elt="this">force &cross;</button>
           </form>
         </td>
       </tr>

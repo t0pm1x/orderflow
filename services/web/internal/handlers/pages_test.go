@@ -17,23 +17,40 @@ import (
 )
 
 type fakeOrderClient struct {
-	listResp    *backend.OrderList
-	listErr     error
-	submitResp  *backend.Order
-	submitErr   error
-	getResp     *backend.Order
-	getErr      error
-	cancelCalls int
-	lastCancel  string
+	listResp     *backend.OrderList
+	listErr      error
+	submitResp   *backend.Order
+	submitErr    error
+	submitCallsN int
+	getResp      *backend.Order
+	getErr       error
+	cancelCalls  int
+	lastCancel   string
+	lastSubmit   *backend.OrderSubmit
 }
 
-func (f *fakeOrderClient) List(_ context.Context, _ backend.OrderState, _ int) (*backend.OrderList, error) {
-	return f.listResp, f.listErr
+func (f *fakeOrderClient) List(_ context.Context, state backend.OrderState, _ int) (*backend.OrderList, error) {
+	if f.listErr != nil {
+		return f.listResp, f.listErr
+	}
+	if state == "" || f.listResp == nil {
+		return f.listResp, f.listErr
+	}
+	filtered := &backend.OrderList{}
+	for _, o := range f.listResp.Items {
+		if o.State == state {
+			filtered.Items = append(filtered.Items, o)
+		}
+	}
+	return filtered, nil
 }
 func (f *fakeOrderClient) Get(_ context.Context, _ string) (*backend.Order, error) {
 	return f.getResp, f.getErr
 }
-func (f *fakeOrderClient) Submit(_ context.Context, _ backend.OrderSubmit) (*backend.Order, error) {
+func (f *fakeOrderClient) Submit(_ context.Context, in backend.OrderSubmit) (*backend.Order, error) {
+	f.submitCallsN++
+	cp := in
+	f.lastSubmit = &cp
 	return f.submitResp, f.submitErr
 }
 func (f *fakeOrderClient) Cancel(_ context.Context, id string) error {
@@ -41,15 +58,22 @@ func (f *fakeOrderClient) Cancel(_ context.Context, id string) error {
 	f.lastCancel = id
 	return nil
 }
+func (f *fakeOrderClient) submitCalls() int { return f.submitCallsN }
 
 func ptrInt64(v int64) *int64 { return &v }
 
-type fakePaymentClient struct{ lastWebhook *backend.PaymentWebhook }
+type fakePaymentClient struct {
+	lastWebhook *backend.PaymentWebhook
+	fireCallsN  int
+}
 
 func (f *fakePaymentClient) FireWebhook(_ context.Context, w backend.PaymentWebhook) error {
-	f.lastWebhook = &w
+	f.fireCallsN++
+	cp := w
+	f.lastWebhook = &cp
 	return nil
 }
+func (f *fakePaymentClient) fireCalls() int { return f.fireCallsN }
 
 type fakeInventoryClient struct {
 	stock map[string]*backend.StockItem
@@ -168,7 +192,7 @@ func TestOrderSubmit_OK_RedirectsViaHTMX(t *testing.T) {
 	}
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	form := strings.NewReader("sku=X&quantity=1")
+	form := strings.NewReader("sku=X&quantity=1&idempotency_token=submit-ok-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -187,7 +211,7 @@ func TestOrderSubmit_OK_RedirectsViaHTMX(t *testing.T) {
 func TestOrderSubmit_ValidationError(t *testing.T) {
 	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
 	defer srv.Close()
-	form := strings.NewReader("sku=&quantity=0")
+	form := strings.NewReader("sku=&quantity=0&idempotency_token=submit-val-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -211,7 +235,7 @@ func TestOrderSubmit_Upstream5xx(t *testing.T) {
 	oc.submitErr = fmt.Errorf("upstream 503")
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	form := strings.NewReader("sku=X&quantity=1")
+	form := strings.NewReader("sku=X&quantity=1&idempotency_token=submit-5xx-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -233,7 +257,7 @@ func TestOrderSubmit_Upstream4xx_BadRequest(t *testing.T) {
 	oc.submitErr = &backend.HTTPError{Status: 400, Body: "bad sku"}
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	form := strings.NewReader("sku=X&quantity=1")
+	form := strings.NewReader("sku=X&quantity=1&idempotency_token=submit-4xx-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -292,7 +316,10 @@ func TestOrderCancel_OK(t *testing.T) {
 	oc.cancelCalls = 0
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	resp, err := http.Post(srv.URL+"/v1/orders/order-1", "", nil)
+	form := strings.NewReader("idempotency_token=cancel-ok-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/order-1", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +489,7 @@ func TestPaymentsFire_OK(t *testing.T) {
 	set.Routes(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
-	form := strings.NewReader("order_id=o-1&status=failed&error_code=card_declined")
+	form := strings.NewReader("order_id=o-1&status=failed&error_code=card_declined&idempotency_token=fire-ok-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -487,5 +514,229 @@ func TestPaymentsFire_OK(t *testing.T) {
 	}
 	if pc.lastWebhook.PaymentID != "o-1" {
 		t.Errorf("PaymentID determinism: got %q want o-1", pc.lastWebhook.PaymentID)
+	}
+}
+
+// TestOrderNew_GET_RendersIdempotencyToken covers the form-render
+// contract: GET /orders/new embeds a per-render hidden input named
+// `idempotency_token` so htmx submits carry a server-issued nonce
+// the BFF can dedupe. Without it the double-submit replay cache
+// has nothing to key on.
+func TestOrderNew_GET_RendersIdempotencyToken(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, `name="idempotency_token"`) {
+		t.Errorf("form missing idempotency_token hidden field: %s", body)
+	}
+}
+
+// TestOrderDetail_GET_RendersIdempotencyToken covers the cancel
+// button: while the order is non-terminal, the cancel form must
+// embed an `idempotency_token` so a double-click on Cancel cannot
+// re-fire the upstream cancel call.
+func TestOrderDetail_GET_RendersIdempotencyToken(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.getResp = &backend.Order{
+		ID:    "order-1",
+		State: backend.OrderStateReserved,
+		Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 2}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/order-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, `name="idempotency_token"`) {
+		t.Errorf("cancel form missing idempotency_token hidden field: %s", body)
+	}
+	if !strings.Contains(body, "hx-disabled-elt") {
+		t.Errorf("cancel button missing hx-disabled-elt: %s", body)
+	}
+}
+
+// TestPaymentsSim_GET_RendersIdempotencyTokens covers the force ✓
+// / force ✗ buttons: every row's force forms must embed a fresh
+// `idempotency_token` so double-click on either button cannot
+// re-fire the upstream webhook.
+func TestPaymentsSim_GET_RendersIdempotencyTokens(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "o-1", State: backend.OrderStateReserved,
+				Items: []backend.OrderItem{{SKU: "X", Quantity: 1}}},
+		}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/payments/sim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	// two forms per row (force ✓ + force ✗) => two tokens per row
+	if c := strings.Count(body, `name="idempotency_token"`); c != 2 {
+		t.Errorf("idempotency_token count: got %d want 2 (one per force form): %s", c, body)
+	}
+	if !strings.Contains(body, "hx-disabled-elt") {
+		t.Errorf("force buttons missing hx-disabled-elt: %s", body)
+	}
+}
+
+// TestOrderSubmit_DuplicateToken_409 covers the BFF-level replay
+// guard: posting the same `idempotency_token` twice to /v1/orders
+// must yield 200 on the first call (Submit called once) and 409
+// on the second (Submit NOT called again, replay cache hit). This
+// is the P0.3 double-submit protection contract.
+func TestOrderSubmit_DuplicateToken_409(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "order-dup",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+
+	post := func(tok string) *http.Response {
+		t.Helper()
+		form := strings.NewReader("sku=X&quantity=1&idempotency_token=" + tok)
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/orders: %v", err)
+		}
+		return resp
+	}
+	first := post("dup-submit-tok-1")
+	defer func() { _ = first.Body.Close() }()
+	if first.StatusCode != 200 {
+		t.Fatalf("first POST: got %d want 200", first.StatusCode)
+	}
+	second := post("dup-submit-tok-1")
+	defer func() { _ = second.Body.Close() }()
+	if second.StatusCode != 409 {
+		t.Fatalf("replay POST: got %d want 409", second.StatusCode)
+	}
+	if oc.submitCalls() != 1 {
+		t.Errorf("Submit called %d times, want 1 (replay must NOT hit backend)", oc.submitCalls())
+	}
+}
+
+// TestOrderSubmit_MissingToken_400 covers the contract that the
+// idempotency_token field is required on POST: a form posted
+// without it must surface 400, never reach the backend.
+func TestOrderSubmit_MissingToken_400(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{ID: "x", State: backend.OrderStatePending},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	if oc.submitCalls() != 0 {
+		t.Errorf("Submit called %d times, want 0 (missing token must NOT hit backend)", oc.submitCalls())
+	}
+}
+
+// TestOrderCancel_DuplicateToken_409 mirrors TestOrderSubmit_…409
+// for the cancel action: same `idempotency_token` posted twice
+// must yield 200 then 409; the second must not re-call Cancel.
+func TestOrderCancel_DuplicateToken_409(t *testing.T) {
+	oc := &fakeOrderClient{}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	post := func() *http.Response {
+		t.Helper()
+		form := strings.NewReader("idempotency_token=dup-cancel-tok")
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/order-9", form)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/orders/order-9: %v", err)
+		}
+		return resp
+	}
+	first := post()
+	defer func() { _ = first.Body.Close() }()
+	if first.StatusCode != 200 {
+		t.Fatalf("first POST: got %d want 200", first.StatusCode)
+	}
+	second := post()
+	defer func() { _ = second.Body.Close() }()
+	if second.StatusCode != 409 {
+		t.Fatalf("replay POST: got %d want 409", second.StatusCode)
+	}
+	if oc.cancelCalls != 1 {
+		t.Errorf("Cancel called %d times, want 1 (replay must NOT hit backend)", oc.cancelCalls)
+	}
+}
+
+// TestPaymentsFire_DuplicateToken_409 mirrors the duplicate-token
+// 409 contract for the force ✓/✗ buttons.
+func TestPaymentsFire_DuplicateToken_409(t *testing.T) {
+	pc := &fakePaymentClient{}
+	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
+	r := chi.NewRouter()
+	set.Routes(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	post := func() *http.Response {
+		t.Helper()
+		form := strings.NewReader("order_id=o-1&status=succeeded&idempotency_token=dup-fire-tok")
+		req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /payments/sim/fire: %v", err)
+		}
+		return resp
+	}
+	first := post()
+	defer func() { _ = first.Body.Close() }()
+	if first.StatusCode != 200 {
+		t.Fatalf("first POST: got %d want 200", first.StatusCode)
+	}
+	second := post()
+	defer func() { _ = second.Body.Close() }()
+	if second.StatusCode != 409 {
+		t.Fatalf("replay POST: got %d want 409", second.StatusCode)
+	}
+	if pc.fireCalls() != 1 {
+		t.Errorf("FireWebhook called %d times, want 1 (replay must NOT hit backend)", pc.fireCalls())
 	}
 }

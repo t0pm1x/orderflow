@@ -136,3 +136,78 @@ func TestOrderClient_Cancel_UsesDELETE(t *testing.T) {
 		t.Fatalf("Cancel: %v", err)
 	}
 }
+
+// TestOrderClient_Submit_IdempotencyKey pins the wire-level
+// contract that when OrderSubmit.IdempotencyKey is set, the
+// client forwards it as the `Idempotency-Key` HTTP header
+// (prefixed with `orderflow-web:` so the upstream's idempotency
+// middleware can attribute replays to the web playground). The
+// Order service does not require this header today, but the
+// upcoming idempotency middleware will; this test locks the
+// header shape in place so a future refactor (e.g., moving to a
+// builder) cannot silently drop it.
+func TestOrderClient_Submit_IdempotencyKey(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Idempotency-Key")
+		// also verify it does NOT leak into the JSON body
+		var in backend.OrderSubmit
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.IdempotencyKey != "" {
+			t.Errorf("IdempotencyKey must be json:\"-\", got %q in body", in.IdempotencyKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(backend.Order{
+			ID: uuid.NewString(), State: backend.OrderStatePending,
+			Items: in.Items, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		})
+	}))
+	defer srv.Close()
+	c := backend.New(nil, srv.URL, "http://localhost:8081", "http://localhost:8082")
+	gotOrder, err := c.Submit(context.Background(), backend.OrderSubmit{
+		Items:          []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}},
+		IdempotencyKey: "web-abc",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if gotOrder == nil {
+		t.Fatal("got nil order")
+	}
+	if want := "orderflow-web:web-abc"; got != want {
+		t.Errorf("Idempotency-Key: got %q want %q", got, want)
+	}
+}
+
+// TestOrderClient_Submit_NoIdempotencyKey pins the negative case:
+// when IdempotencyKey is empty (e.g., tests, scripted clients),
+// the client must NOT set the header — upstream middleware
+// rejects requests with a header but no key just as hard as one
+// with neither.
+func TestOrderClient_Submit_NoIdempotencyKey(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if v := r.Header.Get("Idempotency-Key"); v != "" {
+			t.Errorf("Idempotency-Key must NOT be set when IdempotencyKey field is empty, got %q", v)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(backend.Order{
+			ID: uuid.NewString(), State: backend.OrderStatePending,
+			Items:    []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}},
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		})
+	}))
+	defer srv.Close()
+	c := backend.New(nil, srv.URL, "http://localhost:8081", "http://localhost:8082")
+	if _, err := c.Submit(context.Background(), backend.OrderSubmit{
+		Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}},
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !called {
+		t.Fatal("upstream not called")
+	}
+}

@@ -14,9 +14,16 @@ type OrderItem struct {
 }
 
 // OrderSubmit matches `OrderSubmit` in api/openapi.yaml:224-236.
+// IdempotencyKey is NOT serialized into the request body; the
+// HTTPClient forwards it as the `Idempotency-Key` header (see
+// internal/backend/order.go). Keeping it on the struct (rather
+// than threading it as a separate argument) lets the BFF set
+// both request body and header from one call site without
+// breaking the OrderClient interface signature.
 type OrderSubmit struct {
 	CustomerID *string     `json:"customer_id,omitempty"`
 	Items      []OrderItem `json:"items"`
+	IdempotencyKey string   `json:"-"`
 }
 
 // OrderState matches `OrderState` in api/openapi.yaml:216-222.
