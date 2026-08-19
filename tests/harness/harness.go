@@ -393,6 +393,11 @@ func findRepoRoot() (string, error) {
 	return "", errors.New("harness: go.work not found above tests/harness/")
 }
 
+// FindRepoRoot exposes findRepoRoot to callers in other test
+// packages so they can resolve repo-rooted paths (e.g.
+// examples/order.json) without re-implementing the walk.
+func FindRepoRoot() (string, error) { return findRepoRoot() }
+
 // terminate swallows Terminate errors so cleanup never panics the
 // test goroutine. Containers are best-effort torn down; the test has
 // already either succeeded or failed by the time Cleanup runs.
