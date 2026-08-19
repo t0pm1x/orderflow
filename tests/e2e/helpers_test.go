@@ -96,7 +96,7 @@ func pickFreePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("pickFreePort: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
@@ -244,20 +244,27 @@ func retryPost(ctx context.Context, t *testing.T, client *http.Client, baseURL s
 	}
 }
 
-// waitForState polls GET /v1/orders/{id} on a ctx-cancellable
-// interval and returns the slice of every response observed (in
-// order). Stops when ctx deadline elapses, when the state
-// matches any of done, when the state is "cancelled" or "failed"
-// (regression indicator — surfaced as a hard failure), or when
-// GET returns a status that won't self-heal (404 stays 404).
-func waitForState(ctx context.Context, t *testing.T, client *http.Client, baseURL, orderID string, done ...string) []orderStateResponse {
+// waitForStateFn polls GET /v1/orders/{id} on a ctx-cancellable
+// interval and returns every response observed (in order). Stops
+// when ctx deadline elapses, when isDone returns true, or when
+// GET returns a 404 that won't self-heal. isFailure is consulted
+// on every observed state — if it returns true the test fails
+// with a regression-style message. Both callbacks receive the
+// current state string.
+//
+// Tests pass concrete expected-state predicates:
+//
+//	waitForStateFn(ctx, t, client, base, id,
+//	    func(s string) bool { return s == "confirmed" },     // done = confirmed
+//	    func(s string) bool { return s == "cancelled" },     // fail on cancelled
+//	)
+//
+// isDone returning nil false-y and isFailure returning nil on a
+// pending row is fine — failure is what stops the test.
+func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, baseURL, orderID string, isDone, isFailure func(string) bool) []orderStateResponse {
 	t.Helper()
 	deadline, _ := ctx.Deadline()
 	url := baseURL + "/v1/orders/" + orderID
-	doneSet := make(map[string]struct{}, len(done))
-	for _, s := range done {
-		doneSet[s] = struct{}{}
-	}
 	var observed []orderStateResponse
 	for {
 		select {
@@ -275,11 +282,13 @@ func waitForState(ctx context.Context, t *testing.T, client *http.Client, baseUR
 			sleepCtx(ctx, pollInterval)
 			continue
 		}
-		if status != http.StatusOK {
-			if status == http.StatusNotFound {
-				t.Fatalf("GET %s: 404 (order %s vanished)", url, orderID)
-			}
-			t.Logf("GET %s: status=%d body=%s", url, status, body)
+		switch status {
+		case http.StatusOK:
+			// happy path — fall through to decode
+		case http.StatusNotFound:
+			t.Fatalf("GET %s: 404 (order %s vanished)", url, orderID)
+		default:
+			t.Logf("GET %s: status=%d body=%s (retry)", url, status, body)
 			sleepCtx(ctx, pollInterval)
 			continue
 		}
@@ -290,17 +299,31 @@ func waitForState(ctx context.Context, t *testing.T, client *http.Client, baseUR
 			continue
 		}
 		observed = append(observed, sr)
-		if _, ok := doneSet[sr.State]; ok {
-			return observed
-		}
-		// Regression indicators — happy path must never cancel or
-		// fail an order without operator action.
-		if sr.State == "cancelled" || sr.State == "failed" {
-			t.Fatalf("GET %s: order %s reached terminal state %q (chain regression). observed=%s",
+		if isFailure != nil && isFailure(sr.State) {
+			t.Fatalf("GET %s: order %s reached failure state %q. observed=%s",
 				url, orderID, sr.State, formatStates(observed))
+		}
+		if isDone != nil && isDone(sr.State) {
+			return observed
 		}
 		sleepCtx(ctx, pollInterval)
 	}
+}
+
+// waitForState is a thin convenience wrapper around waitForStateFn
+// that asserts the order reaches any of `done` and never hits
+// "cancelled" or "failed" (a chain-regression signature on the
+// happy path). Use waitForStateFn directly when your test
+// expects those terminals (e.g. the compensation test).
+func waitForState(ctx context.Context, t *testing.T, client *http.Client, baseURL, orderID string, done ...string) []orderStateResponse {
+	doneSet := make(map[string]struct{}, len(done))
+	for _, s := range done {
+		doneSet[s] = struct{}{}
+	}
+	return waitForStateFn(ctx, t, client, baseURL, orderID,
+		func(s string) bool { _, ok := doneSet[s]; return ok },
+		func(s string) bool { return s == "cancelled" || s == "failed" },
+	)
 }
 
 // formatStates renders the observed state slice for diagnostic
