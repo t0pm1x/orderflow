@@ -202,7 +202,12 @@ func (c *Consumer) Stop() {
 func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	var env events.Envelope
 	if err := json.Unmarshal(rec.Value, &env); err != nil {
+		// Decode failure: ship to DLQ for triage AND mark the
+		// record so the unparseable bytes don't loop on every
+		// poll (we disabled auto-commit; without markRecord here
+		// the same poison message re-fetches forever).
 		c.toDLQ(ctx, nil, fmt.Sprintf("decode error: %v", err), rec)
+		c.markRecord(rec)
 		return
 	}
 
@@ -245,7 +250,11 @@ func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	handler, ok := c.registry[env.EventType]
 	if !ok {
 		// Unknown event_type — ack-and-skip to avoid blocking the
-		// group on a forward-compatible producer.
+		// group on a forward-compatible producer. MUST mark the
+		// record for commit because franz-go disables auto-commit;
+		// otherwise the same unknown event loops forever on the
+		// next poll, holding the partition hostage.
+		c.markRecord(rec)
 		return
 	}
 

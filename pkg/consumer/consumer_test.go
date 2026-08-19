@@ -198,13 +198,47 @@ func TestDispatch_DedupSkipsHandler(t *testing.T) {
 	c.dispatch(context.Background(), orderCreatedRecord())
 }
 
-func TestDispatch_UnknownEventTypeSkipped(_ *testing.T) {
+// TestDispatch_UnknownEventTypeStillMarksForCommit pins the
+// v1.1.3 fix: when a record carries an event_type no service
+// handles yet (forward-compatible producer), the consumer MUST
+// mark it for commit. With DisableAutoCommit and no mark,
+// franz-go would re-fetch the same unknown record on every poll,
+// holding the partition hostage — every other event behind it
+// waits indefinitely. This regression net fails if dispatch
+// early-returns without calling markRecord(rec).
+func TestDispatch_UnknownEventTypeStillMarksForCommit(t *testing.T) {
+	fc := &fakeClient{}
 	rec := &kgo.Record{
 		Key:   []byte("o1"),
 		Value: []byte(`{"event_id":"e1","event_type":"NeverHeardOfIt","aggregate_id":"o1","aggregate_type":"Order","schema_version":"1.0","payload":{}}`),
 	}
-	c := &Consumer{registry: HandlerRegistry{}}
+	c := &Consumer{client: fc, registry: HandlerRegistry{}}
 	c.dispatch(context.Background(), rec)
+	if len(fc.marked) != 1 {
+		t.Fatalf("unknown event_type must still mark record for commit (DisableAutoCommit); got %d marks", len(fc.marked))
+	}
+}
+
+// TestDispatch_DecodeErrorMarksRecord decodes that fail unmarshal
+// must also mark the record for commit AND send to DLQ. Without
+// the mark, the malformed bytes would re-poll forever (the fake
+// DLQ alone is not enough to advance the offset).
+func TestDispatch_DecodeErrorMarksRecord(t *testing.T) {
+	fc := &fakeClient{}
+	dlq := &fakeDLQ{}
+	c := &Consumer{
+		client:   fc,
+		registry: HandlerRegistry{},
+		dlq:      dlq,
+	}
+	rec := &kgo.Record{Key: []byte("o1"), Value: []byte(`not-json`)}
+	c.dispatch(context.Background(), rec)
+	if len(dlq.sent) != 1 {
+		t.Fatalf("decode errors must DLQ; got %d", len(dlq.sent))
+	}
+	if len(fc.marked) != 1 {
+		t.Fatalf("decode errors must mark record for commit; got %d marks", len(fc.marked))
+	}
 }
 
 func TestDispatch_HandlerErrorRetriesThenDLQs(t *testing.T) {
