@@ -14,6 +14,7 @@ docker ps --format "{{.Names}}\t{{.Status}}" | ForEach-Object { Write-Host "    
 Write-Host ""
 Write-Host "==> starting 5 service binaries"
 
+$env:OTEL_EXPORTER = 'stdout'
 $env:DATABASE_URL = 'postgres://orderflow:orderflow@localhost:5432/order_order?sslmode=disable'
 $env:KAFKA_BROKER = 'localhost:9092'
 $env:HTTP_ADDR   = ':8081'

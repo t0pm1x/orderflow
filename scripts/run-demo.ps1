@@ -13,6 +13,7 @@ $bash = 'C:\Program Files\Git\bin\bash.exe'
 if (-not (Test-Path $bash)) { throw "Git Bash not found at $bash" }
 
 Write-Host "==> launching demo.sh via Git Bash (background) ..."
+$env:OTEL_EXPORTER = 'stdout'
 $proc = Start-Process -FilePath $bash `
     -ArgumentList @('docs/demo/demo.sh') `
     -WorkingDirectory $root `

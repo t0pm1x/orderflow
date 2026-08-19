@@ -67,6 +67,7 @@ make_or_gobuild
 
 # --- start services ---
 echo "==> starting order, payment, inventory, saga in background"
+export OTEL_EXPORTER=stdout
 DATABASE_URL="postgres://orderflow:orderflow@localhost:5432/order_order?sslmode=disable" \
   KAFKA_BROKER="localhost:9092" \
   HTTP_ADDR=":8081" \
