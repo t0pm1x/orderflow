@@ -17,7 +17,7 @@
       <tbody>
         {{range .Orders}}
         <tr>
-          <td class="mono">{{.ID}}</td>
+          <td><span class="mono copy-id" data-id="{{.ID}}" title="Click to copy" role="button" tabindex="0">{{.ID}}</span></td>
           <td><span class="badge {{.State}}">{{template "statusIcon" .State}} {{.State}}</span></td>
           <td>
             {{range .Items}}{{.SKU}}&times;{{.Quantity}} {{end}}

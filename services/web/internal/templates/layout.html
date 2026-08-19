@@ -69,6 +69,42 @@
         : trigger.querySelector('button[type="submit"]');
       if (btn) btn.setAttribute('aria-busy', 'false');
     });
+    // Click-to-copy order IDs (and anything marked .copy-id). Uses the async
+    // Clipboard API where available; gracefully no-ops elsewhere (HTTP,
+    // insecure context, older browsers).
+    (function () {
+      function flash(el, ok) {
+        var prev = el.dataset.prevText || el.textContent;
+        el.dataset.prevText = prev;
+        el.textContent = ok ? '✓ copied' : 'copy unavailable';
+        el.setAttribute('aria-live', 'polite');
+        setTimeout(function () {
+          el.textContent = el.dataset.prevText;
+          delete el.dataset.prevText;
+        }, 1200);
+      }
+      function copy(el) {
+        var id = el.dataset && el.dataset.id;
+        if (!id) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(id).then(
+            function () { flash(el, true); },
+            function () { flash(el, false); }
+          );
+        } else {
+          flash(el, false);
+        }
+      }
+      document.body.addEventListener('click', function (e) {
+        var t = e.target && e.target.closest && e.target.closest('.copy-id');
+        if (t && document.body.contains(t)) copy(t);
+      });
+      document.body.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var t = e.target && e.target.closest && e.target.closest('.copy-id');
+        if (t && document.body.contains(t)) { e.preventDefault(); copy(t); }
+      });
+    })();
   </script>
 </body>
 </html>
