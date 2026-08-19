@@ -43,7 +43,7 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 		errCh <- inventory.Run(ctx)
 	}()
 
-	addr := waitForAddr(t, 3*time.Second)
+	addr := waitForReady(t, inventory.ListenAddr, 3*time.Second)
 	t.Cleanup(func() { cancel() })
 
 	resp, err := http.Get("http://" + addr + "/healthz")
@@ -80,15 +80,28 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 	}
 }
 
-func waitForAddr(t *testing.T, maxWait time.Duration) string {
+// waitForReady polls until the HTTP server actually accepts a
+// /healthz request. The package-level boundAddr is set before
+// httpSrv.Serve is called, so polling it alone is racy: it can
+// return an address whose listener is bound but not yet
+// accepting. Copy the pattern services/saga/cmd/saga/main_test.go
+// uses (waitForFreshReadyAddr).
+func waitForReady(t *testing.T, getAddr func() string, maxWait time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(maxWait)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		if a := inventory.ListenAddr(); a != "" {
-			return a
+		addr := getAddr()
+		if addr != "" {
+			resp, err := http.Get("http://" + addr + "/healthz")
+			if err == nil {
+				_ = resp.Body.Close()
+				return addr
+			}
+			lastErr = err
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("server did not bind within %s", maxWait)
+	t.Fatalf("server did not become ready within %s (last err: %v)", maxWait, lastErr)
 	return ""
 }
