@@ -152,10 +152,26 @@ jobs:
       # Load test is intentionally excluded from CI: requires k6 installation
       # and is heavy. Run manually via `make load` from tests/load/.
       - name: E2E happy path
-        run: go test ./tests/e2e/... -run TestE2E_HappyPath -timeout 5m -v
+        run: go test ./tests/e2e/... -run TestE2E_OrderReachesConfirmed -timeout 5m -v
 
       - name: E2E compensation
-        run: go test ./tests/e2e/... -run TestE2E_Compensation -timeout 5m -v
+        run: go test ./tests/e2e/... -run TestE2E_Compensation_PaymentDeclined_CancelsOrder -timeout 5m -v
 
       - name: Chaos test
         run: go test ./tests/chaos/... -timeout 10m -v
+
+      # tests/harness.StartService redirects each spawned service's
+      # stdout + stderr to tests/logs/<svc>.log (one file per
+      # service). The log file is closed by the harness's stop
+      # callback, which Go's defer machinery runs even on t.Fatal
+      # (Go's runtime.Goexit). Uploading these unconditionally on
+      # every E2E run gives the operator full diagnostic on a chain
+      # stall without grepping through CI service output.
+      - name: Upload E2E service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-service-logs
+          path: tests/logs/
+          if-no-files-found: ignore
+          retention-days: 14
