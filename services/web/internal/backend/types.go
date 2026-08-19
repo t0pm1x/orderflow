@@ -28,10 +28,10 @@ type OrderItem struct {
 // when the operator submitted the prefill hero CTA (which
 // renders a hidden last_four input).
 type OrderSubmit struct {
-	CustomerID *string `json:"customer_id,omitempty"`
-	Items      []OrderItem `json:"items"`
-	Payment    *OrderSubmitPayment `json:"payment,omitempty"`
-	IdempotencyKey string `json:"-"`
+	CustomerID     *string             `json:"customer_id,omitempty"`
+	Items          []OrderItem         `json:"items"`
+	Payment        *OrderSubmitPayment `json:"payment,omitempty"`
+	IdempotencyKey string              `json:"-"`
 }
 
 // OrderSubmitPayment is the payment-hint block of OrderSubmit.
@@ -63,14 +63,14 @@ const (
 
 // Order matches `Order` in api/openapi.yaml:257-288.
 type Order struct {
-	ID            string      `json:"id"`
-	CustomerID    *string     `json:"customer_id,omitempty"`
-	Items         []OrderItem `json:"items"`
-	State         OrderState  `json:"state"`
-	TotalCents    *int64      `json:"total_cents,omitempty"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
-	CompletedAt   *time.Time  `json:"completed_at,omitempty"`
+	ID          string      `json:"id"`
+	CustomerID  *string     `json:"customer_id,omitempty"`
+	Items       []OrderItem `json:"items"`
+	State       OrderState  `json:"state"`
+	TotalCents  *int64      `json:"total_cents,omitempty"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+	CompletedAt *time.Time  `json:"completed_at,omitempty"`
 }
 
 // OrderList matches `OrderList` in api/openapi.yaml:290-300.

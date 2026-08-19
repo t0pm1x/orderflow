@@ -314,7 +314,7 @@ func TestOrderClient_Submit_NoIdempotencyKey(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(backend.Order{
 			ID: uuid.NewString(), State: backend.OrderStatePending,
-			Items:    []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}},
+			Items:     []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}},
 			CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		})
 	}))

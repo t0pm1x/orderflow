@@ -57,11 +57,11 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 		"StockReleaseRequested": forwardToBus(bus),
 		"PaymentRequested":      forwardToBus(bus),
 		// inventory-events — inventory service emits these
-		"StockReserved":             forwardToBus(bus),
-		"StockReservationFailed":    forwardToBus(bus),
+		"StockReserved":          forwardToBus(bus),
+		"StockReservationFailed": forwardToBus(bus),
 		// payment-events — payment service emits these
-		"PaymentCompleted":          forwardToBus(bus),
-		"PaymentFailed":             forwardToBus(bus),
+		"PaymentCompleted": forwardToBus(bus),
+		"PaymentFailed":    forwardToBus(bus),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("kafka tail: %w", err)
