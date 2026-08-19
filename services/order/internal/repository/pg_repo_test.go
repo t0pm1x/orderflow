@@ -139,7 +139,9 @@ func (e errString) Error() string { return string(e) }
 
 // TestPGRepo_InsertGetRoundTrip persists an order via Insert and
 // reads it back via Get, asserting every field survives the round
-// trip including the JSONB items array.
+// trip including the JSONB items array and the timestamps from
+// the orders row (Task 9 P0.5). The seed uses LastFour="4242" so
+// the column is also exercised.
 func TestPGRepo_InsertGetRoundTrip(t *testing.T) {
 	pool := testDB(t)
 	repo := NewPGRepo(pool)
@@ -155,7 +157,9 @@ func TestPGRepo_InsertGetRoundTrip(t *testing.T) {
 		},
 		State:      domain.StatePending,
 		TotalCents: types.NewMoneyFromCents(2*250 + 999),
+		LastFour:   "4242",
 	}
+	before := time.Now().UTC().Add(-time.Second)
 	if err := repo.Insert(context.Background(), o); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -181,6 +185,125 @@ func TestPGRepo_InsertGetRoundTrip(t *testing.T) {
 	}
 	if got.Items[0].SKU != "SKU-1" || got.Items[1].UnitPriceCents != 999 {
 		t.Errorf("Items mismatch: %+v", got.Items)
+	}
+	if got.LastFour != "4242" {
+		t.Errorf("LastFour: got %q want %q", got.LastFour, "4242")
+	}
+	// CreatedAt must be set to NOW() (≈ time of insert) and UpdatedAt
+	// must equal it on the pending row. Pre-Task-9 Get never scanned
+	// these columns, so both surfaced as the zero time. CompletedAt
+	// stays NULL on a pending order.
+	if got.CreatedAt.IsZero() {
+		t.Errorf("CreatedAt: got zero time, want NOW()-like")
+	}
+	if got.CreatedAt.UTC().Before(before) {
+		t.Errorf("CreatedAt %v is before test start %v", got.CreatedAt.UTC(), before)
+	}
+	if !got.UpdatedAt.Equal(got.CreatedAt) {
+		t.Errorf("UpdatedAt: got %v want CreatedAt %v", got.UpdatedAt, got.CreatedAt)
+	}
+	if got.CompletedAt != nil {
+		t.Errorf("CompletedAt: got %v want nil for pending order", got.CompletedAt)
+	}
+}
+
+// TestPGRepo_Get_TimestampsAfterCancel covers the CompletedAt half
+// of the Task 9 fix: after a Cancel the row must surface a
+// non-nil CompletedAt on Get, and UpdatedAt must be ≥ CreatedAt.
+// Pre-Task-9 the column was never SELECTed, so CompletedAt always
+// came back as nil even when the DB row had a value.
+func TestPGRepo_Get_TimestampsAfterCancel(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	id := types.NewOrderID()
+	seedOrderForCancel(t, pool, id, domain.StatePending, 100)
+
+	before := time.Now().UTC().Add(-time.Second)
+	if err := repo.Cancel(context.Background(), id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	got, err := repo.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.CompletedAt == nil {
+		t.Fatal("CompletedAt: got nil want non-nil after Cancel")
+	}
+	if got.CompletedAt.UTC().Before(before) {
+		t.Errorf("CompletedAt %v is before test start %v", got.CompletedAt.UTC(), before)
+	}
+	if got.UpdatedAt.Before(got.CreatedAt) {
+		t.Errorf("UpdatedAt %v is before CreatedAt %v", got.UpdatedAt, got.CreatedAt)
+	}
+}
+
+// TestPGRepo_Get_LastFourEmptyMapsToEmptyString pins the
+// sql.NullString → "" mapping on the read path. The seed inserts
+// the row directly (bypassing Insert) so the last_four column is
+// genuinely NULL, mirroring a v1.x order that was inserted before
+// the 0007 migration.
+func TestPGRepo_Get_LastFourEmptyMapsToEmptyString(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	id := types.NewOrderID()
+	itemsJSON := []byte(`[{"sku":"X","quantity":1,"unit_price_cents":100}]`)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO orders (id, customer_id, items, state, total_cents, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+		id, types.NewCustomerID(), itemsJSON, string(domain.StatePending), 100,
+	); err != nil {
+		t.Fatalf("seed order: %v", err)
+	}
+
+	got, err := repo.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastFour != "" {
+		t.Errorf("LastFour: got %q want empty string when column is NULL", got.LastFour)
+	}
+}
+
+// TestPGRepo_Insert_LastFourEmptyPersistsAsNull pins the write
+// side of the last_four fix: an empty Order.LastFour must persist
+// as a SQL NULL (so the omitempty JSON tag on the domain type keeps
+// the field out of the wire payload), and a re-read surfaces "".
+func TestPGRepo_Insert_LastFourEmptyPersistsAsNull(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	id := types.NewOrderID()
+	o := &domain.Order{
+		ID:         id,
+		CustomerID: types.NewCustomerID(),
+		Items:      []domain.OrderItem{{SKU: "X", Quantity: 1, UnitPriceCents: 100}},
+		State:      domain.StatePending,
+		TotalCents: types.NewMoneyFromCents(100),
+		// LastFour deliberately left empty.
+	}
+	if err := repo.Insert(context.Background(), o); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	var lastFour *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT last_four FROM orders WHERE id = $1`, id,
+	).Scan(&lastFour); err != nil {
+		t.Fatalf("scan last_four: %v", err)
+	}
+	if lastFour != nil {
+		t.Errorf("last_four column: got %q want NULL for empty Order.LastFour", *lastFour)
+	}
+
+	got, err := repo.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastFour != "" {
+		t.Errorf("Get.LastFour: got %q want empty string", got.LastFour)
 	}
 }
 

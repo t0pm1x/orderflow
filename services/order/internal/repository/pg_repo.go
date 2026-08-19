@@ -17,6 +17,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,11 +67,21 @@ func (r *PGRepo) Insert(ctx context.Context, o *domain.Order, events ...outbox.R
 	if err != nil {
 		return fmt.Errorf("marshal items: %w", err)
 	}
+	// last_four is NULLABLE on the orders column (see
+	// migrations/0007_orders_last_four.sql); an empty Payment block
+	// in the submit body is a valid v1.x-compatible call so we
+	// must turn "" into a SQL NULL rather than an empty string.
+	// Using sql.NullString here keeps the logic local to the repo
+	// rather than leaking into the domain types.
+	var lastFour sql.NullString
+	if o.LastFour != "" {
+		lastFour = sql.NullString{String: o.LastFour, Valid: true}
+	}
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO orders (id, customer_id, items, state, total_cents, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-			o.ID, o.CustomerID, itemsJSON, string(o.State), o.TotalCents.Cents(),
+			`INSERT INTO orders (id, customer_id, items, state, total_cents, last_four, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())`,
+			o.ID, o.CustomerID, itemsJSON, string(o.State), o.TotalCents.Cents(), lastFour,
 		); err != nil {
 			return fmt.Errorf("insert order: %w", err)
 		}
@@ -88,20 +99,28 @@ func (r *PGRepo) Insert(ctx context.Context, o *domain.Order, events ...outbox.R
 // handler) translate that into a 404.
 func (r *PGRepo) Get(ctx context.Context, id types.OrderID) (*domain.Order, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT id, customer_id, items, state, total_cents
+		`SELECT id, customer_id, items, state, total_cents,
+		        created_at, updated_at, completed_at, last_four
 		   FROM orders WHERE id = $1`, id)
 	var (
 		o         domain.Order
 		itemsJSON []byte
 		state     string
+		lastFour  sql.NullString
 	)
-	if err := row.Scan(&o.ID, &o.CustomerID, &itemsJSON, &state, &o.TotalCents); err != nil {
+	if err := row.Scan(
+		&o.ID, &o.CustomerID, &itemsJSON, &state, &o.TotalCents,
+		&o.CreatedAt, &o.UpdatedAt, &o.CompletedAt, &lastFour,
+	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("order not found: %w", err)
 		}
 		return nil, err
 	}
 	o.State = domain.OrderState(state)
+	if lastFour.Valid {
+		o.LastFour = lastFour.String
+	}
 	if err := json.Unmarshal(itemsJSON, &o.Items); err != nil {
 		return nil, fmt.Errorf("unmarshal items: %w", err)
 	}
