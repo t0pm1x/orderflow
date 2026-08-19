@@ -35,14 +35,18 @@ type Options struct {
 
 // Server hosts the HTTP listener. One instance per process.
 type Server struct {
-	opt  Options
-	srv  *http.Server
-	addr atomic.Value // string
+	opt    Options
+	srv    *http.Server
+	addr   atomic.Value // string
+	styles []byte       // cached styles.css, read once in New
 }
 
 // New creates a non-listening Server. Call Start to bind + serve.
 func New(opt Options) *Server {
-	return &Server{opt: opt}
+	// styles.css is requested on every page render; read it once at
+	// startup instead of paying an embed.FS.ReadFile per request.
+	data, _ := static.FS.ReadFile("styles.css")
+	return &Server{opt: opt, styles: data}
 }
 
 // Addr returns the bound address (host:port) or "" if Start has not
@@ -88,6 +92,13 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	// Static assets (CSS, vendored JS). Mounted before the handler
 	// set so the layout.html <link rel=stylesheet href=/static/styles.css>
 	// and <script src=/static/vendor/htmx.min.js> resolve on every page.
+	// styles.css is served from a startup-time cache to avoid a
+	// per-request embed.FS.ReadFile; everything else falls through
+	// to the generic /static/* handler which reads from embed.FS.
+	r.Get("/static/styles.css", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write(s.styles)
+	})
 	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
 		p := strings.TrimPrefix(req.URL.Path, "/static/")
 		data, err := static.FS.ReadFile(p)
