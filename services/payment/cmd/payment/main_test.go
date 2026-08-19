@@ -2,6 +2,7 @@ package payment_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -80,12 +81,19 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 	}
 }
 
-// waitForReady polls until the HTTP server actually accepts a
-// /healthz request. The package-level boundAddr is set before
-// httpSrv.Serve is called, so polling it alone is racy: it can
-// return an address whose listener is bound but not yet
-// accepting. Copy the pattern services/saga/cmd/saga/main_test.go
-// uses (waitForFreshReadyAddr).
+// waitForReady polls until the HTTP server service is actually
+// accepting a /healthz request and returning 200 OK. The
+// package-level boundAddr is set before httpSrv.Serve is called,
+// so polling it alone is racy: it can return an address whose
+// listener is bound but not yet accepting. Copy the pattern
+// services/saga/cmd/saga/main_test.go uses (waitForFreshReadyAddr).
+//
+// The 100ms per-request timeout prevents a wedged server from
+// blowing past the outer maxWait deadline on a single hung GET.
+// The 200-OK check guards against a misconfigured /healthz
+// handler returning 5xx with an empty body, which would
+// otherwise satisfy "no transport error" and falsely report
+// ready.
 func waitForReady(t *testing.T, getAddr func() string, maxWait time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(maxWait)
@@ -93,12 +101,17 @@ func waitForReady(t *testing.T, getAddr func() string, maxWait time.Duration) st
 	for time.Now().Before(deadline) {
 		addr := getAddr()
 		if addr != "" {
-			resp, err := http.Get("http://" + addr + "/healthz")
+			client := &http.Client{Timeout: 100 * time.Millisecond}
+			resp, err := client.Get("http://" + addr + "/healthz")
 			if err == nil {
 				_ = resp.Body.Close()
-				return addr
+				if resp.StatusCode == http.StatusOK {
+					return addr
+				}
+				lastErr = fmt.Errorf("/healthz returned %d", resp.StatusCode)
+			} else {
+				lastErr = err
 			}
-			lastErr = err
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
