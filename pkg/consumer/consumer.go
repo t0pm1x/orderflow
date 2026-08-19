@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -52,6 +53,11 @@ type consumerClient interface {
 	CommitMarkedOffsets(ctx context.Context) error
 	Close()
 }
+
+// lastPollWarn throttles the "consumer: poll fetch error" warning
+// so a sustained post-close error doesn't spam logs at line rate.
+// Stored as unix nanos so the comparison stays lock-free.
+var lastPollWarn atomic.Int64
 
 // Consumer is one service's subscription to one or more Kafka
 // topics. Construct it once at startup; Run blocks until ctx is
@@ -164,9 +170,16 @@ func (c *Consumer) Run(ctx context.Context) error {
 				// Non-fatal fetch errors are logged via the slog
 				// default logger (a no-op until InitTracing installs
 				// one); the loop continues so a transient broker
-				// hiccup doesn't kill the consumer.
-				slog.Default().Warn("consumer: poll fetch error",
-					"topic", e.Topic, "partition", e.Partition, "err", e.Err)
+				// hiccup doesn't kill the consumer. Throttled to
+				// once per 5s — a closed client floods the loop
+				// with identical "client closed" entries at line
+				// rate (~MB/sec), and the throttle keeps the log
+				// useful for ops while the consumer winds down.
+				if now := time.Now().UnixNano(); now-lastPollWarn.Load() > int64(5*time.Second) {
+					slog.Default().Warn("consumer: poll fetch error",
+						"topic", e.Topic, "partition", e.Partition, "err", e.Err)
+					lastPollWarn.Store(now)
+				}
 			}
 		}
 		fetches.EachRecord(func(rec *kgo.Record) {

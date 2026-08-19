@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	kafkaconsumer "github.com/t0pm1x/orderflow/consumer"
 	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
@@ -67,14 +68,18 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 		return nil, fmt.Errorf("kafka tail: %w", err)
 	}
 	var wg sync.WaitGroup
+	var closed atomic.Bool
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := c.Run(ctx); err != nil {
+		if err := c.Run(ctx); err != nil && !closed.Load() {
 			logger.Error("kafka tail exited", "err", err)
 		}
 	}()
 	stop := func() {
+		if !closed.CompareAndSwap(false, true) {
+			return
+		}
 		c.Stop()
 		wg.Wait()
 	}
