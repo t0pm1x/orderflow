@@ -9,12 +9,8 @@
 //	and the HTTP listener is bound, regardless of whether the
 //	database pool is wired or the outbox poller is healthy. Only
 //	the REST handler returning 200 proves the DB pool is wired.
-//
-//	waitForHealth (deprecated): pings /healthz. Use this only when
-//	you genuinely want liveness, not readiness.
-//
-//	waitForReady: GETs the REST handler. Stronger signal — the
-//	handler only mounts when the dependency pool is wired.
+//	The tests below never poll /healthz; they poll the REST
+//	handler via GET /v1/orders via waitForReady.
 //
 // Concurrency / ctx discipline:
 //
@@ -117,36 +113,6 @@ func startDeadline(parentCtx context.Context, base time.Time, budget time.Durati
 type orderStateResponse struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
-}
-
-// waitForHealth is the legacy /healthz pinger kept around so
-// compensation_test.go and similar tests that want a pure
-// liveness signal still compile. /healthz on the orderflow
-// backends returns 200 even when the REST handler isn't mounted,
-// so this is necessary-but-not-sufficient to prove the
-// service can serve requests. Prefer waitForReady for new
-// code.
-func waitForHealth(t *testing.T, url string, budget time.Duration) {
-	t.Helper()
-	client := httpClient()
-	deadline := time.Now().Add(budget)
-	for {
-		if time.Now().After(deadline) {
-			t.Fatalf("service at %s did not become healthy within %s", url, budget)
-		}
-		req, err := http.NewRequest(http.MethodGet, url, nil)
-		if err != nil {
-			t.Fatalf("build request %s: %v", url, err)
-		}
-		resp, err := client.Do(req)
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return
-			}
-		}
-		time.Sleep(pollInterval)
-	}
 }
 
 // waitForReady polls GET /v1/orders until it returns 200 (REST
