@@ -16,23 +16,26 @@ Write-Host "==> starting 5 service binaries"
 
 $env:OTEL_EXPORTER = 'stdout'
 $env:DATABASE_URL = 'postgres://orderflow:orderflow@localhost:5432/order_order?sslmode=disable'
-$env:KAFKA_BROKERS = 'localhost:9092'
+# KAFKA_BROKERS uses 127.0.0.1 (not localhost) to skip the IPv6 fallback
+# that franz-go triggers when rebalancing — IPv6 returns connection
+# refused on this host since Redpanda only binds 127.0.0.1.
+$env:KAFKA_BROKERS = '127.0.0.1:9092'
 $env:HTTP_ADDR   = ':8081'
 Start-Process -FilePath .\bin\order.exe -PassThru -RedirectStandardOutput docs/demo/logs/order.log -RedirectStandardError docs/demo/logs/order.err.log | Out-Null
 
 $env:DATABASE_URL = 'postgres://orderflow:orderflow@localhost:5433/payment_payment?sslmode=disable'
-$env:KAFKA_BROKERS = 'localhost:9092'
+$env:KAFKA_BROKERS = '127.0.0.1:9092'
 $env:HTTP_ADDR   = ':8082'
 Start-Process -FilePath .\bin\payment.exe -PassThru -RedirectStandardOutput docs/demo/logs/payment.log -RedirectStandardError docs/demo/logs/payment.err.log | Out-Null
 
 $env:DATABASE_URL = 'postgres://orderflow:orderflow@localhost:5434/inventory_inventory?sslmode=disable'
-$env:KAFKA_BROKERS = 'localhost:9092'
+$env:KAFKA_BROKERS = '127.0.0.1:9092'
 $env:REDIS_URL   = 'redis://localhost:6379/0'
 $env:HTTP_ADDR   = ':8083'
 Start-Process -FilePath .\bin\inventory.exe -PassThru -RedirectStandardOutput docs/demo/logs/inventory.log -RedirectStandardError docs/demo/logs/inventory.err.log | Out-Null
 
 $env:DATABASE_URL = 'postgres://orderflow:orderflow@localhost:5432/order_order?sslmode=disable'
-$env:KAFKA_BROKERS = 'localhost:9092'
+$env:KAFKA_BROKERS = '127.0.0.1:9092'
 $env:HTTP_ADDR   = ':8084'
 Start-Process -FilePath .\bin\saga.exe -PassThru -RedirectStandardOutput docs/demo/logs/saga.log -RedirectStandardError docs/demo/logs/saga.err.log | Out-Null
 
@@ -40,7 +43,7 @@ Remove-Item Env:DATABASE_URL,Env:KAFKA_BROKERS -ErrorAction SilentlyContinue
 $env:ORDER_URL    = 'http://localhost:8081'
 $env:PAYMENT_URL  = 'http://localhost:8082'
 $env:INVENTORY_URL = 'http://localhost:8083'
-$env:KAFKA_BROKERS = 'localhost:9092'
+$env:KAFKA_BROKERS = '127.0.0.1:9092'
 $env:HTTP_ADDR    = ':8085'
 Start-Process -FilePath .\bin\web.exe -PassThru -RedirectStandardOutput docs/demo/logs/web.log -RedirectStandardError docs/demo/logs/web.err.log | Out-Null
 
