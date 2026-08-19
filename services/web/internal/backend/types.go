@@ -54,7 +54,6 @@ type Order struct {
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 	CompletedAt   *time.Time  `json:"completed_at,omitempty"`
-	FailureReason *string     `json:"failure_reason,omitempty"`
 }
 
 // OrderList matches `OrderList` in api/openapi.yaml:290-300.

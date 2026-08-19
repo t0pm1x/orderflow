@@ -15,7 +15,6 @@
        <span class="muted">created {{.Order.CreatedAt.Format "2006-01-02 15:04:05"}}</span>
        {{if .Order.CompletedAt}} &middot; <span class="muted">completed {{.Order.CompletedAt.Format "15:04:05"}}</span>{{end}}
     </p>
-    {{if .Order.FailureReason}}<div class="error">Failure: {{.Order.FailureReason}}</div>{{end}}
     <table>
       <thead><tr><th>SKU</th><th>Qty</th><th>Unit price</th></tr></thead>
       <tbody>
