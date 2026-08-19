@@ -51,6 +51,23 @@
         while (ul.children.length > 50) ul.removeChild(ul.lastChild);
       } catch (_) {}
     });
+    // Announce submit busy state to assistive tech while htmx is in flight.
+    document.body.addEventListener('htmx:beforeRequest', function (e) {
+      var trigger = e.detail.elt;
+      if (!trigger) return;
+      var btn = trigger.matches && trigger.matches('button')
+        ? trigger
+        : trigger.querySelector('button[type="submit"]');
+      if (btn) btn.setAttribute('aria-busy', 'true');
+    });
+    document.body.addEventListener('htmx:afterRequest', function (e) {
+      var trigger = e.detail.elt;
+      if (!trigger) return;
+      var btn = trigger.matches && trigger.matches('button')
+        ? trigger
+        : trigger.querySelector('button[type="submit"]');
+      if (btn) btn.setAttribute('aria-busy', 'false');
+    });
   </script>
 </body>
 </html>
