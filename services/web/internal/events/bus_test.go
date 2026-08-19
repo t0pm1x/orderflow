@@ -142,3 +142,21 @@ func TestBus_RingOverflow(t *testing.T) {
 		t.Fatalf("expected newest event at tail, got %s", h[len(h)-1].EventID)
 	}
 }
+
+func TestBus_ConcurrentPublishSubscribe(t *testing.T) {
+	b := events.NewBus()
+	defer b.Close()
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch, _ := b.Subscribe()
+			for j := 0; j < 100; j++ { <-ch }
+		}()
+	}
+	for i := 0; i < 1000; i++ {
+		b.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{EventType: "X", AggregateID: "a"}})
+	}
+	wg.Wait()
+}

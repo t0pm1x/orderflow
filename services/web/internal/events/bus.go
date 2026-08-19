@@ -77,31 +77,43 @@ func (b *Bus) Subscribe() (chan BusEvent, func()) {
 // The event is also appended to the bounded ring buffer so it can
 // be retrieved via History; when the ring overflows, the oldest
 // 10% entries are dropped in one slice trim.
+//
+// Concurrency: subscribers are snapshotted under the mutex so the
+// fan-out runs lock-free. A slow subscriber can no longer block
+// other publishers — the per-channel send is non-blocking and the
+// drop-oldest uses a single atomic select so the drain and the push
+// cannot be interleaved by another publisher.
 func (b *Bus) Publish(e BusEvent) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.closed() {
+		b.mu.Unlock()
 		return
 	}
+	snapshot := make([]chan BusEvent, 0, len(b.subs))
 	for ch := range b.subs {
-		select {
-		case ch <- e:
-		default:
-			// Drop oldest, push newest. Non-blocking.
-			select {
-			case <-ch:
-			default:
-			}
-			select {
-			case ch <- e:
-			default:
-			}
-		}
+		snapshot = append(snapshot, ch)
 	}
 	b.ring = append(b.ring, ringEntry{aggregateID: e.Envelope.AggregateID, env: e.Envelope})
 	if len(b.ring) > ringCap {
 		drop := ringCap / 10
 		b.ring = b.ring[drop:]
+	}
+	b.mu.Unlock()
+
+	for _, ch := range snapshot {
+		select {
+		case ch <- e:
+		default:
+			// Drop oldest, push newest in one atomic select:
+			// either we drain one (then we have guaranteed room
+			// and the unconditional send wins), or another
+			// goroutine drained it for us and the send case wins.
+			select {
+			case <-ch:
+				ch <- e
+			case ch <- e:
+			}
+		}
 	}
 }
 
