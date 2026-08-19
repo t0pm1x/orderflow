@@ -90,7 +90,7 @@ func TestE2E_HappyPath_OrderConfirmed(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("order %s did not reach confirmed within 60s", created.ID)
+	t.Fatalf("order %s did not reach confirmed within %s", created.ID, 120*time.Second)
 }
 
 func waitForHealth(t *testing.T, url string, timeout time.Duration) {

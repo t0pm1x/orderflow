@@ -96,7 +96,7 @@ func TestOrdersList_OK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -119,7 +119,7 @@ func TestOrdersList_BackendError_RendersPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -144,7 +144,7 @@ func TestOrderNew_GET(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d", resp.StatusCode)
 	}
@@ -175,7 +175,7 @@ func TestOrderSubmit_OK_RedirectsViaHTMX(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -194,7 +194,7 @@ func TestOrderSubmit_ValidationError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 400 {
 		t.Fatalf("status: got %d want 400", resp.StatusCode)
 	}
@@ -218,7 +218,7 @@ func TestOrderSubmit_Upstream5xx(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 502 {
 		t.Fatalf("status: got %d want 502", resp.StatusCode)
 	}
@@ -240,7 +240,7 @@ func TestOrderSubmit_Upstream4xx_BadRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 400 {
 		t.Fatalf("status: got %d want 400", resp.StatusCode)
 	}
@@ -258,7 +258,7 @@ func TestOrderDetail_OK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -281,7 +281,7 @@ func TestOrderDetail_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 404 {
 		t.Fatalf("status: got %d want 404", resp.StatusCode)
 	}
@@ -296,7 +296,7 @@ func TestOrderCancel_OK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -332,7 +332,7 @@ func TestInventory_OK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -358,7 +358,7 @@ func TestInventory_OrderBackendDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -395,7 +395,7 @@ func TestInventory_StockRowMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -431,7 +431,7 @@ func TestPaymentsSim_OK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
@@ -469,7 +469,7 @@ func TestPaymentsFire_OK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
