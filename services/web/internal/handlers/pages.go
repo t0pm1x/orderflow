@@ -49,7 +49,6 @@ type orderNewVM struct {
 // input (4242 or 0001) is rendered so the operator can
 // one-click the happy/compensation demo flow.
 func (s *Set) PageOrderNew(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	vm := orderNewVM{
 		Body:             "orderNewBody",
 		IdempotencyToken: newIdempotencyToken(),
@@ -69,7 +68,7 @@ func (s *Set) PageOrderNew(w http.ResponseWriter, r *http.Request) {
 		vm.UnitPriceCents = 1999
 		vm.LastFour = "0001"
 	}
-	_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+	s.renderPage(w, vm)
 }
 
 // ActionOrderSubmit serves POST /v1/orders — form submission for
@@ -271,15 +270,11 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	vm.Order = o
 	vm.Events = s.Bus.History(o.ID)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.URL.Query().Get("frag") == "1" {
-		renderFragment(w, s.Templates, "orderDetailBody", vm)
+		s.renderPageFrag(w, "orderDetailBody", vm)
 		return
 	}
-	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		s.Logger.Error("template execute failed", "route", "GET /orders/{id}", "template", "layout", "err", err)
-		http.Error(w, "rendering failed", http.StatusInternalServerError)
-	}
+	s.renderPage(w, vm)
 }
 
 // orderEventsVM is the view model for the per-order saga timeline.
@@ -305,15 +300,11 @@ func (s *Set) PageOrderEvents(w http.ResponseWriter, r *http.Request) {
 	if _, err := uuid.Parse(id); err == nil {
 		vm.Events = s.Bus.History(id)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.URL.Query().Get("frag") == "1" {
-		renderFragment(w, s.Templates, "orderEventsBody", vm)
+		s.renderPageFrag(w, "orderEventsBody", vm)
 		return
 	}
-	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		s.Logger.Error("template execute failed", "route", "GET /orders/{id}/events", "template", "layout", "err", err)
-		http.Error(w, "rendering failed", http.StatusInternalServerError)
-	}
+	s.renderPage(w, vm)
 }
 
 // ActionOrderCancel serves POST /v1/orders/{id} — form submission
@@ -429,15 +420,11 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 		_ = g.Wait()
 		vm.Rows = results
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.URL.Query().Get("frag") == "1" {
-		renderFragment(w, s.Templates, "inventoryBody", vm)
+		s.renderPageFrag(w, "inventoryBody", vm)
 		return
 	}
-	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		s.Logger.Error("template execute failed", "route", "GET /inventory", "template", "layout", "err", err)
-		http.Error(w, "rendering failed", http.StatusInternalServerError)
-	}
+	s.renderPage(w, vm)
 }
 
 type paymentsSimVM struct {
@@ -508,11 +495,7 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders (payments-sim: reserved)", rerr)
 		vm.Error = msg
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		s.Logger.Error("template execute failed", "route", "GET /payments/sim", "template", "layout", "err", err)
-		http.Error(w, "rendering failed", http.StatusInternalServerError)
-	}
+	s.renderPage(w, vm)
 }
 
 // ActionPaymentsFire serves POST /payments/sim/fire. Builds a

@@ -125,15 +125,11 @@ func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 	} else {
 		vm.Orders = list.Items
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.URL.Query().Get("frag") == "1" {
-		renderFragment(w, s.Templates, "ordersListBody", vm)
+		s.renderPageFrag(w, "ordersListBody", vm)
 		return
 	}
-	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
-		s.Logger.Error("template execute failed", "route", "GET /", "template", "layout", "err", err)
-		http.Error(w, "rendering failed", http.StatusInternalServerError)
-	}
+	s.renderPage(w, vm)
 }
 
 // renderFragment executes the named body template only (no layout
@@ -150,6 +146,28 @@ func renderFragment(w http.ResponseWriter, t *template.Template, name string, vm
 		// browser doesn't get a half-rendered fragment.
 		http.Error(w, "rendering failed", http.StatusInternalServerError)
 	}
+}
+
+// renderPage executes the layout template with the given view model
+// and the standard text/html content-type. Errors are logged with
+// the set's logger and surfaced as a generic 500 so the caller
+// doesn't need to repeat the header/log/execute/error boilerplate
+// at every call site.
+func (s *Set) renderPage(w http.ResponseWriter, vm any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
+		s.Logger.Error("template execute failed", "err", err)
+		http.Error(w, "rendering failed", http.StatusInternalServerError)
+	}
+}
+
+// renderPageFrag is the thin *Set method wrapper around the
+// package-level renderFragment helper. Lets page handlers stay
+// symmetric with renderPage (both are methods on *Set) while the
+// shared renderFragment stays available for any non-method call
+// sites that need it.
+func (s *Set) renderPageFrag(w http.ResponseWriter, name string, vm any) {
+	renderFragment(w, s.Templates, name, vm)
 }
 
 // timeAgo renders a time.Time as a compact "Ns/m/h/d ago" string
