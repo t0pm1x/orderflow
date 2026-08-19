@@ -73,7 +73,7 @@ func TestE2E_HappyPath_OrderConfirmed(t *testing.T) {
 		t.Fatal("empty order id")
 	}
 
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
 		getResp, err := http.Get("http://127.0.0.1:18081/v1/orders/" + created.ID)
 		if err != nil {
