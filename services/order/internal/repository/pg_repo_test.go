@@ -10,12 +10,14 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -277,5 +279,146 @@ func TestPGRepo_ListFiltersByState(t *testing.T) {
 	}
 	if got[0].State != domain.StatePending {
 		t.Errorf("State: got %q want PENDING", got[0].State)
+	}
+}
+
+// seedOrderForCancel is a small helper used by the cancel tests to
+// insert an order directly via the pool (bypassing Insert so the
+// test can control state/columns Insert doesn't set, like completed_at).
+func seedOrderForCancel(t *testing.T, pool *pgxpool.Pool, id types.OrderID, state domain.OrderState, total int64) {
+	t.Helper()
+	itemsJSON := []byte(`[{"sku":"X","quantity":1,"unit_price_cents":100}]`)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO orders (id, customer_id, items, state, total_cents, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+		id, types.NewCustomerID(), itemsJSON, string(state), total,
+	); err != nil {
+		t.Fatalf("seed order: %v", err)
+	}
+}
+
+// TestPGRepo_Cancel_TransitionsAndEmitsEvent covers the happy path:
+// a pending order gets state='cancelled', completed_at is set, and an
+// OrderCancelled event row is appended to order_outbox with the
+// (reason, source) payload so the saga/inventory can release stock.
+func TestPGRepo_Cancel_TransitionsAndEmitsEvent(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	id := types.NewOrderID()
+	seedOrderForCancel(t, pool, id, domain.StatePending, 100)
+
+	before := time.Now().UTC().Add(-time.Second)
+	if err := repo.Cancel(context.Background(), id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// Row must be cancelled with completed_at set.
+	var (
+		state       string
+		completedAt *time.Time
+	)
+	if err := pool.QueryRow(context.Background(),
+		`SELECT state, completed_at FROM orders WHERE id = $1`, id,
+	).Scan(&state, &completedAt); err != nil {
+		t.Fatalf("query order: %v", err)
+	}
+	if state != "cancelled" {
+		t.Errorf("state: got %q want cancelled", state)
+	}
+	if completedAt == nil {
+		t.Error("completed_at: got NULL want non-NULL")
+	} else if completedAt.UTC().Before(before) {
+		t.Errorf("completed_at %v is before test start %v", completedAt.UTC(), before)
+	}
+
+	// Outbox row must be written.
+	var (
+		eventType string
+		topic     string
+		payload   []byte
+		status    string
+	)
+	if err := pool.QueryRow(context.Background(),
+		`SELECT event_type, topic, payload, status
+		   FROM order_outbox WHERE aggregate_id = $1`, id,
+	).Scan(&eventType, &topic, &payload, &status); err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	if eventType != "OrderCancelled" {
+		t.Errorf("event_type: got %q want OrderCancelled", eventType)
+	}
+	if topic != "order-events" {
+		t.Errorf("topic: got %q want order-events", topic)
+	}
+	if status != "PENDING" {
+		t.Errorf("status: got %q want PENDING", status)
+	}
+	if !strings.Contains(string(payload), `"reason":"user_request"`) {
+		t.Errorf("payload missing reason=user_request: %s", payload)
+	}
+	if !strings.Contains(string(payload), `"source":"user"`) {
+		t.Errorf("payload missing source=user: %s", payload)
+	}
+	if !strings.Contains(string(payload), `"order_id":"`+id.String()+`"`) {
+		t.Errorf("payload missing order_id: %s", payload)
+	}
+}
+
+// TestPGRepo_Cancel_AlreadyTerminalReturnsErrNotFound covers the
+// idempotency contract: a cancel against an order already in a
+// terminal state (confirmed/cancelled/failed) MUST return ErrNotFound
+// and MUST NOT emit a fresh outbox row. This is the regression net
+// for the v1.1.2 P1-#2 consumer-side guard lifted to the user-driven
+// cancel path.
+func TestPGRepo_Cancel_AlreadyTerminalReturnsErrNotFound(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	for _, st := range []domain.OrderState{domain.StateConfirmed, domain.StateCancelled, domain.StateFailed} {
+		id := types.NewOrderID()
+		seedOrderForCancel(t, pool, id, st, 100)
+
+		err := repo.Cancel(context.Background(), id)
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("Cancel(%s): got %v want ErrNotFound", st, err)
+		}
+
+		// State must be unchanged.
+		var gotState string
+		if err := pool.QueryRow(context.Background(),
+			`SELECT state FROM orders WHERE id = $1`, id,
+		).Scan(&gotState); err != nil {
+			t.Fatalf("query state for %s: %v", st, err)
+		}
+		if gotState != string(st) {
+			t.Errorf("state for %s order: got %q want %q", st, gotState, st)
+		}
+
+		// No outbox row may be appended — would cause inventory to
+		// release stock that was already (or never) reserved.
+		var n int
+		if err := pool.QueryRow(context.Background(),
+			`SELECT COUNT(*) FROM order_outbox WHERE aggregate_id = $1`, id,
+		).Scan(&n); err != nil {
+			t.Fatalf("count outbox for %s: %v", st, err)
+		}
+		if n != 0 {
+			t.Errorf("outbox for %s: got %d rows want 0 (double-emit would corrupt downstream)", st, n)
+		}
+	}
+}
+
+// TestPGRepo_Cancel_UnknownIDReturnsErrNotFound covers the
+// not-found path: a Cancel against an id that doesn't exist must
+// surface as ErrNotFound (mapped to 404 by the handler) without a
+// 500 leak.
+func TestPGRepo_Cancel_UnknownIDReturnsErrNotFound(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	err := repo.Cancel(context.Background(), types.NewOrderID())
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Cancel(unknown): got %v want ErrNotFound", err)
 	}
 }

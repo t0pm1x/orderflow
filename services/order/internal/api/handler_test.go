@@ -18,8 +18,11 @@ import (
 // Record passed to Insert so the test can assert on event emission
 // without needing a real DB.
 type mockRepo struct {
-	orders map[types.OrderID]*domain.Order
-	events map[types.OrderID][]outbox.Record
+	orders       map[types.OrderID]*domain.Order
+	events       map[types.OrderID][]outbox.Record
+	cancelCalls  int
+	lastCancelID types.OrderID
+	cancelErr    error
 }
 
 func newMockRepo() *mockRepo {
@@ -51,6 +54,12 @@ func (m *mockRepo) List(_ context.Context, state domain.OrderState, _ int) ([]*d
 		}
 	}
 	return out, nil
+}
+
+func (m *mockRepo) Cancel(_ context.Context, id types.OrderID) error {
+	m.cancelCalls++
+	m.lastCancelID = id
+	return m.cancelErr
 }
 
 func TestSubmit_OK(t *testing.T) {
@@ -175,5 +184,52 @@ func TestList_OK(t *testing.T) {
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// TestCancel_OK verifies that DELETE /v1/orders/{id} calls
+// Repository.Cancel and returns 204. The cancel contract is idempotent:
+// terminal orders (confirmed/cancelled/failed) should also return 204
+// because the order already is in (or past) the requested state.
+func TestCancel_OK(t *testing.T) {
+	repo := newMockRepo()
+	h := NewHandler(repo)
+	id := types.NewOrderID()
+	req := httptest.NewRequest("DELETE", "/v1/orders/"+id.String(), nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status: got %d want 204; body=%s", w.Code, w.Body.String())
+	}
+	if repo.cancelCalls != 1 || repo.lastCancelID != id {
+		t.Errorf("Cancel calls: got %d (id=%v) want 1 (id=%v)", repo.cancelCalls, repo.lastCancelID, id)
+	}
+}
+
+// TestCancel_NotFound asserts that a missing id returns 404 (not 204).
+// Repository surfaces ErrNotFound for unknown ids and for terminal
+// states that cannot be cancelled; the handler maps that to a 404.
+func TestCancel_NotFound(t *testing.T) {
+	repo := newMockRepo()
+	repo.cancelErr = errNotFound
+	h := NewHandler(repo)
+	id := types.NewOrderID()
+	req := httptest.NewRequest("DELETE", "/v1/orders/"+id.String(), nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status: got %d want 404", w.Code)
+	}
+}
+
+// TestCancel_InvalidID asserts 400 on a malformed UUID — Cancel must
+// not silently swallow parse errors.
+func TestCancel_InvalidID(t *testing.T) {
+	h := NewHandler(newMockRepo())
+	req := httptest.NewRequest("DELETE", "/v1/orders/not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400; body=%s", w.Code, w.Body.String())
 	}
 }

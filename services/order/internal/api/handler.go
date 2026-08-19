@@ -43,10 +43,16 @@ type OrderCreatedPayload struct {
 // All methods take a context so the HTTP request deadline reaches
 // the DB driver — without it, a client that cancels mid-write
 // would still see the order appear in the database.
+//
+// Cancel performs a state transition to StateCancelled (terminal),
+// emits an OrderCancelled outbox event atomically with the state
+// update, and returns errNotFound when the order is unknown or
+// already terminal (confirmed/cancelled/failed).
 type Repository interface {
 	Insert(ctx context.Context, o *domain.Order, events ...outbox.Record) error
 	Get(ctx context.Context, id types.OrderID) (*domain.Order, error)
 	List(ctx context.Context, state domain.OrderState, limit int) ([]*domain.Order, error)
+	Cancel(ctx context.Context, id types.OrderID) error
 }
 
 // Handler serves the Order Service REST routes. It validates input,
@@ -67,6 +73,7 @@ func (h *Handler) Routes() http.Handler {
 	r.Post("/v1/orders", h.submit)
 	r.Get("/v1/orders/{id}", h.get)
 	r.Get("/v1/orders", h.list)
+	r.Delete("/v1/orders/{id}", h.cancel)
 	return r
 }
 
@@ -153,6 +160,30 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		"items":    items,
 		"has_more": len(items) == limit,
 	})
+}
+
+// cancel handles DELETE /v1/orders/{id}. Idempotent: a missing or
+// already-terminal order returns 404 (so callers can distinguish
+// "I don't know this id" from "cancelled"), and a successful cancel
+// returns 204. The Repository writes the state transition and the
+// OrderCancelled outbox row in a single transaction so a downstream
+// consumer (inventory) is guaranteed to see the same event.
+func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, parseErr := parseOrderID(idStr)
+	if parseErr != nil {
+		apierrors.WriteError(w, parseErr)
+		return
+	}
+	if err := h.repo.Cancel(r.Context(), id); err != nil {
+		if errors.Is(err, errNotFound) {
+			apierrors.WriteError(w, apierrors.ErrNotFound)
+			return
+		}
+		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "CANCEL_FAILED", err.Error(), err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // buildOrderCreatedRecord constructs an outbox.Record for an

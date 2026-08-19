@@ -8,6 +8,11 @@
 // state can never disagree. The outbox half delegates to
 // services/order/internal/outbox.PGWriter so the canonical outbox
 // INSERT lives in exactly one place.
+//
+// Cancel is also atomic: state transition to 'cancelled' and the
+// OrderCancelled outbox row commit together. A missing or already-
+// terminal order surfaces as ErrNotFound so the handler can map it
+// to a 404.
 package repository
 
 import (
@@ -16,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -30,6 +36,11 @@ import (
 // Table is the Order Service's orders table name. The same string
 // is referenced in services/order/migrations/0001_init.sql.
 const Table = "orders"
+
+// ErrNotFound is returned by Get/Cancel when the order does not
+// exist or cannot be cancelled (already terminal). api.Repository
+// callers translate this into a 404.
+var ErrNotFound = errors.New("order not found")
 
 // PGRepo is the PostgreSQL-backed implementation of api.Repository.
 type PGRepo struct {
@@ -95,6 +106,59 @@ func (r *PGRepo) Get(ctx context.Context, id types.OrderID) (*domain.Order, erro
 		return nil, fmt.Errorf("unmarshal items: %w", err)
 	}
 	return &o, nil
+}
+
+// Cancel transitions the order to StateCancelled and writes an
+// OrderCancelled outbox row in the same transaction. The state guard
+// `state NOT IN ('confirmed','cancelled','failed')` matches the
+// P1-#2 consumer-side SQL (services/order/internal/consumer/handlers.go:126)
+// so a Cancel request against an already-terminal or unknown id is
+// a no-op and returns ErrNotFound (no outbox row emitted).
+//
+// Atomicity is critical: if the UPDATE rolled back but the outbox
+// row committed, inventory would release stock against an order
+// that never actually transitioned.
+func (r *PGRepo) Cancel(ctx context.Context, id types.OrderID) error {
+	payload, err := json.Marshal(struct {
+		OrderID string `json:"order_id"`
+		Reason  string `json:"reason"`
+		Source  string `json:"source"`
+	}{
+		OrderID: id.String(),
+		Reason:  "user_request",
+		Source:  "user",
+	})
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+	rec := outbox.Record{
+		EventID:       uuid.NewString(),
+		EventType:     "OrderCancelled",
+		AggregateID:   id.String(),
+		AggregateType: "Order",
+		SchemaVersion: "1.0",
+		Topic:         "order-events",
+		Payload:       payload,
+	}
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE orders
+			    SET state = 'cancelled',
+			        updated_at = NOW(),
+			        completed_at = NOW()
+			  WHERE id = $1
+			    AND state NOT IN ('confirmed', 'cancelled', 'failed')`, id)
+		if err != nil {
+			return fmt.Errorf("update order: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		if err := r.writer.Append(ctx, tx, rec); err != nil {
+			return fmt.Errorf("insert outbox: %w", err)
+		}
+		return nil
+	})
 }
 
 // List returns up to limit orders whose state matches the filter,
