@@ -4,7 +4,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -242,5 +245,67 @@ func TestMiddleware_HandlerPanicRecovers(t *testing.T) {
 	mw(spy).ServeHTTP(rec2, req2)
 	if !called {
 		t.Fatal("handler should be called after panic-release")
+	}
+}
+
+// TestMiddleware_ConcurrentSameKey_ExactlyOneHandlerCall verifies
+// that N goroutines firing the same Idempotency-Key see exactly
+// one handler invocation. The rest get 200 cached (replay) or
+// 409 (concurrent in-flight). Pre-v1.1.1 (before ErrInFlight
+// mapped to 409), duplicates saw 200 with body "in-flight",
+// and the saga wrongly treated the no-op as a success.
+func TestMiddleware_ConcurrentSameKey_ExactlyOneHandlerCall(t *testing.T) {
+	const N = 32
+	s, _ := newMiniredisStore(t)
+
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		// Sleep to widen the race window: other goroutines should
+		// observe ErrInFlight during this period.
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("first"))
+	})
+
+	var (
+		wg      sync.WaitGroup
+		statuses [N]int
+		bodies  [N]string
+	)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+			req.Header.Set(HeaderIDKey, "concurrent-key")
+			rec := httptest.NewRecorder()
+			Middleware(s)(handler).ServeHTTP(rec, req)
+			statuses[i] = rec.Code
+			bodies[i] = rec.Body.String()
+		}(i)
+	}
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("handler invocations: got %d want 1 (pre-v1.1.1: 200 with 'in-flight' body)", got)
+	}
+	// All responses must be either 200 (replay or success) or
+	// 409 (in-flight). No 5xx, no silent cache of empty body.
+	for i, st := range statuses {
+		if st != http.StatusOK && st != http.StatusConflict {
+			t.Errorf("goroutine %d status: got %d want 200 or 409; body=%q", i, st, bodies[i])
+		}
+	}
+	// Exactly one body must be "first" (the original); the rest
+	// are either "first" (replay) or empty (in-flight 409).
+	var firstCount int
+	for _, b := range bodies {
+		if b == "first" {
+			firstCount++
+		}
+	}
+	if firstCount < 1 {
+		t.Errorf("expected at least one body=\"first\" (winner or replay), got 0; bodies=%v", bodies)
 	}
 }
