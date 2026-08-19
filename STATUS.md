@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-17 (post v0.2.0 release; 3.10–3.13 closed; 3.14 review done)
+**Last updated:** 2026-08-19 (post v1.1.5 release; web.1–web.11 closed)
 
 ## Sub-stages
 
@@ -108,8 +108,13 @@
 | web.9    | payment webhook simulator | done | 3895c51 | this plan |
 | web.10   | live event tail + SSE | done | 912e2b2 | this plan |
 | web.11   | compose + Makefile + README | done | a52edef   | this plan |
+| v1.1.1   | senior-review pass (13 fixes) | done | c8533ed   |          |
+| v1.1.2   | adversarial-audit follow-up  | done | 137b21c   |          |
+| v1.1.3   | housekeeping (flaky test + 6 coverage gaps) | done | 4090cd3 |          |
+| v1.1.4   | final engineering pass       | done | c21b929   |          |
+| v1.1.5   | E2E chain repair + easy-run scripts | done | 73ac9e7 |          |
 
-## Deferred to v1.1
+## Deferred to v1.2+
 
 - Full outbox-retry chaos assertion (services cache `KAFKA_BROKER` at startup)
 - kind smoke: actual image loading into cluster (currently only validates Helm template rendering, not full deploy)
