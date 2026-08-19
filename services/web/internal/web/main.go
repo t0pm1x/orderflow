@@ -108,7 +108,6 @@ func Run(ctx context.Context) error {
 	if err := srv.Start(ctx, httpAddr); err != nil {
 		return fmt.Errorf("server start: %w", err)
 	}
-	boundAddr.Store(srv.Addr())
 	return nil
 }
 

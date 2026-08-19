@@ -122,12 +122,12 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	s.addr.Store(ln.Addr().String())
 
 	s.srv = &http.Server{
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	s.addr.Store(ln.Addr().String())
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
