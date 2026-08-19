@@ -113,11 +113,18 @@ func Run(ctx context.Context) error {
 
 // Main is the function called by cmd/web/main.go; it owns the
 // signal-aware context lifecycle.
+//
+// The cancel-deferred-then-exit ordering matters: calling os.Exit
+// before the deferred cancel() would skip context cancellation
+// (and leave background goroutines hanging). Manual cancel + return
+// is the only way to ensure defers run. The non-zero return code
+// is what entrypoint shells look at, not os.Exit's status.
 func Main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "web service: %v\n", err)
+		cancel()
 		os.Exit(1)
 	}
 }
