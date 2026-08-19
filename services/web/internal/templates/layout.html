@@ -27,8 +27,11 @@
       {{if eq .Body "paymentsSimBody"}}{{template "paymentsSimBody" .}}{{end}}
     </section>
     <aside class="sidebar" hx-ext="sse" sse-connect="/events/stream" sse-swap="event" hx-swap="afterend">
-      <h3>Live events</h3>
-      <ul id="events" class="events"></ul>
+      <h3>Live events{{if not .EventsEnabled}} <span class="badge cancelled" title="Kafka tail not started">disconnected</span>{{end}}</h3>
+      <ul id="events" class="events" role="log" aria-live="polite" aria-label="Order event stream"></ul>
+      {{if not .EventsEnabled}}
+      <p class="muted">Live events: disconnected (KAFKA_BROKERS not set or Kafka tail not started). Pages still work.</p>
+      {{end}}
     </aside>
   </main>
 

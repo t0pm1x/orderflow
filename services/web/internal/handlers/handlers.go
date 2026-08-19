@@ -37,6 +37,20 @@ type Set struct {
 	// /payments/sim/fire). Initialized in NewSet so handlers can
 	// always assume non-nil; tests get a fresh cache per Set.
 	replays *replayCache
+	// EventsEnabled is true when the Kafka tail goroutine has
+	// actually started. When false (KAFKA_BROKERS unset, etc.),
+	// the layout renders a "Live events: disconnected" banner and
+	// the SSE endpoint short-circuits with 503. Set by the caller
+	// after construction via SetEventsEnabled.
+	EventsEnabled bool
+}
+
+// SetEventsEnabled toggles whether the SSE endpoint serves an event
+// stream and whether the layout shows the "Live events" sidebar.
+// Wired by services/web after kafkatail.Start reports whether a tail
+// goroutine was actually launched.
+func (s *Set) SetEventsEnabled(b bool) {
+	s.EventsEnabled = b
 }
 
 // NewSet builds a Set with the layout + body templates parsed once.
@@ -84,10 +98,11 @@ func (s *Set) Routes(r chi.Router) {
 
 // ordersListVM is the view model for the GET / page.
 type ordersListVM struct {
-	Body        string
-	Orders      []backend.Order
-	BackendDown bool
-	Error       string
+	Body          string
+	Orders        []backend.Order
+	BackendDown   bool
+	Error         string
+	EventsEnabled bool
 }
 
 // PageOrdersList serves GET / (orders list). On backend failure it
@@ -98,6 +113,7 @@ type ordersListVM struct {
 func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 	var vm ordersListVM
 	vm.Body = "ordersListBody"
+	vm.EventsEnabled = s.EventsEnabled
 	list, err := s.Order.List(r.Context(), "", 50)
 	if err != nil {
 		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders", err)

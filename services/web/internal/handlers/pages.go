@@ -22,6 +22,7 @@ type orderNewVM struct {
 	CustomerID      string
 	IdempotencyToken string
 	Error           string
+	EventsEnabled   bool
 }
 
 // PageOrderNew serves GET /orders/new — renders the create-order
@@ -34,6 +35,7 @@ func (s *Set) PageOrderNew(w http.ResponseWriter, _ *http.Request) {
 	_ = s.Templates.ExecuteTemplate(w, "layout", orderNewVM{
 		Body:             "orderNewBody",
 		IdempotencyToken: newIdempotencyToken(),
+		EventsEnabled:    s.EventsEnabled,
 	})
 }
 
@@ -56,6 +58,7 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		Quantity:         atoi(r.FormValue("quantity")),
 		CustomerID:       r.FormValue("customer_id"),
 		IdempotencyToken: newIdempotencyToken(),
+		EventsEnabled:    s.EventsEnabled,
 	}
 	if up := r.FormValue("unit_price_cents"); up != "" {
 		vm.UnitPriceCents, _ = strconv.ParseInt(up, 10, 64)
@@ -137,6 +140,7 @@ type orderDetailVM struct {
 	Error            string
 	Events           []pkgEvents.Envelope
 	IdempotencyToken string
+	EventsEnabled    bool
 }
 
 // PageOrderDetail serves GET /orders/{id}. It rejects non-UUID
@@ -155,7 +159,7 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "order id must be a UUID", http.StatusBadRequest)
 		return
 	}
-	vm := orderDetailVM{Body: "orderDetailBody", IdempotencyToken: newIdempotencyToken()}
+	vm := orderDetailVM{Body: "orderDetailBody", IdempotencyToken: newIdempotencyToken(), EventsEnabled: s.EventsEnabled}
 	o, err := s.Order.Get(r.Context(), id)
 	if err != nil {
 		msg, status := mapUpstreamError(s.Logger, "GET /v1/orders/{id}", err)
@@ -188,9 +192,10 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 // is echoed into the DOM id so the hx-get target is unique per page;
 // Events is the bus history snapshot for the requested aggregate.
 type orderEventsVM struct {
-	Body    string
-	OrderID string
-	Events  []pkgEvents.Envelope
+	Body          string
+	OrderID       string
+	Events        []pkgEvents.Envelope
+	EventsEnabled bool
 }
 
 // PageOrderEvents serves GET /orders/{id}/events — the per-order
@@ -201,7 +206,7 @@ type orderEventsVM struct {
 // hx-polled by the order-detail page's timeline block.
 func (s *Set) PageOrderEvents(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm := orderEventsVM{Body: "orderEventsBody", OrderID: id}
+	vm := orderEventsVM{Body: "orderEventsBody", OrderID: id, EventsEnabled: s.EventsEnabled}
 	if _, err := uuid.Parse(id); err == nil {
 		vm.Events = s.Bus.History(id)
 	}
@@ -264,10 +269,11 @@ type inventoryRow struct {
 }
 
 type inventoryVM struct {
-	Body        string
-	Rows        []inventoryRow
-	BackendDown bool
-	Error       string
+	Body          string
+	Rows          []inventoryRow
+	BackendDown   bool
+	Error         string
+	EventsEnabled bool
 }
 
 // PageInventory serves GET /inventory. The inventory service only
@@ -281,7 +287,7 @@ type inventoryVM struct {
 // SKU list is derived from the most recent orders' items; missing
 // inventory rows render as em-dashes (Missing: true).
 func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
-	vm := inventoryVM{Body: "inventoryBody"}
+	vm := inventoryVM{Body: "inventoryBody", EventsEnabled: s.EventsEnabled}
 	list, err := s.Order.List(r.Context(), "", 50)
 	if err != nil {
 		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders (inventory)", err)
@@ -323,10 +329,11 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 }
 
 type paymentsSimVM struct {
-	Body        string
-	InFlight    []paymentsRow
-	BackendDown bool
-	Error       string
+	Body          string
+	InFlight      []paymentsRow
+	BackendDown   bool
+	Error         string
+	EventsEnabled bool
 }
 
 // paymentsRow is the per-order view model for the payments
@@ -357,7 +364,7 @@ type paymentsRow struct {
 func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 	pending, perr := s.Order.List(r.Context(), backend.OrderStatePending, 50)
 	reserved, rerr := s.Order.List(r.Context(), backend.OrderStateReserved, 50)
-	vm := paymentsSimVM{Body: "paymentsSimBody"}
+	vm := paymentsSimVM{Body: "paymentsSimBody", EventsEnabled: s.EventsEnabled}
 	addRows := func(items []backend.Order) {
 		for _, o := range items {
 			vm.InFlight = append(vm.InFlight, paymentsRow{
@@ -459,6 +466,17 @@ func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 // publishes each Kafka envelope onto the bus; this handler
 // relays them to the browser with a 15s heartbeat.
 func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
+	if !s.EventsEnabled {
+		// No Kafka tail is running (KAFKA_BROKERS unset or tail
+		// goroutine didn't start). Returning 503 + JSON lets the
+		// htmx-sse client distinguish "events truly absent" from
+		// "server is broken" without opening an event-stream that
+		// will only ever emit heartbeats.
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "events unavailable"})
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)

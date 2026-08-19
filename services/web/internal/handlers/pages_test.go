@@ -115,6 +115,7 @@ func newTestSetWith(t *testing.T, oc backend.OrderClient, ic backend.InventoryCl
 	t.Helper()
 	bus := events.NewBus()
 	h := handlers.NewSet(oc, &fakePaymentClient{}, ic, bus, slog.Default())
+	h.SetEventsEnabled(true)
 	r := chi.NewRouter()
 	h.Routes(r)
 	return r
@@ -122,6 +123,19 @@ func newTestSetWith(t *testing.T, oc backend.OrderClient, ic backend.InventoryCl
 
 func newTestSet(t *testing.T, oc backend.OrderClient) http.Handler {
 	return newTestSetWith(t, oc, &fakeInventoryClient{})
+}
+
+// newTestSetWithEvents wires a Set with a specific EventsEnabled
+// value so tests can exercise the "Kafka tail disabled" branch
+// (sidebar badge + SSE 503).
+func newTestSetWithEvents(t *testing.T, oc backend.OrderClient, enabled bool) http.Handler {
+	t.Helper()
+	bus := events.NewBus()
+	h := handlers.NewSet(oc, &fakePaymentClient{}, &fakeInventoryClient{}, bus, slog.Default())
+	h.SetEventsEnabled(enabled)
+	r := chi.NewRouter()
+	h.Routes(r)
+	return r
 }
 
 func TestOrdersList_OK(t *testing.T) {
@@ -1216,5 +1230,97 @@ func TestPagePaymentsSim_PartialFailure_HidesRawBody(t *testing.T) {
 	}
 	if strings.Contains(body, "temporarily unavailable") {
 		t.Errorf("4xx leaked as 5xx 'temporarily unavailable': %s", body)
+	}
+}
+
+// TestPageEventsStream_Disabled_Returns503 covers P1.2: when the
+// Kafka tail isn't running (Set.EventsEnabled == false), GET
+// /events/stream short-circuits with 503 + a JSON body of
+// {"error":"events unavailable"} so the htmx-sse client can
+// distinguish "events truly absent" from "server is broken".
+// No SSE stream is opened and no heartbeat is emitted.
+func TestPageEventsStream_Disabled_Returns503(t *testing.T) {
+	srv := httptest.NewServer(newTestSetWithEvents(t, &fakeOrderClient{}, false))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/events/stream")
+	if err != nil {
+		t.Fatalf("GET /events/stream: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d want 503", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type: got %q want application/json", ct)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := strings.TrimSpace(b.String())
+	if body != `{"error":"events unavailable"}` {
+		t.Errorf("body: got %q want %q", body, `{"error":"events unavailable"}`)
+	}
+	if strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("503 response leaked text/event-stream content type: %s", ct)
+	}
+}
+
+// TestSidebar_Disabled_RendersBadge covers P1.2: with
+// Set.EventsEnabled == false, the layout renders a "disconnected"
+// badge next to the "Live events" heading and a muted paragraph
+// explaining why. The page must remain a 200 — the playground is
+// still usable, the operator just won't see live updates.
+func TestSidebar_Disabled_RendersBadge(t *testing.T) {
+	oc := &fakeOrderClient{listResp: &backend.OrderList{Items: []backend.Order{}}}
+	srv := httptest.NewServer(newTestSetWithEvents(t, oc, false))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200 (page must still render)", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "disconnected") {
+		t.Errorf("expected 'disconnected' badge in sidebar: %s", body)
+	}
+	if !strings.Contains(body, `class="badge cancelled"`) {
+		t.Errorf("expected cancelled-badge styling: %s", body)
+	}
+	if !strings.Contains(body, "KAFKA_BROKERS") {
+		t.Errorf("expected explanation referencing KAFKA_BROKERS: %s", body)
+	}
+}
+
+// TestSidebar_Enabled_NoBadge is the regression-pole of the
+// disconnected-badge test: with EventsEnabled == true, the sidebar
+// MUST NOT show the disconnected badge. Without this sister test a
+// naive change that always renders the badge would still pass
+// TestSidebar_Disabled_RendersBadge but break the live-events
+// happy path.
+func TestSidebar_Enabled_NoBadge(t *testing.T) {
+	oc := &fakeOrderClient{listResp: &backend.OrderList{Items: []backend.Order{}}}
+	srv := httptest.NewServer(newTestSetWithEvents(t, oc, true))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, "disconnected") {
+		t.Errorf("did not expect 'disconnected' badge when events enabled: %s", body)
+	}
+	if strings.Contains(body, "KAFKA_BROKERS not set") {
+		t.Errorf("did not expect disconnected explanation when events enabled: %s", body)
 	}
 }

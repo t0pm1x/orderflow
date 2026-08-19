@@ -92,6 +92,7 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("kafka tail: %w", err)
 	}
+	hSet.SetEventsEnabled(stopTail != nil)
 	if stopTail != nil {
 		defer stopTail()
 	}
