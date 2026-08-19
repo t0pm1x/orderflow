@@ -40,7 +40,7 @@ func pingUpstreams(ctx context.Context, urls []string) []string {
 				results <- result{url: u, fail: true}
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				results <- result{url: u, fail: true}
 				return
