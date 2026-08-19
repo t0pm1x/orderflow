@@ -1742,7 +1742,7 @@ func TestPageOrderEvents_Frag_RendersOnlyBody(t *testing.T) {
 	if !strings.Contains(body, `hx-get="/orders/`+idUUID+`/events?frag=1"`) {
 		t.Errorf("frag missing self-polling hx-get: %s", body)
 	}
-	if !strings.Contains(body, `hx-trigger="every 1s"`) {
+	if !strings.Contains(body, `hx-trigger="every 1s, visibility:visible"`) {
 		t.Errorf("frag missing every-1s poll trigger: %s", body)
 	}
 	if !strings.Contains(body, "Saga timeline") {
