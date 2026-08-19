@@ -34,6 +34,199 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-08-19
+
+### Fixed — final-engineering-pass batch
+
+Closes the gaps surfaced by the senior-level audit of v1.1.3:
+the buttons that didn't work on the web UI (`Cancel`, force
+webhook), distributed-systems bugs the saga/outbox poller was
+hiding, and a doc-vs-reality gap in the orderflow architecture
+diagrams.
+
+- **Cancel button on `/orders/{id}` actually cancels** (P0). The
+  Order Service's chi router registered `POST` / `GET` only;
+  clicking Cancel POSTed to a non-existent route and the BFF's
+  `DELETE` proxy got `405 Method Not Allowed` → `502` to the
+  user. Added `Repository.Cancel(ctx, id)` to the order service,
+  wired through `DELETE /v1/orders/{id}` → `204` on success →
+  `404` on terminal/unknown id. The handler and the
+  `PGRepo.Cancel` implementation are atomic: the state transition
+  to `cancelled` and the `OrderCancelled` outbox row commit (or
+  roll back) in the same `pgx.BeginFunc` so the saga's consumer
+  sees exactly one matching downstream event. Caller-supplied
+  tests now verify: happy path, terminal-state guard (no
+  double-emit when the order is already cancelled/confirmed/failed),
+  unknown id → `404`, `Repository.Cancel` emits the correct
+  `OrderCancelled` payload (`reason:"user_request"`,
+  `source:"user"`).
+
+- **Force-webhook buttons on `/payments/sim` work with Redis** (P0).
+  Pre-fix, the BFF's `FireWebhook` issued a POST with no
+  `Idempotency-Key` header. When the Payment Service runs with
+  `REDIS_URL` set, the idempotency middleware returns
+  `400 Idempotency-Key header required`. The web UI's
+  `force ✓ / force ✗` therefore returned `502 Bad Gateway` in
+  every docker-compose run. Fix: `FireWebhook` now sets a
+  deterministic `Idempotency-Key: orderflow-web:{order}:{status}`
+  so the provider mock's idempotency cache can dedupe replays.
+
+### Fixed — outbox reliability (P0/P1)
+
+- **Outbox poller no longer double-fires DLQ on persistent broker
+  failure** (P0). Pre-fix, the poller called
+  `src.MarkFailedTx(ctx, tx, ids)` inside the same
+  `RunInTx` closure that was about to roll back on the publish
+  error; the FAILED transition undid itself and the row stayed
+  `PENDING` forever, so the in-memory `p.attempts` counter
+  climbed across every poll and `DLQ.Send` fired once per
+  ~3 polls (~33 entries in 500 ms). v1.1.3 had a regression net
+  for this that PASSED against the fake source but missed the
+  rollback semantics. v1.1.4 splits the closure's return contract:
+  if any row in the batch crossed `MaxAttempts` the closure
+  returns `nil` (commit), so the FAILED transition is durable and
+  the next poll's `WHERE status = 'PENDING'` filter skips the
+  row; rows still under the cap keep returning `err` (rollback)
+  and stay PENDING. The saga's `MarkFailedTx` SQL is also updated
+  to set `status = 'FAILED'` alongside the existing
+  `attempts++` so the saga source matches the order / payment /
+  inventory sources.
+
+- **Per-Pod `attempts` counter now survives restarts** (P1, the
+  v1.1.2 deferred P1-#3). The retry budget was tracked only in a
+  per-Pod `sync.Map`; a pod restart wiped it and silently reset
+  the budget. Added an `attempts INT NOT NULL DEFAULT 0` and
+  `last_error TEXT` column to `order_outbox`, `payment_outbox`,
+  and `inventory_outbox` (saga already had them) via
+  `0003_outbox_attempts.sql` / `0004_outbox_attempts.sql`.
+  `pkg/outbox.Source` gains an `AttemptsOfTx` method that the
+  poller reads inside the locked `RunInTx` tx; `handlePublishFailure`
+  uses `max(in-memory, DB)` to bootstrap the cache from zero
+  without ever under-counting. The DB value is the source of
+  truth so a fresh pod sees the same retry state as the pod that
+  crashed. `TestPoller_DBQueriesAttemptsForDLQ` is the regression
+  net: pre-seeds `dbAttempts[e1] = MaxAttempts-1` and asserts the
+  very first observed failure crosses the threshold.
+
+### Fixed — concurrency / graceful shutdown
+
+- **Consumer dispatch marks records for unknown event types**
+  (P1). When a record carried an `event_type` no service handles
+  yet (forward-compatible producer), `dispatch` early-returned
+  without calling `markRecord(rec)`. With
+  `kgo.DisableAutoCommit`, only `CommitMarkedOffsets` advances
+  offsets — the unknown record re-fetched on every poll and
+  held the partition hostage forever. Fix: `dispatch` now calls
+  `markRecord(rec)` before the unknown-type early-return AND on
+  decode-error → DLQ paths. New tests pin the contract for both.
+
+- **Payment Repository respects the request context** (P1). The
+  `webhook.Repository` interface omitted `context.Context`, so
+  every PG call used `context.Background()`. Client cancellation
+  (HTTP disconnect, Kafka shutdown) could not abort in-flight
+  queries; the DB backend kept processing requests the client
+  would never read. `Get`/`UpdateStatus`/`UpdateStatusFromNonTerminal`
+  now take and forward `ctx`; the chi handler passes
+  `r.Context()`; the fake-repo test helper updated. No
+  end-user-visible behavior change but observability + shutdown
+  are now correct.
+
+### Fixed — middleware saga hardening
+
+- **Saga StockReleasedHandler uses state-guarded transition** (P2).
+  The handler called `repo.UpdateState(ctx, orderID,
+  sagapkg.StateCompensated)` with no `from` guard; an out-of-order
+  replay of `StockReleased` could in principle overwrite a
+  `Completed` saga. Replaced with `TransitionStateTx(from=
+  Compensated → to=Compensated)` inside a `pgx.BeginFunc`
+  (matches the rest of the saga handlers). Defensive only — the
+  normal event flow makes the race unreachable — but the change
+  closes the door for free.
+
+### Fixed — infrastructure (P1/P2)
+
+- **`kubectl kustomize deploy/kustomize/overlays/{dev,staging,prod}`
+  now renders** (P1). Pre-fix the base was a comment-only stub
+  with a `for svc in ... helm template ...` instruction; without
+  `helm` on the controller's PATH every overlay failed with
+  *"no resource matches strategic merge patch ..."*. v1.1.4 ships
+  a hand-rolled `deploy/kustomize/base/services.yaml` mirroring
+  the helm-template shape, fixes the per-overlay `replicas-` and
+  `resources-` patch targets to the base (un-prefixed) Deployment
+  names so `namePrefix` works correctly, drops the redundant
+  per-overlay `namespace.yaml`, moves HPA + PDB to
+  `resources:` (they're new resources, not patches), and updates
+  `deploy/kustomize/README.md` with the regeneration procedure.
+
+- **Dead code / doc drift removed** (P2). Deleted
+  `services/inventory/internal/redis/doc.go` and
+  `services/order/internal/saga/doc.go` — doc-only stubs with no
+  implementation. The redis package documented a Redis reservation
+  store that is not implemented (the actual reservation lives in
+  `internal/lock` via Postgres `stock_items`); the saga package
+  was a one-line marker for sub-stage 3.9 that never landed any
+  code. Updated `docs/architecture/c4-level-2.puml` and
+  `c4-level-3-inventory.puml` to remove the Redis-reservation
+  component and the misleading `Reservations with TTL` relationship;
+  Redis is now correctly described as `Idempotency cache +
+  consumer dedup`.
+
+### Tests
+
+- `pkg/outbox/poller_test.go`:
+  `TestPoller_DoesNotDoubleDLQOnPersistentBrokerDown` — 500 ms
+  persistent-publisher-failure run, asserts `dlq.sent == 1`
+  (pre-fix: ~33).
+  `TestPoller_DBQueriesAttemptsForDLQ` — pre-seeds
+  `dbAttempts[id] = MaxAttempts-1`, asserts the FIRST poll
+  crosses the threshold (not after `MaxAttempts` new failures).
+  `TestPoller_RetriesOnPublishError` updated to use
+  `MaxAttempts=1000` so it stays in the under-cap branch and
+  asserts the rollback path.
+
+- `pkg/consumer/consumer_test.go`:
+  `TestDispatch_UnknownEventTypeStillMarksForCommit` and
+  `TestDispatch_DecodeErrorMarksRecord` — regression nets for
+  the v1.1.4 unknown-event-type and decode-error mark
+  behavior.
+
+- `services/web/internal/backend/payment_test.go`:
+  `TestPaymentClient_FireWebhook_SetsIdempotencyKey` — pins the
+  Idempotency-Key determinism (replay-safe via
+  `orderflow-web:{order}:{status}`).
+
+- `services/order/internal/api/handler_test.go` and
+  `services/order/internal/repository/pg_repo_test.go`:
+  `TestCancel_OK/NotFound/InvalidID`,
+  `TestPGRepo_Cancel_TransitionsAndEmitsEvent`,
+  `TestPGRepo_Cancel_AlreadyTerminalReturnsErrNotFound`,
+  `TestPGRepo_Cancel_UnknownIDReturnsErrNotFound` — handler-level
+  + PG-real (skip without `DATABASE_URL`) regression nets for the
+  cancel endpoint.
+
+### Migration
+
+```sql
+-- applies to order, payment, inventory (saga already has the
+-- columns since sub-stage 3.10.e):
+ALTER TABLE <svc>_outbox
+    ADD COLUMN IF NOT EXISTS attempts   INT    NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_error TEXT;
+
+File names (lexically sorted by the harness testcontainers
+loader): `services/order/migrations/0003_outbox_attempts.sql`,
+`services/payment/migrations/0004_outbox_attempts.sql`
+(payment already has `0003_payment_order_unique.sql`),
+`services/inventory/migrations/0004_outbox_attempts.sql`
+(inventory already has `0003_seed.sql`).
+```
+
+Pre-existing rows have `attempts=0`; their first failure is
+counted as the first attempt under the new budget. Existing
+`markFailed.sql` updated to `SET status='FAILED', attempts =
+attempts + 1, last_error = COALESCE($1, last_error) WHERE ...
+status = 'PENDING'`.
+
 ## [1.1.3] - 2026-08-19
 
 ### Fixed
