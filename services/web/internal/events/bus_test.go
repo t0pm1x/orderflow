@@ -1,6 +1,7 @@
 package events_test
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -81,5 +82,63 @@ func TestBus_BufferOverflow_DropsOldest(t *testing.T) {
 	case <-ch:
 	case <-time.After(time.Second):
 		t.Fatal("subscriber starved")
+	}
+}
+
+func TestBus_History_PerAggregate(t *testing.T) {
+	b := events.NewBus()
+	defer b.Close()
+	for i := 0; i < 50; i++ {
+		agg := "ord-A"
+		if i%2 == 0 {
+			agg = "ord-B"
+		}
+		b.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{EventID: "e", EventType: "X", AggregateID: agg}})
+	}
+	hA := b.History("ord-A")
+	hB := b.History("ord-B")
+	if len(hA) != 25 || len(hB) != 25 {
+		t.Fatalf("expected 25 each, got A=%d B=%d", len(hA), len(hB))
+	}
+	if h := b.History("ord-missing"); len(h) != 0 {
+		t.Fatalf("expected empty history for unknown aggregate, got %d", len(h))
+	}
+}
+
+func TestBus_History_OccurrenceOrder(t *testing.T) {
+	b := events.NewBus()
+	defer b.Close()
+	for i := 0; i < 10; i++ {
+		b.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{EventID: fmt.Sprintf("e%02d", i), EventType: "X", AggregateID: "ord"}})
+	}
+	h := b.History("ord")
+	if len(h) != 10 {
+		t.Fatalf("expected 10 events, got %d", len(h))
+	}
+	for i, e := range h {
+		want := fmt.Sprintf("e%02d", i)
+		if e.EventID != want {
+			t.Fatalf("position %d: want EventID=%s got %s", i, want, e.EventID)
+		}
+	}
+}
+
+func TestBus_RingOverflow(t *testing.T) {
+	b := events.NewBus()
+	defer b.Close()
+	for i := 0; i < events.RingCap()*3; i++ {
+		b.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{EventID: "x", EventType: "X", AggregateID: "ord"}})
+	}
+	h := b.History("ord")
+	if len(h) > events.RingCap() {
+		t.Fatalf("history exceeded ringCap: %d", len(h))
+	}
+	// Sanity: 3*ringCap publishes must keep at least ringCap newest events.
+	if len(h) < events.RingCap() {
+		t.Fatalf("expected history to retain ringCap newest, got %d", len(h))
+	}
+	// The newest event must be the last one published.
+	if h[len(h)-1].EventID != "x" {
+		t.Fatalf("expected newest event at tail, got %s", h[len(h)-1].EventID)
 	}
 }

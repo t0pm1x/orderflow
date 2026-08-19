@@ -8,6 +8,24 @@ import (
 	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
 )
 
+// ringCap is the upper bound on the per-process event ring buffer.
+// When the ring is full, the oldest 10% are dropped in one slice
+// trim to amortize the cost.
+const ringCap = 200
+
+// RingCap reports the maximum number of events the ring buffer
+// retains. Exported so external tests can assert overflow behavior
+// without copying the magic number.
+func RingCap() int { return ringCap }
+
+// ringEntry is a single (aggregate, envelope) pair held in the
+// bounded ring. The aggregate ID is stored alongside the envelope
+// so History can filter without re-marshalling.
+type ringEntry struct {
+	aggregateID string
+	env         pkgEvents.Envelope
+}
+
 // BusEvent is the value type passed through the bus. The Envelope is
 // re-used from pkg/platform/events so consumers can unmarshal the
 // exact Kafka record body without translating types.
@@ -16,16 +34,19 @@ type BusEvent struct {
 }
 
 // Bus fans events out to subscribers. Slow consumers drop oldest
-// first, never blocking the publisher.
+// first, never blocking the publisher. A bounded ring buffer mirrors
+// the most recent events so late-arriving HTTP clients can fetch
+// historical events per-aggregate via History.
 type Bus struct {
 	mu   sync.Mutex
 	subs map[chan BusEvent]struct{}
+	ring []ringEntry
 	done chan struct{}
 }
 
 // NewBus constructs a fresh bus.
 func NewBus() *Bus {
-	return &Bus{subs: map[chan BusEvent]struct{}{}, done: make(chan struct{})}
+	return &Bus{subs: map[chan BusEvent]struct{}{}, ring: make([]ringEntry, 0, ringCap), done: make(chan struct{})}
 }
 
 // Subscribe returns a buffered channel that receives every event
@@ -53,6 +74,9 @@ func (b *Bus) Subscribe() (chan BusEvent, func()) {
 // Publish sends e to every current subscriber. If a subscriber's
 // buffer is full, the OLDEST queued event on that channel is
 // dropped to make room (subscriber is too slow; keep them current).
+// The event is also appended to the bounded ring buffer so it can
+// be retrieved via History; when the ring overflows, the oldest
+// 10% entries are dropped in one slice trim.
 func (b *Bus) Publish(e BusEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -74,6 +98,27 @@ func (b *Bus) Publish(e BusEvent) {
 			}
 		}
 	}
+	b.ring = append(b.ring, ringEntry{aggregateID: e.Envelope.AggregateID, env: e.Envelope})
+	if len(b.ring) > ringCap {
+		drop := ringCap / 10
+		b.ring = b.ring[drop:]
+	}
+}
+
+// History returns the most recent events for aggregateID from the
+// bounded ring buffer, in occurrence order (oldest first). Returns
+// an empty slice when the aggregate has no entries. The ring is
+// trimmed on overflow so the returned slice is bounded by ringCap.
+func (b *Bus) History(aggregateID string) []pkgEvents.Envelope {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]pkgEvents.Envelope, 0)
+	for _, e := range b.ring {
+		if e.aggregateID == aggregateID {
+			out = append(out, e.env)
+		}
+	}
+	return out
 }
 
 // Close marks the bus as closed. Subsequent Publish is a no-op;
