@@ -151,23 +151,23 @@ function Start-Svc {
 
 Start-Svc 'order' "$bin\order.exe" @{
     DATABASE_URL = 'postgres://orderflow:orderflow@127.0.0.1:5432/order_order?sslmode=disable'
-    KAFKA_BROKER = '127.0.0.1:9092'
+    KAFKA_BROKERS = '127.0.0.1:9092'
     HTTP_ADDR    = '127.0.0.1:8081'
 }
 Start-Svc 'payment' "$bin\payment.exe" @{
     DATABASE_URL = 'postgres://orderflow:orderflow@127.0.0.1:5433/payment_payment?sslmode=disable'
-    KAFKA_BROKER = '127.0.0.1:9092'
+    KAFKA_BROKERS = '127.0.0.1:9092'
     HTTP_ADDR    = '127.0.0.1:8082'
 }
 Start-Svc 'inventory' "$bin\inventory.exe" @{
     DATABASE_URL = 'postgres://orderflow:orderflow@127.0.0.1:5434/inventory_inventory?sslmode=disable'
-    KAFKA_BROKER = '127.0.0.1:9092'
+    KAFKA_BROKERS = '127.0.0.1:9092'
     REDIS_URL    = 'redis://127.0.0.1:6379'
     HTTP_ADDR    = '127.0.0.1:8083'
 }
 Start-Svc 'saga' "$bin\saga.exe" @{
     DATABASE_URL = 'postgres://orderflow:orderflow@127.0.0.1:5432/order_order?sslmode=disable'
-    KAFKA_BROKER = '127.0.0.1:9092'
+    KAFKA_BROKERS = '127.0.0.1:9092'
     HTTP_ADDR    = '127.0.0.1:8084'
 }
 Start-Svc 'web' "$bin\web.exe" @{

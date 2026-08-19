@@ -62,7 +62,8 @@ func ListenAddr() string {
 func Run(ctx context.Context) error {
 	logger := slog.Default()
 	dbURL := envOrDefault("DATABASE_URL", "")
-	broker := envOrDefault("KAFKA_BROKER", "")
+	brokers := kafkaBrokers()
+	broker := strings.Join(brokers, ",")
 	groupID := envOrDefault("KAFKA_GROUP_ID", "orderflow-order")
 	httpAddr := envOrDefault("HTTP_ADDR", ":8081")
 
@@ -86,7 +87,7 @@ func Run(ctx context.Context) error {
 	}
 	defer func() { _ = traceShutdown(context.Background()) }()
 
-	outboxClose, pool, err := startOutbox(ctx, logger, dbURL, broker, httpAddr)
+	outboxClose, pool, err := startOutbox(ctx, logger, dbURL, brokers, httpAddr)
 	if err != nil {
 		return fmt.Errorf("outbox start: %w", err)
 	}
@@ -112,21 +113,21 @@ func Run(ctx context.Context) error {
 }
 
 // startOutbox brings up the poller + metrics HTTP server. Returns
-// a no-op closeFn when DATABASE_URL or KAFKA_BROKER are unset; the
+// a no-op closeFn when DATABASE_URL or KAFKA_BROKERS are unset; the
 // HTTP server still starts as long as HTTP_ADDR is non-empty, so
 // /healthz and /metrics remain reachable in disabled mode. The
 // returned *pgxpool.Pool is non-nil only when the outbox is on
-// (both DATABASE_URL and KAFKA_BROKER set); it is exposed so the
+// (both DATABASE_URL and KAFKA_BROKERS set); it is exposed so the
 // consumer handler can update the orders table on the same pool
 // the API uses.
-func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAddr string) (func(context.Context) error, *pgxpool.Pool, error) {
+func startOutbox(ctx context.Context, logger *slog.Logger, dbURL string, brokers []string, httpAddr string) (func(context.Context) error, *pgxpool.Pool, error) {
 	var (
 		wg       sync.WaitGroup
 		httpSrv  *http.Server
 		ln       net.Listener
 		pool     *pgxpool.Pool
 		poller   *pkgoutbox.Poller
-		outboxOn = dbURL != "" && broker != ""
+		outboxOn = dbURL != "" && len(brokers) > 0
 	)
 
 	if outboxOn {
@@ -141,7 +142,7 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 		}
 
 		var kafkaClient *events.Client
-		kafkaClient, err = events.NewClient(strings.Split(broker, ","), "order")
+		kafkaClient, err = events.NewClient(brokers, "order")
 		if err != nil {
 			pool.Close()
 			return nil, nil, fmt.Errorf("kafka client: %w", err)
@@ -173,7 +174,7 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL, broker, httpAd
 			}
 		}()
 	} else {
-		logger.Info("outbox disabled: DATABASE_URL or KAFKA_BROKER not set")
+		logger.Info("outbox disabled: DATABASE_URL or KAFKA_BROKERS not set")
 	}
 
 	if httpAddr != "" {
@@ -252,6 +253,21 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// kafkaBrokers returns the list of Kafka bootstrap brokers. Prefers
+// KAFKA_BROKERS (CSV, e.g. "host1:9092,host2:9092"); falls back to
+// the legacy singular KAFKA_BROKER for back-compat. Returns nil when
+// both are unset (service runs in disabled mode).
+func kafkaBrokers() []string {
+	raw := os.Getenv("KAFKA_BROKERS")
+	if raw == "" {
+		raw = os.Getenv("KAFKA_BROKER")
+	}
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, ",")
 }
 
 func redact(s string) string {

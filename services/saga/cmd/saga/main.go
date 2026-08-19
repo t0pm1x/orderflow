@@ -68,7 +68,8 @@ func Run(ctx context.Context) error {
 	logger := slog.Default()
 	httpAddr := envOrDefault("HTTP_ADDR", ":8084")
 	dbURL := envOrDefault("DATABASE_URL", "")
-	broker := envOrDefault("KAFKA_BROKER", "")
+	brokers := kafkaBrokers()
+	broker := strings.Join(brokers, ",")
 	groupID := envOrDefault("KAFKA_GROUP_ID", "orderflow-saga")
 
 	// Seed OTLP defaults so pkg/platform/otel.go (which reads them via os.Getenv) dials otel-collector:4317 when no override is set; export OTEL_EXPORTER=stdout for local dev.
@@ -92,7 +93,7 @@ func Run(ctx context.Context) error {
 	defer func() { _ = traceShutdown(context.Background()) }()
 
 	// Bring up the runtime: DB pool + consumer + outbox poller + TTL sweep.
-	// Disabled (no-op close) when DATABASE_URL or KAFKA_BROKER are unset,
+	// Disabled (no-op close) when DATABASE_URL or KAFKA_BROKERS are unset,
 	// mirroring the order/payment/inventory services.
 	var (
 		wg            sync.WaitGroup
@@ -123,7 +124,7 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("consumer start: %w", err)
 		}
 
-		outboxClose, err = startSagaOutbox(ctx, logger, pool, broker, &wg)
+		outboxClose, err = startSagaOutbox(ctx, logger, pool, brokers, &wg)
 		if err != nil {
 			_ = consumerClose(context.Background())
 			pool.Close()
@@ -139,7 +140,7 @@ func Run(ctx context.Context) error {
 			ttl.Run(ctx)
 		}()
 	} else {
-		logger.Info("saga runtime disabled: DATABASE_URL or KAFKA_BROKER not set")
+		logger.Info("saga runtime disabled: DATABASE_URL or KAFKA_BROKERS not set")
 	}
 
 	if httpAddr == "" {
@@ -189,8 +190,8 @@ func Run(ctx context.Context) error {
 // caller passes a WaitGroup so the poller goroutine is tracked and
 // the close fn can wait for it on shutdown. Mirrors
 // services/order/cmd/order/main.go's startOutbox + WaitGroup pattern.
-func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, broker string, wg *sync.WaitGroup) (func(context.Context) error, error) {
-	kafkaClient, err := events.NewClient(strings.Split(broker, ","), "saga")
+func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, brokers []string, wg *sync.WaitGroup) (func(context.Context) error, error) {
+	kafkaClient, err := events.NewClient(brokers, "saga")
 	if err != nil {
 		return nil, fmt.Errorf("kafka client: %w", err)
 	}
@@ -279,4 +280,19 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// kafkaBrokers returns the list of Kafka bootstrap brokers. Prefers
+// KAFKA_BROKERS (CSV, e.g. "host1:9092,host2:9092"); falls back to
+// the legacy singular KAFKA_BROKER for back-compat. Returns nil when
+// both are unset (service runs in disabled mode).
+func kafkaBrokers() []string {
+	raw := os.Getenv("KAFKA_BROKERS")
+	if raw == "" {
+		raw = os.Getenv("KAFKA_BROKER")
+	}
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, ",")
 }

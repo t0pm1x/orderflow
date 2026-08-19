@@ -69,20 +69,20 @@ make_or_gobuild
 echo "==> starting order, payment, inventory, saga in background"
 export OTEL_EXPORTER=stdout
 DATABASE_URL="postgres://orderflow:orderflow@localhost:5432/order_order?sslmode=disable" \
-  KAFKA_BROKER="localhost:9092" \
+  KAFKA_BROKERS="localhost:9092" \
   HTTP_ADDR=":8081" \
   ./bin/order    >"${LOG_DIR}/order.log"    2>&1 & ORDER_PID=$!
 DATABASE_URL="postgres://orderflow:orderflow@localhost:5433/payment_payment?sslmode=disable" \
-  KAFKA_BROKER="localhost:9092" \
+  KAFKA_BROKERS="localhost:9092" \
   HTTP_ADDR=":8082" \
   ./bin/payment  >"${LOG_DIR}/payment.log"  2>&1 & PAYMENT_PID=$!
 DATABASE_URL="postgres://orderflow:orderflow@localhost:5434/inventory_inventory?sslmode=disable" \
-  KAFKA_BROKER="localhost:9092" \
+  KAFKA_BROKERS="localhost:9092" \
   REDIS_URL="redis://localhost:6379/0" \
   HTTP_ADDR=":8083" \
   ./bin/inventory>"${LOG_DIR}/inventory.log" 2>&1 & INV_PID=$!
 DATABASE_URL="postgres://orderflow:orderflow@localhost:5432/order_order?sslmode=disable" \
-  KAFKA_BROKER="localhost:9092" \
+  KAFKA_BROKERS="localhost:9092" \
   HTTP_ADDR=":8084" \
   ./bin/saga     >"${LOG_DIR}/saga.log"     2>&1 & SAGA_PID=$!
 
