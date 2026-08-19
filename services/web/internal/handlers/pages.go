@@ -24,20 +24,52 @@ type orderNewVM struct {
 	IdempotencyToken string
 	Error           string
 	EventsEnabled   bool
+	// Prefill is the optional ?prefill=happy|fail query value.
+	// When set, the template pre-populates SKU/Quantity/UnitPriceCents
+	// with the demo defaults AND renders a hidden `last_four` input
+	// (4242 for happy, 0001 for compensation) so the operator can
+	// submit the demo order in a single click. The string is echoed
+	// back into the form on validation failure so the hidden field
+	// survives a 400 round-trip.
+	Prefill string
+	// LastFour is the value of the hidden last_four form field on
+	// the last render, used to re-render the same hidden input on a
+	// validation-failure round-trip so the operator doesn't lose the
+	// prefill state when the backend rejects their submit.
+	LastFour string
 }
 
 // PageOrderNew serves GET /orders/new — renders the create-order
 // form. Always 200; the form is empty until the user submits.
 // Generates a fresh idempotency token on every render so the
 // resulting POST is unique; the BFF replay cache catches replays
-// within the replay window.
-func (s *Set) PageOrderNew(w http.ResponseWriter, _ *http.Request) {
+// within the replay window. When ?prefill=happy|fail is present
+// the form is pre-populated with demo defaults (SKU=SKU-DEMO,
+// quantity=1, unit_price_cents=1999) and a hidden last_four
+// input (4242 or 0001) is rendered so the operator can
+// one-click the happy/compensation demo flow.
+func (s *Set) PageOrderNew(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = s.Templates.ExecuteTemplate(w, "layout", orderNewVM{
+	vm := orderNewVM{
 		Body:             "orderNewBody",
 		IdempotencyToken: newIdempotencyToken(),
 		EventsEnabled:    s.EventsEnabled,
-	})
+	}
+	switch r.URL.Query().Get("prefill") {
+	case "happy":
+		vm.Prefill = "happy"
+		vm.SKU = "SKU-DEMO"
+		vm.Quantity = 1
+		vm.UnitPriceCents = 1999
+		vm.LastFour = "4242"
+	case "fail":
+		vm.Prefill = "fail"
+		vm.SKU = "SKU-DEMO"
+		vm.Quantity = 1
+		vm.UnitPriceCents = 1999
+		vm.LastFour = "0001"
+	}
+	_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 }
 
 // ActionOrderSubmit serves POST /v1/orders — form submission for
@@ -47,7 +79,9 @@ func (s *Set) PageOrderNew(w http.ResponseWriter, _ *http.Request) {
 // rejects forms that omit the `idempotency_token` field (400),
 // rejects repeat submissions of the same token within the
 // replay window (409), and rejects non-UUID `customer_id`
-// values (400).
+// values (400). The hidden `last_four` field (set by the
+// prefill hero CTAs) is read and echoed onto the VM so a
+// validation-failure round-trip preserves the prefill state.
 func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -60,6 +94,19 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		CustomerID:       r.FormValue("customer_id"),
 		IdempotencyToken: newIdempotencyToken(),
 		EventsEnabled:    s.EventsEnabled,
+		LastFour:         r.FormValue("last_four"),
+	}
+	// Derive Prefill from the echoed last_four so the hidden
+	// field re-renders on validation failure. The mapping is
+	// the inverse of PageOrderNew: a posted 4242 → "happy",
+	// a posted 0001 → "fail", anything else → "". This way
+	// the form stays in the same demo state across the
+	// submit/validate/re-render round-trip.
+	switch vm.LastFour {
+	case "4242":
+		vm.Prefill = "happy"
+	case "0001":
+		vm.Prefill = "fail"
 	}
 	if up := r.FormValue("unit_price_cents"); up != "" {
 		n, err := strconv.ParseInt(up, 10, 64)

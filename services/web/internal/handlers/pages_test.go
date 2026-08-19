@@ -236,6 +236,235 @@ func TestOrderNew_GET(t *testing.T) {
 	}
 }
 
+// TestOrdersList_Empty_RendersHero covers P2.1: the orders list
+// page's empty state renders a hero card (3 steps + 2 CTAs) instead
+// of the prior "No orders yet" one-liner. The first-time-user
+// impression now explains what the playground is, what to click,
+// and how the saga flows end-to-end. Without the hero the empty
+// state is functional but opaque — a visitor landing on / has no
+// idea what to do next.
+func TestOrdersList_Empty_RendersHero(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: nil},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	for _, want := range []string{
+		"OrderFlow playground",
+		"hero-steps",
+		"last_four=4242",
+		"last_four=0001",
+		`href="/orders/new?prefill=happy"`,
+		`href="/orders/new?prefill=fail"`,
+		"compensation",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("hero missing %q: %s", want, body)
+		}
+	}
+}
+
+// TestOrdersList_NonEmpty_NoHero is the regression-pole of the
+// hero test: with at least one order in the list, the hero MUST
+// NOT render. The hero is a first-impression affordance; once
+// the operator has data, the list is the page. Without this
+// sister test a naive change that always renders the hero would
+// pass TestOrdersList_Empty_RendersHero but bury the table on
+// every subsequent visit.
+func TestOrdersList_NonEmpty_NoHero(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "seed-1", State: backend.OrderStatePending,
+				Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}}},
+		}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "seed-1") {
+		t.Errorf("expected the order table to render: %s", body)
+	}
+	if strings.Contains(body, "hero-steps") {
+		t.Errorf("hero leaked into non-empty list: %s", body)
+	}
+	if strings.Contains(body, "OrderFlow playground") {
+		t.Errorf("hero heading leaked into non-empty list: %s", body)
+	}
+}
+
+// TestOrderNew_PrefillHappy_RendersHidden4242 covers P2.1: a
+// first-time user clicking "+ New order (happy path)" lands on
+// /orders/new?prefill=happy and the rendered form must carry a
+// hidden `last_four=4242` input so the next submit tells the
+// payment mock to take the success branch. Without the hidden
+// field, prefill=happy only pre-populates the visible fields and
+// the operator has to type the card digits by hand.
+func TestOrderNew_PrefillHappy_RendersHidden4242(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/new?prefill=happy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, `name="last_four" value="4242"`) {
+		t.Errorf("prefill=happy missing hidden last_four=4242: %s", body)
+	}
+}
+
+// TestOrderNew_PrefillHappy_PrepopulatesFields covers P2.1: the
+// prefill path also pre-populates the visible fields (SKU=SKU-DEMO,
+// quantity=1, unit_price_cents=1999) so the form is one-click
+// submit. The "happy" path is a demo button — the operator
+// should not have to type anything.
+func TestOrderNew_PrefillHappy_PrepopulatesFields(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/new?prefill=happy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	for _, want := range []string{
+		`id="sku" name="sku" required minlength="1" maxlength="64" value="SKU-DEMO"`,
+		`id="quantity" name="quantity" type="number" required min="1" max="10000" value="1"`,
+		`id="unit_price_cents" name="unit_price_cents" type="number" min="0" value="1999"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("prefill=happy missing %q: %s", want, body)
+		}
+	}
+}
+
+// TestOrderNew_PrefillFail_RendersHidden0001 covers P2.1: the
+// "compensation" demo button must render a hidden
+// last_four=0001 (the payment mock's decline suffix) so the
+// subsequent submit triggers the saga's undo path. A regression
+// that hardcodes 4242 for both branches would silently route
+// prefill=fail into the happy path.
+func TestOrderNew_PrefillFail_RendersHidden0001(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/new?prefill=fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, `name="last_four" value="0001"`) {
+		t.Errorf("prefill=fail missing hidden last_four=0001: %s", body)
+	}
+}
+
+// TestOrderNew_NoPrefill_NoHiddenField is the regression-pole of
+// the prefill tests: a plain /orders/new visit (no query param)
+// must NOT carry a hidden last_four field. Without this sister
+// test a naive change that always renders a hidden last_four
+// (empty value) would let any form post carry a phantom field
+// that the order service would forward as last_four="" — which
+// the saga would then derive from the order id (legacy v1.x
+// behavior), defeating the "explicit last_four" contract that
+// the prefill UX is meant to demonstrate.
+func TestOrderNew_NoPrefill_NoHiddenField(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if strings.Contains(body, `name="last_four"`) {
+		t.Errorf("non-prefill GET /orders/new leaked a hidden last_four field: %s", body)
+	}
+}
+
+// TestOrderSubmit_PrefillHappy_PreservesLastFourOnError covers the
+// validation-failure round-trip: when a prefill=happy submit
+// posts last_four=4242 but the request is otherwise invalid
+// (e.g. blank SKU), the form re-renders with the 400 banner
+// AND the hidden last_four=4242 so the operator doesn't lose
+// the demo state. Without this echo, a single typo would
+// require the operator to click back to / and pick "happy path"
+// again. The Prefill field on the VM is derived from the echoed
+// LastFour (4242 → "happy", 0001 → "fail") so the template's
+// {{if eq .Prefill "happy"}} branch re-fires.
+func TestOrderSubmit_PrefillHappy_PreservesLastFourOnError(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "should-not-be-called",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	// SKU deliberately blank to force the "required" 400.
+	form := strings.NewReader("sku=&quantity=1&last_four=4242&idempotency_token=submit-prefill-echo-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	if oc.submitCalls() != 0 {
+		t.Errorf("Submit called %d times, want 0 (validation error must NOT hit backend)", oc.submitCalls())
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, `name="last_four" value="4242"`) {
+		t.Errorf("validation-error re-render lost the hidden last_four=4242: %s", body)
+	}
+}
+
 func TestOrderSubmit_OK_RedirectsViaHTMX(t *testing.T) {
 	oc := &fakeOrderClient{
 		submitResp: &backend.Order{

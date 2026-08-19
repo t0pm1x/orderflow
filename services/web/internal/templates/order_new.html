@@ -5,6 +5,8 @@
   <form class="sheet" method="post" action="/v1/orders"
         hx-post="/v1/orders" hx-target="this" hx-swap="outerHTML">
     <input type="hidden" name="idempotency_token" value="{{.IdempotencyToken}}">
+    {{if eq .Prefill "happy"}}<input type="hidden" name="last_four" value="4242">{{end}}
+    {{if eq .Prefill "fail"}}<input type="hidden" name="last_four" value="0001">{{end}}
     <div>
       <label for="sku">SKU</label>
       <input id="sku" name="sku" required minlength="1" maxlength="64" value="{{.SKU}}">

@@ -8,7 +8,7 @@
     {{if .BackendDown}}
     <div class="error">Backend unavailable: {{.Error}}</div>
     {{else if not .Orders}}
-    <p class="muted">No orders yet. Click <strong>+ New order</strong> to start.</p>
+    {{template "orderHeroBody" .}}
     {{else}}
     <table>
       <thead>

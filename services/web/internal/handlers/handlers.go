@@ -66,7 +66,7 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 		logger = slog.Default()
 	}
 	t := template.New("").Funcs(template.FuncMap{"timeAgo": timeAgo})
-	t = template.Must(t.ParseFS(templates.FS, "layout.html", "_icons.html", "orders_list.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
+	t = template.Must(t.ParseFS(templates.FS, "layout.html", "_icons.html", "orders_list.html", "order_hero.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
 	return &Set{
 		Order:     order,
 		Payment:   payment,
