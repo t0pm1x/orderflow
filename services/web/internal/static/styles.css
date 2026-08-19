@@ -21,7 +21,7 @@ a:hover { text-decoration: underline; }
 .event-OrderConfirmed { color: var(--good); }
 .event-OrderCancelled, .event-PaymentFailed { color: var(--bad); }
 .event-OrderCreated, .event-StockReserveRequested, .event-PaymentRequested, .event-StockReleaseRequested { color: var(--warn); }
-table { border-collapse: collapse; width: 100%; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
 th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
 th { color: var(--muted); font-weight: 600; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
