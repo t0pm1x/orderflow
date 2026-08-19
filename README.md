@@ -25,12 +25,13 @@
 ### Quickstart
 ```bash
 # Easy run — full stack on your laptop in one command (requires Docker + Go + Make)
-bash scripts/run.sh                                                       # macOS / Linux / WSL
+bash scripts/run.sh                                                       # macOS / Linux / WSL with a real Linux distro
 powershell -ExecutionPolicy Bypass -File scripts\run.ps1                  # Windows (PowerShell 5.1 default; or `pwsh ...` if you have 7+)
 # tear down:  bash scripts/stop.sh  /  powershell scripts\stop.ps1
 
-# Local happy-path demo (requires docker + 8GB RAM)
-bash docs/demo/demo.sh
+# Narrated demo (scripted happy-path with live event tail in the web UI)
+bash docs/demo/demo.sh                                                    # macOS / Linux / WSL
+powershell -ExecutionPolicy Bypass -File scripts\run-demo.ps1             # Windows (uses Git Bash at C:\Program Files\Git\bin\bash.exe)
 
 # E2E test suite (requires docker)
 make e2e
@@ -45,6 +46,15 @@ make smoke-k8s
 make record
 ```
 
+> **Windows + bash:** `bash` on a default Windows PATH routes through
+> the WSL shim, which only works if a real Linux distro is installed
+> (the docker-desktop WSL2 backend alone is not enough). If you have
+> Git Bash installed (`C:\Program Files\Git\bin\bash.exe`) it's used by
+> `scripts/run-demo.ps1` automatically; for one-off bash invocations
+> call it by full path or add Git's `bin` to your PATH. PowerShell
+> scripts (`scripts\run.ps1`, `scripts\run-demo.ps1`) have no such
+> dependency.
+
 See [RUN.md](RUN.md) for prerequisites, what gets started, smoke-test
 curl commands, and the troubleshooting matrix. The easy-run script
 brings up the same infra as `docs/demo/demo.sh` but wraps the
@@ -53,10 +63,11 @@ command with healthchecks.
 
 ### Web playground (optional)
 
-After `bash docs/demo/demo.sh`, the orderflow-web UI is also available at
-[http://localhost:8085](http://localhost:8085) — list orders, create new
-ones, fire a forced-fail payment webhook, and watch `order-events` arrive
-in the sidebar.
+After the easy-run script (or `bash docs/demo/demo.sh` /
+`powershell scripts\run-demo.ps1`), the orderflow-web UI is also
+available at [http://localhost:8085](http://localhost:8085) — list
+orders, create new ones, fire a forced-fail payment webhook, and
+watch `order-events` arrive in the sidebar.
 
 Build it on its own: `make run-web` (requires Order/Payment/Inventory
 services to already be running on :8081/:8082/:8083).

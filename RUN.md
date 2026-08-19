@@ -93,6 +93,8 @@ Browse to [http://127.0.0.1:8085](http://127.0.0.1:8085) — list, create, cance
 | `port already in use` for `:8081..8085` | A previous `scripts/run.*` invocation left stale binaries behind | run `scripts/stop.*` first (or just kill the offending process) |
 | `Kafka topic ... doesn't exist` in service logs | `kafka-init` didn't run before the services booted (shouldn't happen — the script waits for redpanda health before starting services) | `bash scripts/stop.sh && bash scripts/run.sh` to restart cleanly |
 | `make build` fails on Windows | GNU Make missing | `choco install make` (Windows) or use `make.exe` from a Git for Windows install |
+| `bash: docs/demo/demo.sh: No such file or directory` on Windows | `bash` resolved to the WSL shim, which has no real Linux distro installed (Docker Desktop's WSL2 backend alone isn't enough) | use `powershell -ExecutionPolicy Bypass -File scripts\run-demo.ps1` instead (it routes through Git Bash at `C:\Program Files\Git\bin\bash.exe`), or install Ubuntu from the MS Store and `wsl --set-default ubuntu` |
+| `wsl: ... NAT mode ... /bin/bash not found` | Same as above — WSL is enabled (the shim exists) but no Linux distro is registered, so the shim has nowhere to dispatch | same fix |
 | Web UI loads with no orders | `web` started before `order` / `payment` / `inventory` finished booting | refresh; the BFF's HTTP probes only check `/healthz` liveness, not the order service's REST readiness |
 
 ## How the script handles upgrades
