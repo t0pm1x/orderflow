@@ -143,7 +143,7 @@ func TestBus_RingOverflow(t *testing.T) {
 	}
 }
 
-func TestBus_ConcurrentPublishSubscribe(t *testing.T) {
+func TestBus_ConcurrentPublishSubscribe(_ *testing.T) {
 	b := events.NewBus()
 	defer b.Close()
 	var wg sync.WaitGroup
@@ -168,7 +168,7 @@ func TestBus_ConcurrentPublishSubscribe(t *testing.T) {
 // closed channel" without the per-channel defer recover. The test
 // asserts no panic fires by completing cleanly under -race across
 // many concurrent publishers and a mid-flight Close.
-func TestBus_CloseRaceWithPublish(t *testing.T) {
+func TestBus_CloseRaceWithPublish(_ *testing.T) {
 	const trials = 5
 	for trial := 0; trial < trials; trial++ {
 		b := events.NewBus()
@@ -188,6 +188,7 @@ func TestBus_CloseRaceWithPublish(t *testing.T) {
 			go func() {
 				defer drainWG.Done()
 				for range ch {
+					/* drain — see TestBus_CloseRaceWithPublish doc */
 				}
 			}()
 		}

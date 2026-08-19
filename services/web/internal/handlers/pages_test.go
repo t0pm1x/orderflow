@@ -2099,9 +2099,9 @@ func TestPageInventory_FetchesConcurrently(t *testing.T) {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
 	elapsed := time.Since(start)
-	max := atomic.LoadInt64(&ic.maxInFlight)
-	if max < 2 {
-		t.Errorf("expected concurrent fetches (max in-flight > 1), got %d (serial fan-out?)", max)
+	maxInFlight := atomic.LoadInt64(&ic.maxInFlight)
+	if maxInFlight < 2 {
+		t.Errorf("expected concurrent fetches (max in-flight > 1), got %d (serial fan-out?)", maxInFlight)
 	}
 	if elapsed > 450*time.Millisecond {
 		t.Errorf("handler took %s with 10 SKUs at 50ms each; expected ~10/8 * 50ms = ~60ms (serial would be ~500ms)", elapsed)
