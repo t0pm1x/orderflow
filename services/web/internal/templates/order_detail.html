@@ -7,12 +7,16 @@
   <section>
     <div class="row-between">
       <h1>Order <span class="mono">{{if .Order}}{{.Order.ID}}{{else}}?{{end}}</span></h1>
-      <a class="btn secondary" href="/">&#8592; back to list</a>
+      <div>
+        <button hx-get="/orders/{{.Order.ID}}?frag=1" hx-target="#page-content" hx-swap="outerHTML">Refresh</button>
+        <a class="btn secondary" href="/">&#8592; back to list</a>
+      </div>
     </div>
     {{if .BackendDown}}<div class="error">Backend unavailable: {{.Error}}</div>{{end}}
     {{if .Order}}
     <p><span class="badge {{.Order.State}}">{{template "statusIcon" .Order.State}} {{.Order.State}}</span>
-       <span class="muted">created {{.Order.CreatedAt.Format "2006-01-02 15:04:05"}}</span>
+       <span class="muted" title="created {{.Order.CreatedAt.Format "2006-01-02 15:04:05"}}">created {{timeAgo .Order.CreatedAt}}</span>
+       &middot; <span class="muted" title="updated {{.Order.UpdatedAt.Format "2006-01-02 15:04:05"}}">updated {{timeAgo .Order.UpdatedAt}}</span>
        {{if .Order.CompletedAt}} &middot; <span class="muted">completed {{.Order.CompletedAt.Format "15:04:05"}}</span>{{end}}
     </p>
     <table>

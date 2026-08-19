@@ -6,9 +6,11 @@
 package handlers
 
 import (
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -63,7 +65,8 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	t := template.Must(template.ParseFS(templates.FS, "layout.html", "_icons.html", "orders_list.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
+	t := template.New("").Funcs(template.FuncMap{"timeAgo": timeAgo})
+	t = template.Must(t.ParseFS(templates.FS, "layout.html", "_icons.html", "orders_list.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
 	return &Set{
 		Order:     order,
 		Payment:   payment,
@@ -146,5 +149,25 @@ func renderFragment(w http.ResponseWriter, t *template.Template, name string, vm
 		// its own logger. We still map to a generic 500 here so the
 		// browser doesn't get a half-rendered fragment.
 		http.Error(w, "rendering failed", http.StatusInternalServerError)
+	}
+}
+
+// timeAgo renders a time.Time as a compact "Ns/m/h/d ago" string
+// for the order-detail page header. Band edges: < 1m -> seconds,
+// < 1h -> minutes, < 24h -> hours, else whole days. Used as a
+// html/template func (registered in NewSet via t.Funcs) so the
+// template can call {{timeAgo .Order.CreatedAt}} next to a
+// title= attribute carrying the full timestamp for hover detail.
+func timeAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
