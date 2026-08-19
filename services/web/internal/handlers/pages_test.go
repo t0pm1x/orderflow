@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 	"github.com/t0pm1x/orderflow/services/web/internal/events"
@@ -24,6 +25,7 @@ type fakeOrderClient struct {
 	submitCallsN int
 	getResp      *backend.Order
 	getErr       error
+	getCalls     int
 	cancelCalls  int
 	lastCancel   string
 	lastSubmit   *backend.OrderSubmit
@@ -45,6 +47,7 @@ func (f *fakeOrderClient) List(_ context.Context, state backend.OrderState, _ in
 	return filtered, nil
 }
 func (f *fakeOrderClient) Get(_ context.Context, _ string) (*backend.Order, error) {
+	f.getCalls++
 	return f.getResp, f.getErr
 }
 func (f *fakeOrderClient) Submit(_ context.Context, in backend.OrderSubmit) (*backend.Order, error) {
@@ -273,12 +276,12 @@ func TestOrderSubmit_Upstream4xx_BadRequest(t *testing.T) {
 func TestOrderDetail_OK(t *testing.T) {
 	oc := &fakeOrderClient{}
 	oc.getResp = &backend.Order{
-		ID: "order-1", State: backend.OrderStateReserved,
+		ID: uuid.MustParse("11111111-1111-4111-8111-111111111111").String(), State: backend.OrderStateReserved,
 		Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 2, UnitPriceCents: ptrInt64(1999)}},
 	}
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/orders/order-1")
+	resp, err := http.Get(srv.URL + "/orders/11111111-1111-4111-8111-111111111111")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +291,7 @@ func TestOrderDetail_OK(t *testing.T) {
 	}
 	b := new(strings.Builder)
 	_, _ = io.Copy(b, resp.Body)
-	if !strings.Contains(b.String(), "order-1") {
+	if !strings.Contains(b.String(), "11111111-1111-4111-8111-111111111111") {
 		t.Error("missing id")
 	}
 	if !strings.Contains(b.String(), "reserved") {
@@ -301,7 +304,7 @@ func TestOrderDetail_NotFound(t *testing.T) {
 	oc.getErr = fmt.Errorf("upstream 404: status 404: not found")
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/orders/missing")
+	resp, err := http.Get(srv.URL + "/orders/22222222-2222-4222-8222-222222222222")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,10 +317,11 @@ func TestOrderDetail_NotFound(t *testing.T) {
 func TestOrderCancel_OK(t *testing.T) {
 	oc := &fakeOrderClient{}
 	oc.cancelCalls = 0
+	idUUID := uuid.MustParse("33333333-3333-4333-8333-333333333333").String()
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
 	form := strings.NewReader("idempotency_token=cancel-ok-tok")
-	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/order-1", form)
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/"+idUUID, form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -327,14 +331,14 @@ func TestOrderCancel_OK(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status: got %d want 200", resp.StatusCode)
 	}
-	if got := resp.Header.Get("HX-Redirect"); got != "/orders/order-1" {
-		t.Errorf("HX-Redirect: got %q want /orders/order-1", got)
+	if got := resp.Header.Get("HX-Redirect"); got != "/orders/"+idUUID {
+		t.Errorf("HX-Redirect: got %q want /orders/%s", got, idUUID)
 	}
 	if oc.cancelCalls != 1 {
 		t.Errorf("Cancel calls: got %d want 1", oc.cancelCalls)
 	}
-	if oc.lastCancel != "order-1" {
-		t.Errorf("Cancel id: got %q want order-1 (handler must forward the chi URL param)", oc.lastCancel)
+	if oc.lastCancel != idUUID {
+		t.Errorf("Cancel id: got %q want %s (handler must forward the chi URL param)", oc.lastCancel, idUUID)
 	}
 }
 
@@ -484,12 +488,13 @@ func TestPaymentsSim_OK(t *testing.T) {
 // guard accepts repeat fires for the same order.
 func TestPaymentsFire_OK(t *testing.T) {
 	pc := &fakePaymentClient{}
+	idUUID := uuid.MustParse("66666666-6666-4666-8666-666666666666").String()
 	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
 	r := chi.NewRouter()
 	set.Routes(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
-	form := strings.NewReader("order_id=o-1&status=failed&error_code=card_declined&idempotency_token=fire-ok-tok")
+	form := strings.NewReader("order_id=" + idUUID + "&status=failed&error_code=card_declined&idempotency_token=fire-ok-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -512,8 +517,8 @@ func TestPaymentsFire_OK(t *testing.T) {
 	if pc.lastWebhook.ErrorCode != "card_declined" {
 		t.Errorf("ErrorCode: got %q want card_declined", pc.lastWebhook.ErrorCode)
 	}
-	if pc.lastWebhook.PaymentID != "o-1" {
-		t.Errorf("PaymentID determinism: got %q want o-1", pc.lastWebhook.PaymentID)
+	if pc.lastWebhook.PaymentID != idUUID {
+		t.Errorf("PaymentID determinism: got %q want %s", pc.lastWebhook.PaymentID, idUUID)
 	}
 }
 
@@ -547,14 +552,15 @@ func TestOrderNew_GET_RendersIdempotencyToken(t *testing.T) {
 // re-fire the upstream cancel call.
 func TestOrderDetail_GET_RendersIdempotencyToken(t *testing.T) {
 	oc := &fakeOrderClient{}
+	idUUID := uuid.MustParse("44444444-4444-4444-8444-444444444444").String()
 	oc.getResp = &backend.Order{
-		ID:    "order-1",
+		ID:    idUUID,
 		State: backend.OrderStateReserved,
 		Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 2}},
 	}
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/orders/order-1")
+	resp, err := http.Get(srv.URL + "/orders/" + idUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,16 +684,17 @@ func TestOrderSubmit_MissingToken_400(t *testing.T) {
 // must yield 200 then 409; the second must not re-call Cancel.
 func TestOrderCancel_DuplicateToken_409(t *testing.T) {
 	oc := &fakeOrderClient{}
+	idUUID := uuid.MustParse("55555555-5555-4555-8555-555555555555").String()
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
 	post := func() *http.Response {
 		t.Helper()
 		form := strings.NewReader("idempotency_token=dup-cancel-tok")
-		req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/order-9", form)
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/"+idUUID, form)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("POST /v1/orders/order-9: %v", err)
+			t.Fatalf("POST /v1/orders/%s: %v", idUUID, err)
 		}
 		return resp
 	}
@@ -710,6 +717,7 @@ func TestOrderCancel_DuplicateToken_409(t *testing.T) {
 // 409 contract for the force ✓/✗ buttons.
 func TestPaymentsFire_DuplicateToken_409(t *testing.T) {
 	pc := &fakePaymentClient{}
+	idUUID := uuid.MustParse("77777777-7777-4777-8777-777777777777").String()
 	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
 	r := chi.NewRouter()
 	set.Routes(r)
@@ -717,7 +725,7 @@ func TestPaymentsFire_DuplicateToken_409(t *testing.T) {
 	defer srv.Close()
 	post := func() *http.Response {
 		t.Helper()
-		form := strings.NewReader("order_id=o-1&status=succeeded&idempotency_token=dup-fire-tok")
+		form := strings.NewReader("order_id=" + idUUID + "&status=succeeded&idempotency_token=dup-fire-tok")
 		req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		resp, err := http.DefaultClient.Do(req)
@@ -738,5 +746,200 @@ func TestPaymentsFire_DuplicateToken_409(t *testing.T) {
 	}
 	if pc.fireCalls() != 1 {
 		t.Errorf("FireWebhook called %d times, want 1 (replay must NOT hit backend)", pc.fireCalls())
+	}
+}
+
+// TestOrderDetail_BadID_400 covers P0.4: a non-UUID {id} on
+// GET /orders/{id} must be rejected with 400 by the BFF before
+// reaching the Order service. A bareword or a malformed id
+// would otherwise propagate straight into the upstream URL —
+// refusing here closes the door to SSRF-via-path on the upstream
+// and to garbage 404s on the BFF. The 400 body is plain text,
+// not the layout (htmx swaps the body and the layout's error
+// template is for form re-render — non-form GETs get a
+// plain-text error per the http.Error convention).
+func TestOrderDetail_BadID_400(t *testing.T) {
+	oc := &fakeOrderClient{}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	cases := []string{"not-a-uuid", "123", "0xdeadbeef", "SKU-001"}
+	for _, id := range cases {
+		t.Run(id, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/orders/" + id)
+			if err != nil {
+				t.Fatalf("GET /orders/%s: %v", id, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != 400 {
+				t.Fatalf("status: got %d want 400", resp.StatusCode)
+			}
+			b := new(strings.Builder)
+			_, _ = io.Copy(b, resp.Body)
+			if !strings.Contains(b.String(), "UUID") {
+				t.Errorf("body should mention UUID, got: %s", b.String())
+			}
+			if oc.getCalls != 0 {
+				t.Errorf("upstream Get called %d times, want 0 (bad UUID must NOT hit backend)", oc.getCalls)
+			}
+		})
+	}
+}
+
+// TestOrderCancel_BadID_400 covers P0.4: a non-UUID {id} on
+// POST /v1/orders/{id} must be rejected with 400 before the
+// replay cache consumes the token, so a buggy client posting
+// a junk id with a fresh token still gets the right message.
+// (Replay-check ordering matters: token check stays first so
+// duplicate-token replays still 409, but junk-id must 400.)
+func TestOrderCancel_BadID_400(t *testing.T) {
+	oc := &fakeOrderClient{}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("idempotency_token=cancel-bad-id-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/not-a-uuid", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(b.String(), "UUID") {
+		t.Errorf("body should mention UUID, got: %s", b.String())
+	}
+	if oc.cancelCalls != 0 {
+		t.Errorf("upstream Cancel called %d times, want 0 (bad UUID must NOT hit backend)", oc.cancelCalls)
+	}
+}
+
+// TestOrderCancel_GoodIDWithValidToken_200 covers the regression
+// corner of the bad-id test: when {id} IS a valid UUID AND the
+// idempotency token is fresh, the cancel must proceed and call
+// the upstream. Without this sister test, a naive change that
+// rejected all path payloads (uuid or not) would pass
+// TestOrderCancel_BadID_400 but silently break the working path.
+func TestOrderCancel_GoodIDWithValidToken_200(t *testing.T) {
+	oc := &fakeOrderClient{}
+	idUUID := uuid.MustParse("88888888-8888-4888-8888-888888888888").String()
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("idempotency_token=cancel-good-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders/"+idUUID, form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if oc.cancelCalls != 1 {
+		t.Errorf("upstream Cancel called %d times, want 1", oc.cancelCalls)
+	}
+	if oc.lastCancel != idUUID {
+		t.Errorf("Cancel id: got %q want %s", oc.lastCancel, idUUID)
+	}
+}
+
+// TestOrderSubmit_BadCustomerID_400 covers P0.4: a non-UUID
+// customer_id on POST /v1/orders must be rejected with 400
+// (the form re-renders, like the SKU/quantity check). A blank
+// customer_id is still allowed — the handler auto-generates a
+// UUID per the form's placeholder promise — so the bad-id
+// branch is the empty-suppression-OR'd UUID validator.
+func TestOrderSubmit_BadCustomerID_400(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1&customer_id=not-a-uuid&idempotency_token=submit-bad-cust-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(b.String(), "UUID") {
+		t.Errorf("body should mention UUID, got: %s", b.String())
+	}
+}
+
+// TestOrderSubmit_BlankCustomerID_GeneratesUUID pins the
+// happy-path of the customer_id field: empty input must
+// auto-generate a valid UUID (and not 400). A regression to
+// "always require UUID" would break this contract — the form
+// placeholder text on the page promises "leave blank for
+// auto-generated UUID".
+func TestOrderSubmit_BlankCustomerID_GeneratesUUID(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "auto-id",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1&customer_id=&idempotency_token=submit-blank-cust-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if oc.lastSubmit == nil {
+		t.Fatal("Submit not called")
+	}
+	if oc.lastSubmit.CustomerID == nil {
+		t.Fatal("CustomerID is nil — handler should auto-generate")
+	}
+	if _, err := uuid.Parse(*oc.lastSubmit.CustomerID); err != nil {
+		t.Errorf("CustomerID is not a UUID: %q (%v)", *oc.lastSubmit.CustomerID, err)
+	}
+}
+
+// TestPaymentsFire_BadOrderID_400 covers P0.4: a non-UUID
+// order_id on POST /payments/sim/fire must be rejected with
+// 400 before the replay cache consumes the token, and the
+// payment client must NOT be called (an invalid order id
+// could otherwise poison the upstream idempotency cache).
+func TestPaymentsFire_BadOrderID_400(t *testing.T) {
+	pc := &fakePaymentClient{}
+	set := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus())
+	r := chi.NewRouter()
+	set.Routes(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	form := strings.NewReader("order_id=not-a-uuid&status=succeeded&idempotency_token=fire-bad-oid-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(b.String(), "UUID") {
+		t.Errorf("body should mention UUID, got: %s", b.String())
+	}
+	if pc.fireCalls() != 0 {
+		t.Errorf("FireWebhook called %d times, want 0 (bad order_id must NOT hit payment client)", pc.fireCalls())
 	}
 }

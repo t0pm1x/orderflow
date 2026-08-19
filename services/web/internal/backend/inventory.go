@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // GetStock fetches the current Inventory row for sku from the
@@ -11,7 +12,7 @@ import (
 // the upstream is unreachable.
 func (c *HTTPClient) GetStock(ctx context.Context, sku string) (*StockItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/v1/inventory/stock/%s", c.inventoryURL, sku), nil)
+		fmt.Sprintf("%s/v1/inventory/stock/%s", c.inventoryURL, url.PathEscape(sku)), nil)
 	if err != nil {
 		return nil, fmt.Errorf("inventory get: %w", err)
 	}

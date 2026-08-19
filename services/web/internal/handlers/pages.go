@@ -42,9 +42,10 @@ func (s *Set) PageOrderNew(w http.ResponseWriter, _ *http.Request) {
 // the create-order page. On success it returns HX-Redirect to
 // /orders/{id}; on failure it re-renders the form with an Error
 // banner (4xx for validation, 502 for upstream). The handler
-// rejects forms that omit the `idempotency_token` field (400)
-// and rejects repeat submissions of the same token within the
-// replay window (409).
+// rejects forms that omit the `idempotency_token` field (400),
+// rejects repeat submissions of the same token within the
+// replay window (409), and rejects non-UUID `customer_id`
+// values (400).
 func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -66,6 +67,15 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 		return
+	}
+	if vm.CustomerID != "" {
+		if _, ok := parseUUID(vm.CustomerID); !ok {
+			vm.Error = "customer_id must be a UUID (or leave blank for auto-generation)"
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+			return
+		}
 	}
 	token := r.FormValue("idempotency_token")
 	if token == "" {
@@ -121,6 +131,18 @@ func atoi(s string) int {
 	return n
 }
 
+// parseUUID validates that s is a syntactically valid UUID and
+// returns it unchanged on success. Used at every trust boundary
+// (form inputs, path params, query params) that downstream code
+// interpolates into an upstream URL path — keeps `uuid.Parse` usage
+// symmetric and avoids re-validating on the caller side.
+func parseUUID(s string) (string, bool) {
+	if _, err := uuid.Parse(s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
 type orderDetailVM struct {
 	Body             string
 	Order            *backend.Order
@@ -130,16 +152,22 @@ type orderDetailVM struct {
 	IdempotencyToken string
 }
 
-// PageOrderDetail serves GET /orders/{id}. On backend failure it
-// returns 404 (id not found / unreachable) with the layout shell +
-// banner so the navbar stays usable. When called with ?frag=1 the
-// handler renders only the body fragment (no layout shell) so htmx
-// polling can swap just the page-content region.
+// PageOrderDetail serves GET /orders/{id}. It rejects non-UUID
+// ids with 400 before hitting the backend; on a valid id with
+// upstream failure it returns 404 (not found / unreachable) with
+// the layout shell + banner so the navbar stays usable. When
+// called with ?frag=1 the handler renders only the body fragment
+// (no layout shell) so htmx polling can swap just the
+// page-content region.
 // PageOrderDetail serves GET /orders/{id} — renders the order
 // detail page. While the order is non-terminal the page polls
 // itself every 1s via htmx; otherwise it renders once.
 func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if _, ok := parseUUID(id); !ok {
+		http.Error(w, "order id must be a UUID", http.StatusBadRequest)
+		return
+	}
 	vm := orderDetailVM{Body: "orderDetailBody", IdempotencyToken: newIdempotencyToken()}
 	o, err := s.Order.Get(r.Context(), id)
 	if err != nil {
@@ -204,7 +232,8 @@ func (s *Set) PageOrderEvents(w http.ResponseWriter, r *http.Request) {
 // as 404 BFF (cancel can't proceed if the order doesn't exist),
 // 5xx + transport errors stay 502. The handler requires an
 // `idempotency_token` form field and rejects repeat submissions
-// within the replay window with 409.
+// within the replay window with 409, and rejects non-UUID {id}
+// path params with 400.
 func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
 	token := r.FormValue("idempotency_token")
 	if token == "" {
@@ -216,6 +245,10 @@ func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
+	if _, ok := parseUUID(id); !ok {
+		http.Error(w, "order id must be a UUID", http.StatusBadRequest)
+		return
+	}
 	if err := s.Order.Cancel(r.Context(), id); err != nil {
 		var he *backend.HTTPError
 		if errors.As(err, &he) {
@@ -369,7 +402,8 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 // Sets a deterministic Idempotency-Key so the upstream's
 // idempotency cache dedupes identical replays. The handler also
 // rejects missing/duplicate `idempotency_token` (BFF-level replay
-// guard, see ActionOrderSubmit).
+// guard, see ActionOrderSubmit) and rejects non-UUID `order_id`
+// form values with 400.
 func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -389,6 +423,10 @@ func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 	errorCode := r.FormValue("error_code")
 	if orderID == "" || (status != "succeeded" && status != "failed") {
 		http.Error(w, "order_id and status required", http.StatusBadRequest)
+		return
+	}
+	if _, ok := parseUUID(orderID); !ok {
+		http.Error(w, "order_id must be a UUID", http.StatusBadRequest)
 		return
 	}
 	wh := backend.PaymentWebhook{

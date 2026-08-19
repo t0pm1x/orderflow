@@ -137,6 +137,66 @@ func TestOrderClient_Cancel_UsesDELETE(t *testing.T) {
 	}
 }
 
+// TestOrderClient_Get_PathEscape pins P0.4: ids containing
+// characters that have URL meaning (?, #, %, /, space) must
+// be percent-escaped so they land in the single `/v1/orders/{id}`
+// path segment, NOT split the request into a different path or
+// a query/fragment tail. We assert against `r.URL.RawPath`
+// (which preserves the on-the-wire encoding) AND against
+// `r.URL.Path` (which Go's net/url decoder restores for routing
+// routing). A plain `fmt.Sprintf("%s/v1/orders/%s", ..., id)`
+// regression would put `?` into the URL as a query separator
+// and the test would see `r.URL.RawPath == ""` (empty because
+// the path bytes need no escaping) AND `r.URL.RawQuery` non-empty.
+func TestOrderClient_Get_PathEscape(t *testing.T) {
+	const tricky = "abc/def?ghi#jkl mno%pq"
+	const wantRaw = "/v1/orders/abc%2Fdef%3Fghi%23jkl%20mno%25pq"
+	const wantPath = "/v1/orders/abc/def?ghi#jkl mno%pq"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawPath != wantRaw {
+			t.Errorf("RawPath: got %q want %q (escape preserved on the wire)", r.URL.RawPath, wantRaw)
+		}
+		if r.URL.Path != wantPath {
+			t.Errorf("Path: got %q want %q", r.URL.Path, wantPath)
+		}
+		if r.URL.RawQuery != "" {
+			t.Errorf("unexpected query %q (must be empty: ? should be escaped, not split)", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"` + tricky + `","state":"pending","items":[],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+	c := backend.New(nil, srv.URL, "http://localhost:8081", "http://localhost:8082")
+	if _, err := c.Get(context.Background(), tricky); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+}
+
+// TestOrderClient_Cancel_PathEscape mirrors Get's pin for the
+// DELETE path — same characters, same expected escaping. The
+// upstream sees the same RawPath that on-the-wire encoding
+// preserves; a regression to `fmt.Sprintf` interpolation would
+// leave RawPath empty (the bytes don't need escaping) and the
+// test would catch it.
+func TestOrderClient_Cancel_PathEscape(t *testing.T) {
+	const tricky = "abc/def?ghi#jkl"
+	const wantRaw = "/v1/orders/abc%2Fdef%3Fghi%23jkl"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawPath != wantRaw {
+			t.Errorf("RawPath: got %q want %q", r.URL.RawPath, wantRaw)
+		}
+		if r.URL.RawQuery != "" {
+			t.Errorf("unexpected query %q (must be empty)", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := backend.New(nil, srv.URL, "http://localhost:8081", "http://localhost:8082")
+	if err := c.Cancel(context.Background(), tricky); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+}
+
 // TestOrderClient_Submit_IdempotencyKey pins the wire-level
 // contract that when OrderSubmit.IdempotencyKey is set, the
 // client forwards it as the `Idempotency-Key` HTTP header

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -41,7 +42,7 @@ func (c *HTTPClient) List(ctx context.Context, state OrderState, limit int) (*Or
 // the id is unknown (404) or the upstream is unreachable.
 func (c *HTTPClient) Get(ctx context.Context, id string) (*Order, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/v1/orders/%s", c.orderURL, id), nil)
+		fmt.Sprintf("%s/v1/orders/%s", c.orderURL, url.PathEscape(id)), nil)
 	if err != nil {
 		return nil, fmt.Errorf("order get: %w", err)
 	}
@@ -81,7 +82,7 @@ func (c *HTTPClient) Submit(ctx context.Context, in OrderSubmit) (*Order, error)
 // Cancel is idempotent: 204 and 404 both succeed.
 func (c *HTTPClient) Cancel(ctx context.Context, id string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		fmt.Sprintf("%s/v1/orders/%s", c.orderURL, id), nil)
+		fmt.Sprintf("%s/v1/orders/%s", c.orderURL, url.PathEscape(id)), nil)
 	if err != nil {
 		return fmt.Errorf("order cancel: %w", err)
 	}
