@@ -33,6 +33,19 @@
       <button type="submit" class="danger">Cancel order</button>
     </form>
     {{end}}
+    <h3>Saga timeline</h3>
+    {{if not .Events}}
+    <p class="muted">No events received yet for this order. The timeline will populate as the saga runs.</p>
+    {{else}}
+    <ol class="timeline">
+      {{range .Events}}
+      <li class="timeline-node timeline-{{.EventType}}">
+        <span class="timeline-time mono" title="{{.OccurredAt.Format "2006-01-02 15:04:05.000"}}">{{.OccurredAt.Format "15:04:05"}}</span>
+        <span class="timeline-type mono">{{.EventType}}</span>
+      </li>
+      {{end}}
+    </ol>
+    {{end}}
     <p class="muted">Page polls every 1s while non-terminal.</p>
     {{end}}
   </section>

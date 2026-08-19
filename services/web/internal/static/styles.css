@@ -42,3 +42,14 @@ form.sheet input, form.sheet select { width: 100%; padding: 8px 10px; background
 .mono { font-family: ui-monospace, "Cascadia Code", monospace; }
 .row-between { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .row         { display: flex; gap: 8px; align-items: center; }
+.timeline { list-style: none; padding: 0; margin: 16px 0 0; border-left: 2px solid var(--border); }
+.timeline-node { padding: 6px 0 6px 16px; position: relative; }
+.timeline-node::before { content: ''; position: absolute; left: -7px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.timeline-OrderCreated::before, .timeline-OrderUpdated::before { background: var(--warn); }
+.timeline-OrderConfirmed::before { background: var(--good); }
+.timeline-OrderCancelled::before, .timeline-PaymentFailed::before, .timeline-StockReservationFailed::before { background: var(--bad); }
+.timeline-StockReserved::before, .timeline-PaymentRequested::before, .timeline-PaymentCompleted::before { background: var(--accent); }
+.timeline-time { color: var(--muted); margin-right: 8px; }
+.timeline-type { font-weight: 600; }
+.timeline-payload { margin-top: 4px; }
+.timeline-payload pre { background: var(--bg); padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 11px; }

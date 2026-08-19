@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 )
 
@@ -104,6 +105,7 @@ type orderDetailVM struct {
 	Order       *backend.Order
 	BackendDown bool
 	Error       string
+	Events      []pkgEvents.Envelope
 }
 
 // PageOrderDetail serves GET /orders/{id}. On backend failure it
@@ -131,9 +133,42 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vm.Order = o
+	vm.Events = s.Bus.History(o.ID)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.URL.Query().Get("frag") == "1" {
 		renderFragment(w, s.Templates, "orderDetailBody", vm)
+		return
+	}
+	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// orderEventsVM is the view model for the per-order saga timeline.
+// Body points the layout at the orderEventsBody template; OrderID
+// is echoed into the DOM id so the hx-get target is unique per page;
+// Events is the bus history snapshot for the requested aggregate.
+type orderEventsVM struct {
+	Body    string
+	OrderID string
+	Events  []pkgEvents.Envelope
+}
+
+// PageOrderEvents serves GET /orders/{id}/events — the per-order
+// saga timeline fragment. On a non-UUID id the timeline is empty
+// (the OG handler treats any path tail as a valid id; we refuse
+// here so a stray path doesn't waste a Bus.History scan). With
+// ?frag=1 the handler renders only the inner<div> so it can be
+// hx-polled by the order-detail page's timeline block.
+func (s *Set) PageOrderEvents(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	vm := orderEventsVM{Body: "orderEventsBody", OrderID: id}
+	if _, err := uuid.Parse(id); err == nil {
+		vm.Events = s.Bus.History(id)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.URL.Query().Get("frag") == "1" {
+		renderFragment(w, s.Templates, "orderEventsBody", vm)
 		return
 	}
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {

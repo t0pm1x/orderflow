@@ -1,0 +1,18 @@
+{{define "orderEventsBody"}}
+<div id="timeline-{{.OrderID}}" hx-get="/orders/{{.OrderID}}/events?frag=1" hx-trigger="every 1s" hx-swap="outerHTML">
+  <h3>Saga timeline</h3>
+  {{if not .Events}}
+  <p class="muted">No events received yet for this order. The timeline will populate as the saga runs.</p>
+  {{else}}
+  <ol class="timeline">
+    {{range .Events}}
+    <li class="timeline-node timeline-{{.EventType}}">
+      <span class="timeline-time mono" title="{{.OccurredAt.Format "2006-01-02 15:04:05.000"}}">{{.OccurredAt.Format "15:04:05"}}</span>
+      <span class="timeline-type mono">{{.EventType}}</span>
+      <details class="timeline-payload"><summary>payload</summary><pre class="mono">{{.Payload}}</pre></details>
+    </li>
+    {{end}}
+  </ol>
+  {{end}}
+</div>
+{{end}}
