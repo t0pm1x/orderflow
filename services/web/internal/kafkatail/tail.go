@@ -53,7 +53,6 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 		"OrderCreated":          forwardToBus(bus),
 		"OrderConfirmed":        forwardToBus(bus),
 		"OrderCancelled":        forwardToBus(bus),
-		"OrderUpdated":          forwardToBus(bus),
 		"StockReserveRequested": forwardToBus(bus),
 		"StockReleaseRequested": forwardToBus(bus),
 		"PaymentRequested":      forwardToBus(bus),
