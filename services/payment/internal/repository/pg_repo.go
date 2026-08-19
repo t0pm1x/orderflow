@@ -46,9 +46,10 @@ var _ webhook.Repository = (*PGRepo)(nil)
 
 // Get loads a single payment by id. Returns an error wrapping
 // webhook.ErrPaymentNotFound when the row does not exist; the handler
-// translates that into a 404.
-func (r *PGRepo) Get(id string) (*webhook.Payment, error) {
-	row := r.pool.QueryRow(context.Background(),
+// translates that into a 404. The ctx is honored by pgx so an HTTP
+// client disconnect aborts the in-flight query.
+func (r *PGRepo) Get(ctx context.Context, id string) (*webhook.Payment, error) {
+	row := r.pool.QueryRow(ctx,
 		`SELECT id, order_id, amount_cents, status
 		   FROM payments WHERE id = $1`, id)
 	var (
@@ -69,12 +70,7 @@ func (r *PGRepo) Get(id string) (*webhook.Payment, error) {
 // outbox Record in one transaction. A zero-row UPDATE means the id
 // vanished between Get and here, which is reported as
 // webhook.ErrPaymentNotFound rather than a silent no-op.
-//
-// The webhook.Repository interface does not carry a context, so
-// context.Background() is used for the underlying pgx calls; the
-// caller's HTTP deadline is enforced by the chi middleware stack.
-func (r *PGRepo) UpdateStatus(id string, status webhook.PaymentStatus, events ...outbox.Record) error {
-	ctx := context.Background()
+func (r *PGRepo) UpdateStatus(ctx context.Context, id string, status webhook.PaymentStatus, events ...outbox.Record) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
 			`UPDATE payments SET status = $2, updated_at = NOW() WHERE id = $1`,
@@ -103,8 +99,7 @@ func (r *PGRepo) UpdateStatus(id string, status webhook.PaymentStatus, events ..
 // exist. Outbox rows only commit on a real transition so a replay
 // against a terminal-state payment doesn't produce duplicate
 // PaymentCompleted / PaymentFailed events.
-func (r *PGRepo) UpdateStatusFromNonTerminal(id string, to webhook.PaymentStatus, events ...outbox.Record) (bool, error) {
-	ctx := context.Background()
+func (r *PGRepo) UpdateStatusFromNonTerminal(ctx context.Context, id string, to webhook.PaymentStatus, events ...outbox.Record) (bool, error) {
 	var advanced bool
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,

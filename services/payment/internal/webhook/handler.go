@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -57,9 +58,14 @@ type Payment struct {
 // together, or neither does. Implementations:
 //   - repository.PGRepo — pgxpool + pgx.BeginFunc (production).
 //   - fakeRepo in handler_test.go — in-memory (handler unit tests).
+//
+// Every method takes a context.Context so client cancellation
+// (HTTP request abort, Kafka shutdown) propagates into the DB
+// driver and aborts in-flight queries — without it a stuck client
+// keeps the PG backend processing requests it will never read.
 type Repository interface {
-	Get(id string) (*Payment, error)
-	UpdateStatus(id string, status PaymentStatus, events ...outbox.Record) error
+	Get(ctx context.Context, id string) (*Payment, error)
+	UpdateStatus(ctx context.Context, id string, status PaymentStatus, events ...outbox.Record) error
 	// UpdateStatusFromNonTerminal transitions the payment to `to`
 	// only if its current status is non-terminal (i.e. NOT in
 	// {captured, failed}). Returns (true, nil) on transition with
@@ -72,7 +78,7 @@ type Repository interface {
 	// vice versa) is silently dropped, and a same-status replay
 	// is also a no-op so we don't emit duplicate PaymentCompleted
 	// / PaymentFailed events.
-	UpdateStatusFromNonTerminal(id string, to PaymentStatus, events ...outbox.Record) (bool, error)
+	UpdateStatusFromNonTerminal(ctx context.Context, id string, to PaymentStatus, events ...outbox.Record) (bool, error)
 }
 
 // PaymentCompletedPayload is the body of a PaymentCompleted event.
@@ -167,7 +173,7 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.repo.Get(req.PaymentID)
+	p, err := h.repo.Get(r.Context(), req.PaymentID)
 	if err != nil {
 		if errors.Is(err, ErrPaymentNotFound) {
 			apierrors.WriteError(w, &apierrors.APIError{
@@ -195,7 +201,7 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	// so a same-status replay also no-ops (the row's status
 	// already matches). Either way, no outbox row is emitted
 	// for the no-op path.
-	advanced, err := h.repo.UpdateStatusFromNonTerminal(p.ID, newStatus, ev)
+	advanced, err := h.repo.UpdateStatusFromNonTerminal(r.Context(), p.ID, newStatus, ev)
 	if err != nil {
 		if errors.Is(err, ErrPaymentNotFound) {
 			apierrors.WriteError(w, &apierrors.APIError{

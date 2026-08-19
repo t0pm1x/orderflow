@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ func newFakeRepo(payments ...*Payment) *fakeRepo {
 	return f
 }
 
-func (f *fakeRepo) Get(id string) (*Payment, error) {
+func (f *fakeRepo) Get(_ context.Context, id string) (*Payment, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -42,7 +43,7 @@ func (f *fakeRepo) Get(id string) (*Payment, error) {
 	return &copied, nil
 }
 
-func (f *fakeRepo) UpdateStatus(id string, status PaymentStatus, events ...outbox.Record) error {
+func (f *fakeRepo) UpdateStatus(_ context.Context, id string, status PaymentStatus, events ...outbox.Record) error {
 	if f.updateErr != nil {
 		return f.updateErr
 	}
@@ -62,7 +63,7 @@ func (f *fakeRepo) UpdateStatus(id string, status PaymentStatus, events ...outbo
 // already terminal. The handler relies on the false branch to
 // short-circuit late webhooks without emitting duplicate
 // PaymentCompleted / PaymentFailed events.
-func (f *fakeRepo) UpdateStatusFromNonTerminal(id string, to PaymentStatus, events ...outbox.Record) (bool, error) {
+func (f *fakeRepo) UpdateStatusFromNonTerminal(_ context.Context, id string, to PaymentStatus, events ...outbox.Record) (bool, error) {
 	if f.updateErr != nil {
 		return false, f.updateErr
 	}
