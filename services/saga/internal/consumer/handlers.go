@@ -330,6 +330,13 @@ func emitReleaseForItems(ctx context.Context, tx pgx.Tx, h *Handler, orderID, re
 // Note: the brief labels this terminal "fully_compensated" but the
 // state machine defines StateCompensated as terminal already, so
 // we keep it consistent with state.go.
+//
+// We use a guarded TransitionStateTx (from='compensated' to='compensated') so
+// an out-of-order replay cannot downgrade a saga that has somehow
+// reached StateCompleted (defensive only — the normal event flow
+// makes this unreachable; PaymentFailedHandler is the only emitter
+// of StockReleaseRequested, which only fans out into StockReleased
+// via inventory's terminal handler).
 func (h *Handler) StockReleasedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -337,10 +344,11 @@ func (h *Handler) StockReleasedHandler(ctx context.Context, env *events.Envelope
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return err
 	}
-	if err := h.repo.UpdateState(ctx, p.OrderID, sagapkg.StateCompensated); err != nil {
-		if err == repository.ErrNotFound {
-			return nil
-		}
+	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		_, err := h.repo.TransitionStateTx(ctx, tx, p.OrderID, sagapkg.StateCompensated, sagapkg.StateCompensated)
+		return err
+	})
+	if err != nil && err != repository.ErrNotFound {
 		return err
 	}
 	return nil
