@@ -14,8 +14,8 @@ System_Boundary(orderflow, "orderflow") {
 
     ContainerDb(order_db, "Order DB", "PostgreSQL", "orders + outbox tables")
     ContainerDb(payment_db, "Payment DB", "PostgreSQL", "payments + idempotency")
-    ContainerDb(inventory_db, "Inventory DB", "PostgreSQL", "stock + reservations")
-    ContainerDb(redis, "Redis", "in-memory store", "TTL reservations")
+    ContainerDb(inventory_db, "Inventory DB", "PostgreSQL", "stock_items + outbox")
+    ContainerDb(redis, "Redis", "in-memory store", "Idempotency cache + consumer dedup")
 
     ContainerQueue(kafka, "Kafka", "Redpanda", "3 topics: order-events, payment-events, inventory-events")
     Container(observability, "Observability", "Prometheus + Tempo + Grafana", "metrics, traces, dashboards")
@@ -41,8 +41,10 @@ Rel(payment_consumer, provider, "Charge", "HTTPS")
 Rel(payment_api, provider, "Webhook", "HTTPS")
 
 Rel(inventory_api, inventory_db, "Reads/writes stock", "SQL")
-Rel(inventory_api, redis, "Reservations with TTL", "RESP")
 Rel(inventory_consumer, kafka, "Consumes", "Kafka protocol")
+Rel(order_consumer, redis, "Dedup on event_id", "RESP")
+Rel(payment_consumer, redis, "Dedup on event_id", "RESP")
+Rel(saga, redis, "Dedup on event_id", "RESP")
 
 Rel_U(order_api, observability, "exports traces/metrics", "OTLP/HTTP")
 Rel_U(payment_api, observability, "exports traces/metrics", "OTLP/HTTP")

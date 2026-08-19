@@ -4,13 +4,11 @@
 Container_Boundary(inventory, "Inventory Service") {
     Component(inventory_handler, "Inventory HTTP", "chi handler", "POST /v1/inventory/reserve")
     Component(stock_model, "Stock Model", "Go struct + version", "Optimistic locking")
-    Component(redis_reserve, "Redis Reservation", "Go", "TTL-based reservation store")
     Component(outbox_poller, "Outbox Poller", "Go", "Publishes inventory events")
     Component(consumer, "Inventory Consumer", "Go", "Consumes inventory events")
 }
 
 Rel(inventory_handler, stock_model, "Updates with version check")
-Rel(inventory_handler, redis_reserve, "Creates reservation")
 Rel(consumer, stock_model, "Updates stock")
 
 @enduml
