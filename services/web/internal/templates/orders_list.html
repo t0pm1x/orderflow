@@ -18,7 +18,7 @@
         {{range .Orders}}
         <tr>
           <td class="mono">{{.ID}}</td>
-          <td><span class="badge {{.State}}">{{.State}}</span></td>
+          <td><span class="badge {{.State}}">{{template "statusIcon" .State}} {{.State}}</span></td>
           <td>
             {{range .Items}}{{.SKU}}&times;{{.Quantity}} {{end}}
           </td>

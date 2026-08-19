@@ -11,7 +11,7 @@
     </div>
     {{if .BackendDown}}<div class="error">Backend unavailable: {{.Error}}</div>{{end}}
     {{if .Order}}
-    <p><span class="badge {{.Order.State}}">{{.Order.State}}</span>
+    <p><span class="badge {{.Order.State}}">{{template "statusIcon" .Order.State}} {{.Order.State}}</span>
        <span class="muted">created {{.Order.CreatedAt.Format "2006-01-02 15:04:05"}}</span>
        {{if .Order.CompletedAt}} &middot; <span class="muted">completed {{.Order.CompletedAt.Format "15:04:05"}}</span>{{end}}
     </p>

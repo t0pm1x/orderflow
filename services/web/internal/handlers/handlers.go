@@ -63,7 +63,7 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	t := template.Must(template.ParseFS(templates.FS, "layout.html", "orders_list.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
+	t := template.Must(template.ParseFS(templates.FS, "layout.html", "_icons.html", "orders_list.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
 	return &Set{
 		Order:     order,
 		Payment:   payment,

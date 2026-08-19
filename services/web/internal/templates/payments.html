@@ -10,7 +10,7 @@
       {{range .InFlight}}
       <tr>
         <td class="mono">{{.ID}}</td>
-        <td><span class="badge {{.State}}">{{.State}}</span></td>
+        <td><span class="badge {{.State}}">{{template "statusIcon" .State}} {{.State}}</span></td>
         <td>
           <form method="post" action="/payments/sim/fire" hx-post="/payments/sim/fire" hx-swap="none">
             <input type="hidden" name="order_id" value="{{.ID}}">

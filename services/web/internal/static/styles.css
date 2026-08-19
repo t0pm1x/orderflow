@@ -25,6 +25,7 @@ table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto
 th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
 th { color: var(--muted); font-weight: 600; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.icon { width: 14px; height: 14px; vertical-align: -2px; }
 .badge.pending { background: rgba(210,153,34,0.15); color: var(--warn); }
 .badge.reserved { background: rgba(68,147,248,0.15); color: var(--accent); }
 .badge.confirmed { background: rgba(86,211,100,0.15); color: var(--good); }
