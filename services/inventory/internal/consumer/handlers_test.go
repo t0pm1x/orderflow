@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -72,6 +74,73 @@ func withGlobalDeps(t *testing.T, pool *pgxpool.Pool) {
 	// SetPool constructs the deps via Store (atomic.Pointer); reuse
 	// that path so the handler sees the same shape as in main.go.
 	SetPool(pool)
+}
+
+// TestSetPool_RaceWithRegistry covers the v1.1.2 P1-#10 fix:
+// globalDeps is atomic.Pointer[handlerDeps]. Concurrent SetPool
+// and loadDeps must not race (or panic, or return a torn
+// pointer). Test with -race; pre-fix this would fail with
+// "DATA RACE" on the plain-pointer Store/Load. We only test the
+// nil path here (real *pgxpool.Pool needs a real DB); the
+// atomicity is exercised the same way on the nil path.
+func TestSetPool_RaceWithRegistry(t *testing.T) {
+	const (
+		writers      = 4
+		readers      = 8
+		opsPerWorker = 200
+	)
+	var (
+		wg       sync.WaitGroup
+		stop     = make(chan struct{})
+		observed atomic.Uint64
+	)
+
+	t.Cleanup(func() { SetPool(nil) })
+
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(seed int) {
+			defer wg.Done()
+			for j := 0; j < opsPerWorker; j++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// Both branches nil: NewPGRepo would panic on nil
+				// pool, so the real-handler-with-pool branch
+				// requires a DB and is covered by the existing
+				// TestStockReserveRequested_NotFoundEmits*
+				// (which runs with DATABASE_URL). The nil-only
+				// exercise still proves the atomic.Pointer
+				// contract — pre-fix the plain-pointer Store
+				// would tear under -race.
+				_ = seed
+				SetPool(nil)
+			}
+		}(i)
+	}
+
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < opsPerWorker; j++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = loadDeps()
+				observed.Add(1)
+			}
+		}()
+	}
+
+	wg.Wait()
+	if observed.Load() != uint64(readers*opsPerWorker) {
+		t.Errorf("reader iterations: got %d want %d", observed.Load(), readers*opsPerWorker)
+	}
 }
 
 func TestStockReserveRequested_NotFoundEmitsStockReservationFailed(t *testing.T) {
