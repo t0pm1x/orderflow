@@ -27,7 +27,7 @@ type fakeOrderClient struct {
 	lastCancel  string
 }
 
-func (f *fakeOrderClient) List(ctx context.Context, _ backend.OrderState, _ int) (*backend.OrderList, error) {
+func (f *fakeOrderClient) List(_ context.Context, _ backend.OrderState, _ int) (*backend.OrderList, error) {
 	return f.listResp, f.listErr
 }
 func (f *fakeOrderClient) Get(_ context.Context, _ string) (*backend.Order, error) {

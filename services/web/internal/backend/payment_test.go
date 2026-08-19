@@ -41,7 +41,7 @@ func TestPaymentClient_FireWebhook_Succeed(t *testing.T) {
 }
 
 func TestPaymentClient_FireWebhook_4xx(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"code":"bad","message":"nope"}`, http.StatusBadRequest)
 	}))
 	defer srv.Close()

@@ -41,7 +41,7 @@ func TestOrderClient_List(t *testing.T) {
 }
 
 func TestOrderClient_Get_NotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"code":"not_found","message":"order not found"}`, http.StatusNotFound)
 	}))
 	defer srv.Close()
@@ -89,7 +89,7 @@ func TestOrderClient_Submit(t *testing.T) {
 
 func TestOrderClient_Cancel_Idempotent(t *testing.T) {
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusNoContent) // 204 is OK
 	}))

@@ -23,11 +23,17 @@ type orderNewVM struct {
 	Error          string
 }
 
+// PageOrderNew serves GET /orders/new — renders the create-order
+// form. Always 200; the form is empty until the user submits.
 func (s *Set) PageOrderNew(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = s.Templates.ExecuteTemplate(w, "layout", orderNewVM{Body: "orderNewBody"})
 }
 
+// ActionOrderSubmit serves POST /v1/orders — form submission for
+// the create-order page. On success it returns HX-Redirect to
+// /orders/{id}; on failure it re-renders the form with an Error
+// banner (4xx for validation, 502 for upstream).
 func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -105,6 +111,9 @@ type orderDetailVM struct {
 // banner so the navbar stays usable. When called with ?frag=1 the
 // handler renders only the body fragment (no layout shell) so htmx
 // polling can swap just the page-content region.
+// PageOrderDetail serves GET /orders/{id} — renders the order
+// detail page. While the order is non-terminal the page polls
+// itself every 1s via htmx; otherwise it renders once.
 func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	vm := orderDetailVM{Body: "orderDetailBody"}
@@ -132,18 +141,18 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ActionOrderCancel serves POST /v1/orders/{id}. Wraps OrderClient.Cancel
-// and returns HX-Redirect to /orders/{id} so the page reloads after
-// the mutation. Upstream 401/404 surface as 404 BFF (cancel can't
-// proceed if the order doesn't exist or we lost authorization);
+// ActionOrderCancel serves POST /v1/orders/{id} — form submission
+// for the Cancel button on the order detail page. On success
+// returns HX-Redirect to /orders/{id}; upstream 401/404 surface
+// as 404 BFF (cancel can't proceed if the order doesn't exist),
 // 5xx + transport errors stay 502.
 func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := s.Order.Cancel(r.Context(), id); err != nil {
 		var he *backend.HTTPError
 		if errors.As(err, &he) {
-			switch {
-			case he.Status == http.StatusUnauthorized, he.Status == http.StatusNotFound:
+			switch he.Status {
+			case http.StatusUnauthorized, http.StatusNotFound:
 				http.Error(w, err.Error(), http.StatusNotFound)
 			default:
 				http.Error(w, err.Error(), http.StatusBadGateway)
@@ -179,6 +188,9 @@ type inventoryVM struct {
 // the inventory backend has gaps. When called with ?frag=1 the
 // handler renders only the body fragment (no layout shell) so htmx
 // polling can swap just the page-content region.
+// PageInventory serves GET /inventory — the per-SKU stock viewer.
+// SKU list is derived from the most recent orders' items; missing
+// inventory rows render as em-dashes (Missing: true).
 func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 	vm := inventoryVM{Body: "inventoryBody"}
 	list, err := s.Order.List(r.Context(), "", 50)
@@ -231,6 +243,9 @@ type paymentsSimVM struct {
 // for any of them. Both lists are queried independently so a partial
 // failure (one state errors out) still surfaces the other state.
 // BackendDown is only set when both queries fail.
+// PagePaymentsSim serves GET /payments/sim — the payment-webhook
+// simulator. Lists orders in pending or reserved state so an
+// operator can fire a force-success or force-fail webhook.
 func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 	pending, _ := s.Order.List(r.Context(), backend.OrderStatePending, 50)
 	reserved, _ := s.Order.List(r.Context(), backend.OrderStateReserved, 50)
@@ -258,6 +273,11 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 // for the same order. Responds with HX-Redirect to /payments/sim so
 // htmx reloads the page after the mutation. Backend failures surface
 // as 502 with the error body.
+// ActionPaymentsFire serves POST /payments/sim/fire — the
+// form submission behind the force ✓/force ✗ buttons. Builds a
+// PaymentWebhook from the form and proxies to the Payment service.
+// Sets a deterministic Idempotency-Key so the upstream's
+// idempotency cache dedupes identical replays.
 func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -287,6 +307,10 @@ func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 // It subscribes to s.Bus and emits one `event: <type>\ndata: <json>\n\n`
 // line per envelope. A 15s heartbeat keeps proxies from idling the
 // connection; ctx.Done() is honored for client disconnect.
+// PageEventsStream serves GET /events/stream — Server-Sent Events
+// subscribed to the in-process event bus. The Kafka tail goroutine
+// publishes each Kafka envelope onto the bus; this handler
+// relays them to the browser with a 15s heartbeat.
 func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

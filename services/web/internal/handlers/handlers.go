@@ -48,6 +48,9 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 // land, those handlers don't exist yet and chi will panic at startup
 // if you mount this against an empty Set. Wire Set.Routes only after
 // the corresponding handler method exists on the type.
+//
+// Routes wires the orderflow-web playground's HTTP routes on a chi
+// router: 6 GET pages + 3 POST actions.
 func (s *Set) Routes(r chi.Router) {
 	r.Get("/", s.PageOrdersList)
 	r.Get("/orders/new", s.PageOrderNew)

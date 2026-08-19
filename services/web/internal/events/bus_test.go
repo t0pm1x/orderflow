@@ -46,7 +46,7 @@ func TestBus_UnsubscribeStopsDelivery(t *testing.T) {
 	}
 }
 
-func TestBus_MultipleSubscribers(t *testing.T) {
+func TestBus_MultipleSubscribers(_ *testing.T) {
 	b := events.NewBus()
 	defer b.Close()
 	ch1, u1 := b.Subscribe()
