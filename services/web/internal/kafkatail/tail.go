@@ -1,5 +1,6 @@
 // Package kafkatail wraps pkg/consumer with a tiny adapter that
-// publishes every Kafka record on order-events to the in-process bus.
+// publishes every Kafka record on the orderflow event topics to
+// the in-process bus.
 package kafkatail
 
 import (
@@ -13,14 +14,24 @@ import (
 	"github.com/t0pm1x/orderflow/services/web/internal/events"
 )
 
-const (
-	topic   = "order-events"
-	groupID = "orderflow-web"
-)
+// All three orderflow event topics — the web UI's live-events
+// sidebar should surface events from every service, not just the
+// ones the saga emits to order-events. v1.1.5 widened the tail
+// from just order-events to all three; the pre-v1.1.5 tail missed
+// StockReserved / StockReservationFailed (inventory-events) and
+// PaymentCompleted / PaymentFailed (payment-events).
+var topics = []string{
+	"order-events",
+	"payment-events",
+	"inventory-events",
+}
 
-// Start subscribes a Kafka consumer to "order-events" with group
-// "orderflow-web" and publishes each Envelope into bus. Returns a
-// stop function that blocks until the consumer has exited.
+const groupID = "orderflow-web"
+
+// Start subscribes a Kafka consumer to all orderflow event topics
+// with group "orderflow-web" and publishes each Envelope into bus.
+// Returns a stop function that blocks until the consumer has
+// exited.
 //
 // brokersCSV may be empty: in that case Start returns (nil, nil)
 // and no consumer is started (the web service runs without live
@@ -34,16 +45,23 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 	c, err := kafkaconsumer.New(kafkaconsumer.Config{
 		Brokers: brokers,
 		GroupID: groupID,
-		Topics:  []string{topic},
+		Topics:  topics,
 		// DLQ=nil + Deduper=nil: skip retries/dedup; UI just acks.
 	}, kafkaconsumer.HandlerRegistry{
+		// order-events — saga emits these
 		"OrderCreated":          forwardToBus(bus),
 		"OrderConfirmed":        forwardToBus(bus),
 		"OrderCancelled":        forwardToBus(bus),
+		"OrderUpdated":          forwardToBus(bus),
 		"StockReserveRequested": forwardToBus(bus),
 		"StockReleaseRequested": forwardToBus(bus),
 		"PaymentRequested":      forwardToBus(bus),
-		"OrderUpdated":          forwardToBus(bus),
+		// inventory-events — inventory service emits these
+		"StockReserved":             forwardToBus(bus),
+		"StockReservationFailed":    forwardToBus(bus),
+		// payment-events — payment service emits these
+		"PaymentCompleted":          forwardToBus(bus),
+		"PaymentFailed":             forwardToBus(bus),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("kafka tail: %w", err)

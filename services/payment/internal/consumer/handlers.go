@@ -114,7 +114,20 @@ func (h *Handler) PaymentRequested(ctx context.Context, env *events.Envelope) er
 		return errors.New("PaymentRequested: order_id is required")
 	}
 
-	paymentID := uuid.NewString()
+	// Use the order_id as the payment row's primary key. The
+	// pre-v1.1.5 handler allocated a fresh uuid.NewString() here,
+	// which broke the orderflow-web "Force webhook" button: the
+	// BFF fires `POST /v1/payments/webhook` with payment_id set to
+	// the order_id (services/web/internal/backend/payment.go: the
+	// mock's idempotency guard keys on the webhook body, and the
+	// author intended payment_id == order_id), but the payment
+	// row's actual id was a fresh UUID, so the webhook's
+	// `repo.Get(payment_id)` returned ErrPaymentNotFound (HTTP 404)
+	// and the BFF surfaced 502. Aligning payment.id with order_id
+	// satisfies the existing UNIQUE(order_id) constraint, lets the
+	// web's "Force ✓/✗" buttons work out of the box, and removes
+	// the only cross-service id mismatch on the platform.
+	paymentID := p.OrderID
 
 	// Pick the last_four that drives the mock provider's
 	// success/decline branch. v1.1.5: prefer the value the saga
