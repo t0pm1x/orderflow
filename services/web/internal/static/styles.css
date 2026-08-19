@@ -21,7 +21,7 @@ a:hover { text-decoration: underline; }
 .event-OrderConfirmed { color: var(--good); }
 .event-OrderCancelled, .event-PaymentFailed { color: var(--bad); }
 .event-OrderCreated, .event-StockReserveRequested, .event-PaymentRequested, .event-StockReleaseRequested { color: var(--warn); }
-table { border-collapse: collapse; width: 100%; }
+table { border-collapse: collapse; width: 100%; overflow-x: auto; }
 th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
 th { color: var(--muted); font-weight: 600; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
@@ -53,3 +53,8 @@ form.sheet input, form.sheet select { width: 100%; padding: 8px 10px; background
 .timeline-type { font-weight: 600; }
 .timeline-payload { margin-top: 4px; }
 .timeline-payload pre { background: var(--bg); padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 11px; }
+
+@media (max-width: 720px) {
+  .main { grid-template-columns: 1fr; }
+  .sidebar { border-left: 0; border-top: 1px solid var(--border); max-height: 40vh; }
+}
