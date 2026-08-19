@@ -14,6 +14,7 @@ require (
 	github.com/t0pm1x/orderflow/consumer v0.0.0-00010101000000-000000000000
 	github.com/t0pm1x/orderflow/platform v0.0.0
 	github.com/twmb/franz-go v1.21.6
+	golang.org/x/sync v0.22.0
 )
 
 require (

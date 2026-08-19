@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1540,4 +1542,140 @@ func TestPageOrderEvents_NoFrag_RendersLayout(t *testing.T) {
 	if !strings.Contains(body, `<header class="topbar">`) {
 		t.Errorf("expected layout topbar, got: %s", body)
 	}
+}
+
+// slowInventoryClient is a fake backend.InventoryClient that
+// sleeps for `delay` per call and tracks the maximum number of
+// concurrent in-flight GetStock calls observed. TestPageInventory
+// uses it to verify that PageInventory fans out the per-SKU
+// reads concurrently rather than walking them serially.
+type slowInventoryClient struct {
+	stock       map[string]*backend.StockItem
+	delay       time.Duration
+	inFlight    int64
+	maxInFlight int64
+}
+
+func (f *slowInventoryClient) GetStock(_ context.Context, sku string) (*backend.StockItem, error) {
+	cur := atomic.AddInt64(&f.inFlight, 1)
+	for {
+		prev := atomic.LoadInt64(&f.maxInFlight)
+		if cur <= prev || atomic.CompareAndSwapInt64(&f.maxInFlight, prev, cur) {
+			break
+		}
+	}
+	time.Sleep(f.delay)
+	atomic.AddInt64(&f.inFlight, -1)
+	if item, ok := f.stock[sku]; ok {
+		return item, nil
+	}
+	return nil, fmt.Errorf("not found: %s", sku)
+}
+
+// TestPageInventory_FetchesConcurrently verifies that PageInventory
+// fans out per-SKU GetStock calls rather than walking them serially.
+// Without concurrency, 10 SKUs at 50ms each = 500ms+ and the maximum
+// number of in-flight calls is 1. With an errgroup.SetLimit(8) fan
+// out, the max observed must be > 1. The test pins the contract
+// (some parallel fetches) without coupling to the exact limit.
+func TestPageInventory_FetchesConcurrently(t *testing.T) {
+	skus := make([]backend.OrderItem, 10)
+	for i := range skus {
+		skus[i] = backend.OrderItem{SKU: fmt.Sprintf("SKU-%03d", i), Quantity: 1}
+	}
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-1", Items: skus},
+		}},
+	}
+	stock := make(map[string]*backend.StockItem, len(skus))
+	for _, it := range skus {
+		stock[it.SKU] = &backend.StockItem{SKU: it.SKU, Available: 10, Reserved: 0, Version: 1}
+	}
+	ic := &slowInventoryClient{stock: stock, delay: 50 * time.Millisecond}
+	srv := httptest.NewServer(newTestSetWith(t, oc, ic))
+	defer srv.Close()
+
+	start := time.Now()
+	resp, err := http.Get(srv.URL + "/inventory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	elapsed := time.Since(start)
+	max := atomic.LoadInt64(&ic.maxInFlight)
+	if max < 2 {
+		t.Errorf("expected concurrent fetches (max in-flight > 1), got %d (serial fan-out?)", max)
+	}
+	if elapsed > 450*time.Millisecond {
+		t.Errorf("handler took %s with 10 SKUs at 50ms each; expected ~10/8 * 50ms = ~60ms (serial would be ~500ms)", elapsed)
+	}
+}
+
+// TestPageInventory_PreservesSKUOrder verifies that the concurrent
+// fan-out preserves the dedup order of SKUs (first-seen wins) in
+// the rendered rows. The slow client returns SKUs in REVERSE order
+// (last requested first) so any accidental reliance on completion
+// order would surface as a row reordering; the page must still
+// show SKU-000 before SKU-001 before SKU-002.
+func TestPageInventory_PreservesSKUOrder(t *testing.T) {
+	skus := []backend.OrderItem{
+		{SKU: "SKU-000", Quantity: 1},
+		{SKU: "SKU-001", Quantity: 1},
+		{SKU: "SKU-002", Quantity: 1},
+	}
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-1", Items: skus},
+		}},
+	}
+	stock := make(map[string]*backend.StockItem, len(skus))
+	for _, it := range skus {
+		stock[it.SKU] = &backend.StockItem{SKU: it.SKU, Available: 10, Reserved: 0, Version: 1}
+	}
+	ic := &reversedInventoryClient{stock: stock, delay: 20 * time.Millisecond}
+	srv := httptest.NewServer(newTestSetWith(t, oc, ic))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/inventory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	idx0 := strings.Index(body, "SKU-000")
+	idx1 := strings.Index(body, "SKU-001")
+	idx2 := strings.Index(body, "SKU-002")
+	if idx0 < 0 || idx1 < 0 || idx2 < 0 {
+		t.Fatalf("missing SKUs in body: 0=%d 1=%d 2=%d", idx0, idx1, idx2)
+	}
+	if !(idx0 < idx1 && idx1 < idx2) {
+		t.Errorf("SKU order not preserved: SKU-000=%d SKU-001=%d SKU-002=%d", idx0, idx1, idx2)
+	}
+}
+
+// reversedInventoryClient sleeps for `delay` then returns stock in
+// REVERSE order of arrival, so any handler that relied on call
+// completion order (rather than input index) would emit rows in
+// the wrong order.
+type reversedInventoryClient struct {
+	stock map[string]*backend.StockItem
+	delay time.Duration
+	mu    sync.Mutex
+	keys  []string
+}
+
+func (f *reversedInventoryClient) GetStock(_ context.Context, sku string) (*backend.StockItem, error) {
+	f.mu.Lock()
+	f.keys = append(f.keys, sku)
+	f.mu.Unlock()
+	time.Sleep(f.delay)
+	return f.stock[sku], nil
 }

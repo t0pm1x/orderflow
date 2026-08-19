@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
@@ -285,7 +286,11 @@ type inventoryVM struct {
 // polling can swap just the page-content region.
 // PageInventory serves GET /inventory — the per-SKU stock viewer.
 // SKU list is derived from the most recent orders' items; missing
-// inventory rows render as em-dashes (Missing: true).
+// inventory rows render as em-dashes (Missing: true). Per-SKU
+// stocks are fetched concurrently with errgroup.SetLimit(8) so a
+// page with N SKUs is bounded by ceil(N/8) round-trips instead of
+// N. Output order is preserved by writing each goroutine's result
+// into a pre-sliced index, not by completion order.
 func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 	vm := inventoryVM{Body: "inventoryBody", EventsEnabled: s.EventsEnabled}
 	list, err := s.Order.List(r.Context(), "", 50)
@@ -294,6 +299,7 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 		vm.BackendDown = true
 		vm.Error = msg
 	} else {
+		skus := make([]string, 0, len(list.Items))
 		seen := make(map[string]struct{})
 		for _, o := range list.Items {
 			for _, it := range o.Items {
@@ -304,18 +310,30 @@ func (s *Set) PageInventory(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				seen[it.SKU] = struct{}{}
-				row := inventoryRow{SKU: it.SKU}
-				stock, gerr := s.Inventory.GetStock(r.Context(), it.SKU)
-				if gerr != nil || stock == nil {
-					row.Missing = true
-				} else {
-					row.Available = stock.Available
-					row.Reserved = stock.Reserved
-					row.Version = stock.Version
-				}
-				vm.Rows = append(vm.Rows, row)
+				skus = append(skus, it.SKU)
 			}
 		}
+		results := make([]inventoryRow, len(skus))
+		g, gctx := errgroup.WithContext(r.Context())
+		g.SetLimit(8)
+		for i, sku := range skus {
+			g.Go(func() error {
+				stock, gerr := s.Inventory.GetStock(gctx, sku)
+				if gerr != nil || stock == nil {
+					results[i] = inventoryRow{SKU: sku, Missing: true}
+					return nil
+				}
+				results[i] = inventoryRow{
+					SKU:       sku,
+					Available: stock.Available,
+					Reserved:  stock.Reserved,
+					Version:   stock.Version,
+				}
+				return nil
+			})
+		}
+		_ = g.Wait()
+		vm.Rows = results
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.URL.Query().Get("frag") == "1" {
