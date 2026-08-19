@@ -30,7 +30,7 @@ func (s *Set) PageOrderNew(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", 400)
+		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
 	vm := orderNewVM{
@@ -45,7 +45,7 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if vm.SKU == "" || vm.Quantity <= 0 {
 		vm.Error = "SKU and quantity (>0) are required"
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(400)
+		w.WriteHeader(http.StatusBadRequest)
 		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 		return
 	}
@@ -69,7 +69,7 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &he) {
 			vm.Error = fmt.Sprintf("Order service returned %d: %s", he.Status, he.Body)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if he.Status >= 400 && he.Status < 500 {
+			if he.Status >= http.StatusBadRequest && he.Status < 500 {
 				w.WriteHeader(http.StatusBadRequest)
 				_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 				return
@@ -85,7 +85,7 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("HX-Redirect", "/orders/"+out.ID)
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 }
 
 func atoi(s string) int {

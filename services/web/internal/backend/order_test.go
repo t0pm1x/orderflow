@@ -114,3 +114,25 @@ func TestOrderClient_Cancel_404IsOK(t *testing.T) {
 		t.Fatalf("Cancel should accept 404, got: %v", err)
 	}
 }
+
+// TestOrderClient_Cancel_UsesDELETE pins the wire-level cancel
+// contract: HTTP method MUST be DELETE, path MUST be /v1/orders/{id}.
+// The web UI form posts to /v1/orders/{id} on the BFF but the BFF
+// proxies a DELETE to the upstream; a regression to POST or PUT
+// would silently break the contract with the Order Service.
+func TestOrderClient_Cancel_UsesDELETE(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method: got %q want DELETE", r.Method)
+		}
+		if r.URL.Path != "/v1/orders/order-42" {
+			t.Errorf("path: got %q want /v1/orders/order-42", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := backend.New(nil, srv.URL, "http://localhost:8081", "http://localhost:8082")
+	if err := c.Cancel(context.Background(), "order-42"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+}

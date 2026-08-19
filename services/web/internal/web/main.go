@@ -73,15 +73,15 @@ func Run(ctx context.Context) error {
 	logger.Info("orderflow-web starting",
 		"version", Version,
 		"http_addr", envOrDefault("HTTP_ADDR", ":8083"),
-		"order_url", redact(envOrDefault("ORDER_URL", "http://localhost:8080")),
-		"payment_url", redact(envOrDefault("PAYMENT_URL", "http://localhost:8081")),
-		"inventory_url", redact(envOrDefault("INVENTORY_URL", "http://localhost:8082")),
+		"order_url", redact(envOrDefault("ORDER_URL", "http://localhost:8081")),
+		"payment_url", redact(envOrDefault("PAYMENT_URL", "http://localhost:8082")),
+		"inventory_url", redact(envOrDefault("INVENTORY_URL", "http://localhost:8083")),
 		"kafka_brokers", redact(envOrDefault("KAFKA_BROKERS", "")))
 
 	httpAddr := envOrDefault("HTTP_ADDR", ":8083")
-	orderURL := envOrDefault("ORDER_URL", "http://localhost:8080")
-	paymentURL := envOrDefault("PAYMENT_URL", "http://localhost:8081")
-	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8082")
+	orderURL := envOrDefault("ORDER_URL", "http://localhost:8081")
+	paymentURL := envOrDefault("PAYMENT_URL", "http://localhost:8082")
+	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8083")
 
 	bus := events.NewBus()
 	defer bus.Close()

@@ -31,10 +31,12 @@ jobs:
             services/payment/go.sum
             services/inventory/go.sum
             services/saga/go.sum
+            services/web/go.sum
             cmd/order/go.sum
             cmd/payment/go.sum
             cmd/inventory/go.sum
             cmd/saga/go.sum
+            cmd/web/go.sum
 
       - name: Test
         run: make test
@@ -63,10 +65,12 @@ jobs:
             services/payment/go.sum
             services/inventory/go.sum
             services/saga/go.sum
+            services/web/go.sum
             cmd/order/go.sum
             cmd/payment/go.sum
             cmd/inventory/go.sum
             cmd/saga/go.sum
+            cmd/web/go.sum
 
       - id: set-modules
         run: |
@@ -97,10 +101,12 @@ jobs:
             services/payment/go.sum
             services/inventory/go.sum
             services/saga/go.sum
+            services/web/go.sum
             cmd/order/go.sum
             cmd/payment/go.sum
             cmd/inventory/go.sum
             cmd/saga/go.sum
+            cmd/web/go.sum
 
       - uses: golangci/golangci-lint-action@v9
         with:
@@ -128,10 +134,12 @@ jobs:
             services/payment/go.sum
             services/inventory/go.sum
             services/saga/go.sum
+            services/web/go.sum
             cmd/order/go.sum
             cmd/payment/go.sum
             cmd/inventory/go.sum
             cmd/saga/go.sum
+            cmd/web/go.sum
 
       - name: Build service binaries
         run: |

@@ -24,6 +24,7 @@ type fakeOrderClient struct {
 	getResp     *backend.Order
 	getErr      error
 	cancelCalls int
+	lastCancel  string
 }
 
 func (f *fakeOrderClient) List(ctx context.Context, _ backend.OrderState, _ int) (*backend.OrderList, error) {
@@ -35,8 +36,9 @@ func (f *fakeOrderClient) Get(_ context.Context, _ string) (*backend.Order, erro
 func (f *fakeOrderClient) Submit(_ context.Context, _ backend.OrderSubmit) (*backend.Order, error) {
 	return f.submitResp, f.submitErr
 }
-func (f *fakeOrderClient) Cancel(_ context.Context, _ string) error {
+func (f *fakeOrderClient) Cancel(_ context.Context, id string) error {
 	f.cancelCalls++
+	f.lastCancel = id
 	return nil
 }
 
@@ -303,6 +305,9 @@ func TestOrderCancel_OK(t *testing.T) {
 	}
 	if oc.cancelCalls != 1 {
 		t.Errorf("Cancel calls: got %d want 1", oc.cancelCalls)
+	}
+	if oc.lastCancel != "order-1" {
+		t.Errorf("Cancel id: got %q want order-1 (handler must forward the chi URL param)", oc.lastCancel)
 	}
 }
 

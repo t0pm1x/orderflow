@@ -151,9 +151,9 @@ services:
     ports:
       - "8085:8083"
     environment:
-      ORDER_URL: http://order:8080
-      PAYMENT_URL: http://payment:8081
-      INVENTORY_URL: http://inventory:8082
+      ORDER_URL: http://order:8081
+      PAYMENT_URL: http://payment:8082
+      INVENTORY_URL: http://inventory:8083
       KAFKA_BROKERS: redpanda:9092
       HTTP_ADDR: ":8083"
     restart: unless-stopped

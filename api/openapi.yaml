@@ -6,19 +6,19 @@ info:
     Event-driven order processing platform.
 
     Three independent HTTP services, each exposing its own port:
-      - Order Service     (8080) — customer-facing order CRUD
-      - Payment Service   (8081) — mock payment provider callback
-      - Inventory Service (8082) — stock reservation (called by saga)
+      - Order Service     (8081) — customer-facing order CRUD
+      - Payment Service   (8082) — mock payment provider callback
+      - Inventory Service (8083) — stock reservation (called by saga)
 
     Saga coordination is event-driven via Kafka, not via these HTTP APIs,
     so each service is loosely coupled and individually deployable.
 
 servers:
-  - url: http://localhost:8080
-    description: Order Service (dev)
   - url: http://localhost:8081
-    description: Payment Service (dev)
+    description: Order Service (dev)
   - url: http://localhost:8082
+    description: Payment Service (dev)
+  - url: http://localhost:8083
     description: Inventory Service (dev)
 
 tags:
