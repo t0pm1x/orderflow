@@ -24,6 +24,11 @@
 
 ### Quickstart
 ```bash
+# Easy run — full stack on your laptop in one command (requires Docker + Go + Make)
+bash scripts/run.sh                                          # macOS / Linux / WSL
+pwsh -ExecutionPolicy Bypass -File scripts\run.ps1           # Windows
+# tear down:  bash scripts/stop.sh   /   pwsh scripts\stop.ps1
+
 # Local happy-path demo (requires docker + 8GB RAM)
 bash docs/demo/demo.sh
 
@@ -39,6 +44,12 @@ make smoke-k8s
 # Demo recording (requires asciinema)
 make record
 ```
+
+See [RUN.md](RUN.md) for prerequisites, what gets started, smoke-test
+curl commands, and the troubleshooting matrix. The easy-run script
+brings up the same infra as `docs/demo/demo.sh` but wraps the
+`docker compose up` + `make build` + 5-binary launch into a single
+command with healthchecks.
 
 ### Web playground (optional)
 

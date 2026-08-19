@@ -34,6 +34,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — E2E chain repair (v1.1.5)
+
+Closes the E2E test gap surfaced by the v1.1.4 batch: the orderflow
+chain never actually reached `confirmed` in CI because two distinct
+test-wiring bugs masked one production bug; one of the three had
+been flaky for several batches and was masked by the others.
+
+- **Harness: saga migrations now applied to the order PG** (P0).
+  The E2E test wires the saga service's `DATABASE_URL` at
+  `h.PostgresURLs["order"]`, but the harness only applied the
+  order service's own migrations to that PG — never the saga
+  migrations. `order_sagas` and `saga_outbox` never existed; the
+  saga's TTL sweep logged `relation "order_sagas" does not
+  exist` continuously and `OrderCreatedHandler.InsertTx` failed on
+  every event, so the chain stalled on `pending`. Fix: apply the
+  saga migrations to the order PG in `mustPostgres("order")` so
+  the saga runtime finds its tables where it expects them.
+
+- **Harness: pre-create Kafka topics before any service boots**
+  (P0). The testcontainer Kafka image enables
+  `auto.create.topics.enable=true`, but the producer's first publish
+  on a topic that doesn't yet exist races auto-create latency and
+  receives `UNKNOWN_TOPIC_OR_PARTITION` for several hundred ms.
+  The order service's outbox poller has a hard retry budget of
+  `MaxAttempts=5 × Interval=100ms = 500ms`, after which the row
+  is DLQ'd. CI logs showed the exact pattern: 5×
+  `UNKNOWN_TOPIC_OR_PARTITION` followed by `context canceled`.
+  Fix: new `preCreateKafkaTopics` helper in
+  `tests/harness/kafka_topics.go` issues a single `CreateTopics`
+  request via `kgo.Client.Request` + `kmsg` before any service
+  binary boots; tolerates `TOPIC_ALREADY_EXISTS` for re-runs.
+
+- **`payment.last_four` plumbed end-to-end** (P1 — production
+  bug). The order service's `submitRequest` had no `payment`
+  field, so the compensation test's
+  `"payment": {"last_four": "0001"}` body was silently dropped.
+  The mock payment provider's deterministic success/decline
+  branch
+  (`services/payment/internal/provider/provider.go`) is keyed on
+  the last 4 chars of `last_four` (`0001` → declined); the
+  pre-v1.1.5 handler fell back to deriving from
+  `orderID[len(orderID)-4:]` (random hex, virtually never
+  `0001`), so the compensation test was always exercising the
+  happy path, not the failure path. Fix: add
+  `submitRequest.Payment.LastFour` → forward on
+  `OrderCreatedPayload.LastFour` → persist on
+  `order_sagas.last_four` (new
+  `services/saga/migrations/0003_saga_payment_last_four.sql`) →
+  forward on `PaymentRequestedPayload.LastFour` → prefer in
+  `PaymentRequested` handler (fall back to deriving from
+  `orderID` for pre-v1.1.5 wire-shape clients).
+
+### Removed
+
+- Drop the temporary `Fprintf` chain-stall diagnostics from
+  `pkg/outbox/poller.go` that landed in commit `4cd5f46` to find
+  the E2E failure. Root cause was the harness saga-migrations
+  bug, not something visible from inside the poller.
+
 ## [1.1.4] - 2026-08-19
 
 ### Fixed — final-engineering-pass batch
