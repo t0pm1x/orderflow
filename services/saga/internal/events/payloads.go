@@ -19,10 +19,20 @@ type StockReserveRequestedPayload struct {
 // the saga asks payment to charge the order total. IdempotencyKey
 // is a fresh UUID per request so the payment service can safely
 // retry without double-charging.
+//
+// LastFour is the client-supplied payment hint copied from the
+// originating OrderCreated event (and persisted on the saga row by
+// the v1.1.5 migration). The payment service passes it to
+// provider.Charge so the mock can pick a deterministic
+// success/decline branch on cards ending in 0001. Empty when the
+// submit body did not include a payment block; the payment handler
+// falls back to deriving from orderID in that case so pre-v1.1.5
+// clients keep their old behavior.
 type PaymentRequestedPayload struct {
 	OrderID        string `json:"order_id"`
 	AmountCents    int64  `json:"amount_cents"`
 	IdempotencyKey string `json:"idempotency_key"`
+	LastFour       string `json:"last_four,omitempty"`
 }
 
 // OrderConfirmedPayload is emitted when the saga reaches the

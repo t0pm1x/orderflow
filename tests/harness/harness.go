@@ -89,6 +89,20 @@ func New(t *testing.T, opts ...Option) *Harness {
 	rd := mustRedis(ctx, t)
 	kf := mustKafka(ctx, t)
 
+	// Pre-create the topics the services publish/consume so the
+	// first outbox publish doesn't race Kafka's auto-create latency.
+	// Without this the order_outbox poller sees
+	// `UNKNOWN_TOPIC_OR_PARTITION` on the first ~5 attempts; with
+	// MaxAttempts=5 × Interval=100ms = 500ms retry budget, the row
+	// can be DLQ'd before Kafka finishes auto-creating the topic,
+	// and the chain stalls because the saga never receives the
+	// OrderCreated event.
+	preCreateKafkaTopics(ctx, t, kf.brokers, []string{
+		"order-events",
+		"payment-events",
+		"inventory-events",
+	})
+
 	h := &Harness{
 		OrderURL:     pgOrder.url,
 		PaymentURL:   pgPay.url,
@@ -240,6 +254,26 @@ func mustPostgres(ctx context.Context, t *testing.T, svcName string) *pgHandle {
 
 	if err := applyMigrations(ctx, connStr, svcName); err != nil {
 		t.Fatalf("harness: apply migrations (%s): %v", svcName, err)
+	}
+
+	// The saga service shares the order PG in the E2E test:
+	// tests/e2e/order_confirmed_test.go and compensation_test.go
+	// wire DATABASE_URL=h.PostgresURLs["order"]. Apply the saga
+	// schema to the same DB so the saga runtime's order_sagas and
+	// saga_outbox tables exist; without them the saga service's
+	// TTL sweep and OrderCreatedHandler both fail at runtime with
+	// `relation "order_sagas" does not exist (SQLSTATE 42P01)`.
+	// v1.1.4 regression: the harness had 3 PG instances (order,
+	// payment, inventory) and applied each service's own migrations
+	// to its own PG. The saga service's DATABASE_URL pointed at
+	// the order PG, but the order PG only carried the order
+	// migrations — order_sagas was never created. Test stalled on
+	// "pending" because the saga consumer could not insert the
+	// saga row.
+	if svcName == "order" {
+		if err := applyMigrations(ctx, connStr, "saga"); err != nil {
+			t.Fatalf("harness: apply saga migrations to order PG: %v", err)
+		}
 	}
 
 	return &pgHandle{container: c, url: connStr}

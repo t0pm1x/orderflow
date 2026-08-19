@@ -30,6 +30,15 @@ type OrderCreatedPayload struct {
 	Items      []domain.OrderItem `json:"items"`
 	TotalCents int64              `json:"total_cents"`
 	State      string             `json:"state"`
+	// LastFour is the opaque last-four-digits string the client
+	// passed on the submit request (POST /v1/orders). The saga
+	// forwards it on the downstream PaymentRequested event so the
+	// payment provider can pick a success/decline branch on
+	// determinism rather than orderID-derived coincidence. Empty
+	// when the submit body did not include a payment block (the
+	// historical v1.x behavior — keep working without forcing
+	// callers to send payment info).
+	LastFour string `json:"last_four,omitempty"`
 }
 
 // Repository is the data access interface for Orders.
@@ -80,6 +89,23 @@ func (h *Handler) Routes() http.Handler {
 type submitRequest struct {
 	CustomerID string             `json:"customer_id"`
 	Items      []domain.OrderItem `json:"items"`
+	// Payment is the client-supplied payment hint. Today only
+	// LastFour is forwarded — it lets the mock payment provider
+	// (services/payment/internal/provider/provider.go) pick a
+	// deterministic success/decline branch on cards ending in
+	// 0001, instead of the orderID-derived coincidence the v1.x
+	// handlers relied on. Optional; an empty Payment block is a
+	// no-op so existing callers keep working.
+	Payment *submitRequestPayment `json:"payment,omitempty"`
+}
+
+// submitRequestPayment is the slice of the submit body that is
+// relayed onto the OrderCreated event. Modeled as its own struct
+// (rather than inlining fields) so a future addition like
+// "stripe_token" can land without churning submitRequest's JSON
+// shape or its existing callers' omitempty behavior.
+type submitRequestPayment struct {
+	LastFour string `json:"last_four"`
 }
 
 func (h *Handler) submit(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +130,9 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	o := domain.NewOrder(custID, req.Items)
+	if req.Payment != nil {
+		o.LastFour = req.Payment.LastFour
+	}
 
 	rec, buildErr := buildOrderCreatedRecord(o)
 	if buildErr != nil {
@@ -196,6 +225,7 @@ func buildOrderCreatedRecord(o *domain.Order) (outbox.Record, error) {
 		Items:      o.Items,
 		TotalCents: int64(o.TotalCents),
 		State:      string(o.State),
+		LastFour:   o.LastFour,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

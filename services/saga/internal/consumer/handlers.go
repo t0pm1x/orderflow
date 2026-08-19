@@ -86,6 +86,11 @@ func (h *Handler) Registry() pkgconsumer.HandlerRegistry {
 // first item (multi-item flow is out of scope for v0.5.0). Both
 // writes share one pgx.BeginFunc so the saga row only commits if
 // the outbox event is queued.
+//
+// The v1.1.5 handler also persists the order's LastFour payment
+// hint on the saga row (saga/migrations/0003_saga_payment_last_four.sql)
+// so StockReservedHandler can forward it on the downstream
+// PaymentRequested payload — see the doc on events.PaymentRequestedPayload.
 func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID    string `json:"order_id"`
@@ -95,7 +100,8 @@ func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope)
 			Quantity       int    `json:"quantity"`
 			UnitPriceCents int64  `json:"unit_price_cents"`
 		} `json:"items"`
-		TotalCents int64 `json:"total_cents"`
+		TotalCents int64  `json:"total_cents"`
+		LastFour   string `json:"last_four,omitempty"`
 	}
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		h.logger.Warn("OrderCreated unmarshal", "err", err, "event_id", env.EventID)
@@ -120,6 +126,7 @@ func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope)
 			Items:         itemsJSON,
 			TotalCents:    p.TotalCents,
 			ReservationID: reservationID,
+			LastFour:      p.LastFour,
 		}); err != nil {
 			return err
 		}
@@ -147,6 +154,11 @@ func (h *Handler) OrderCreatedHandler(ctx context.Context, env *events.Envelope)
 // after the tx committed but before the offset was marked) is a
 // no-op — no second PaymentRequested is emitted, no double
 // charge downstream.
+//
+// The v1.1.5 handler also forwards LastFour from the saga row onto
+// the PaymentRequested payload (set in OrderCreatedHandler). The
+// payment service uses it to pick a deterministic success/decline
+// branch instead of the pre-v1.1.5 derive-from-orderID fallback.
 func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope) error {
 	var p struct {
 		OrderID string `json:"order_id"`
@@ -176,6 +188,7 @@ func (h *Handler) StockReservedHandler(ctx context.Context, env *events.Envelope
 			OrderID:        p.OrderID,
 			AmountCents:    s.TotalCents,
 			IdempotencyKey: uuid.NewString(),
+			LastFour:       s.LastFour,
 		})
 		if perr != nil {
 			return perr

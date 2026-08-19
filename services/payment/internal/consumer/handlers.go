@@ -105,6 +105,7 @@ func (h *Handler) PaymentRequested(ctx context.Context, env *events.Envelope) er
 		OrderID        string `json:"order_id"`
 		AmountCents    int64  `json:"amount_cents"`
 		IdempotencyKey string `json:"idempotency_key"`
+		LastFour       string `json:"last_four,omitempty"`
 	}
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return fmt.Errorf("decode PaymentRequested: %w", err)
@@ -115,16 +116,20 @@ func (h *Handler) PaymentRequested(ctx context.Context, env *events.Envelope) er
 
 	paymentID := uuid.NewString()
 
-	// Derive lastFour from the order_id for the mock provider. Real
-	// integrations would read this from the order's payment row (we
-	// don't have one yet at this stage). For UUIDs this gives the
-	// last 4 hex chars of the order_id; for the magic suffixes in
-	// the mock ("0001"/"0002"/"0003") the operator has to construct
-	// a matching order_id. Fallback "0000" means "anything else →
-	// succeeded" in the mock.
-	lastFour := "0000"
-	if len(p.OrderID) >= 4 {
-		lastFour = p.OrderID[len(p.OrderID)-4:]
+	// Pick the last_four that drives the mock provider's
+	// success/decline branch. v1.1.5: prefer the value the saga
+	// forwarded from the originating OrderCreated event (which in
+	// turn came from the submit body); this makes the test
+	// `last_four=0001 → declined` claim actually deterministic.
+	// Pre-v1.1.5 fallback: derive from orderID[len(orderID)-4:]
+	// when the saga didn't forward a hint — keep that behavior
+	// for clients that haven't yet shipped the v1.1.5 wire shape.
+	lastFour := p.LastFour
+	if lastFour == "" {
+		lastFour = "0000"
+		if len(p.OrderID) >= 4 {
+			lastFour = p.OrderID[len(p.OrderID)-4:]
+		}
 	}
 
 	result, err := provider.Charge(ctx, paymentID, p.AmountCents, lastFour)

@@ -244,6 +244,58 @@ func readRepoFile(t *testing.T, parts ...string) []byte {
 	return b
 }
 
+// dumpServiceLogs t.Logfs the last maxLines of every
+// tests/logs/<svc>.log file the harness wrote. Call this on
+// chain-stall timeout so the next CI run shows the spawned
+// services' diagnostic output in the test's stdout (in addition
+// to the e2e-service-logs GitHub Actions artifact). Each log is
+// delimited with a header so multiple services' output stays
+// readable in the test log.
+//
+// Safe to call on a fresh checkout (no logs) — it no-ops in that
+// case.
+func dumpServiceLogs(t *testing.T, maxLines int) {
+	t.Helper()
+	root, err := harness.FindRepoRoot()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(root, "tests", "logs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		t.Logf("========== tests/logs/%s (last %d lines) ==========", e.Name(), maxLines)
+		t.Logf("%s", tailLines(string(data), maxLines))
+	}
+}
+
+// tailLines returns the last n lines of s, prefixed by "..."
+// when truncated.
+func tailLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return "...[truncated " + strconvItoa(len(lines)-n) + " lines]...\n" +
+		strings.Join(lines[len(lines)-n:], "\n")
+}
+
+// strconvItoa is a tiny wrapper so the tailLines log message
+// uses fmt.Sprintf without dragging in strconv for one call.
+func strconvItoa(n int) string {
+	return fmt.Sprintf("%d", n)
+}
+
 // postOrder submits body to POST baseURL+"/v1/orders" and returns
 // the parsed order. Single attempt — see the package doc for
 // the POST /v1/orders retry-safety rationale. On anything but

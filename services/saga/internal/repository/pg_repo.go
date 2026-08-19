@@ -19,12 +19,19 @@ import (
 // Saga is the in-memory shape of an order_sagas row. Items is
 // pre-marshalled JSON (the JSONB column in Postgres). State is the
 // saga state machine string (initiated, stock_reserved, etc.).
+// LastFour is the client-supplied payment hint carried over from
+// the OrderCreated event (services/saga/migrations/0003_*.sql); the
+// saga forwards it on the downstream PaymentRequested payload so
+// the payment provider's deterministic success/decline branch
+// fires on the cards the caller actually submitted, not on a
+// coincidence of the orderID's last hex chars.
 type Saga struct {
 	OrderID       string
 	State         saga.State
 	Items         []byte
 	TotalCents    int64
 	ReservationID string
+	LastFour      string
 }
 
 // Repository is the abstract contract PGRepo satisfies. The
@@ -79,9 +86,9 @@ var _ Repository = (*PGRepo)(nil)
 // error from pgx; callers treat that as "already started".
 func (r *PGRepo) Insert(ctx context.Context, s *Saga) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '5 minutes')`,
-		s.OrderID, string(s.State), s.Items, s.TotalCents, s.ReservationID,
+		`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, last_four, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')`,
+		s.OrderID, string(s.State), s.Items, s.TotalCents, s.ReservationID, s.LastFour,
 	)
 	return err
 }
@@ -92,9 +99,9 @@ func (r *PGRepo) Insert(ctx context.Context, s *Saga) error {
 // events commit (or roll back) atomically.
 func (r *PGRepo) InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '5 minutes')`,
-		s.OrderID, string(s.State), s.Items, s.TotalCents, s.ReservationID,
+		`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, last_four, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')`,
+		s.OrderID, string(s.State), s.Items, s.TotalCents, s.ReservationID, s.LastFour,
 	)
 	return err
 }
@@ -104,13 +111,13 @@ func (r *PGRepo) InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) error {
 // the saga row).
 func (r *PGRepo) Get(ctx context.Context, orderID string) (*Saga, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT order_id, state, items, total_cents, reservation_id
+		`SELECT order_id, state, items, total_cents, reservation_id, last_four
 		   FROM order_sagas WHERE order_id = $1`, orderID)
 	var (
 		s     Saga
 		state string
 	)
-	if err := row.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID); err != nil {
+	if err := row.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID, &s.LastFour); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -124,13 +131,13 @@ func (r *PGRepo) Get(ctx context.Context, orderID string) (*Saga, error) {
 // open transaction.
 func (r *PGRepo) GetTx(ctx context.Context, tx pgx.Tx, orderID string) (*Saga, error) {
 	row := tx.QueryRow(ctx,
-		`SELECT order_id, state, items, total_cents, reservation_id
+		`SELECT order_id, state, items, total_cents, reservation_id, last_four
 		   FROM order_sagas WHERE order_id = $1`, orderID)
 	var (
 		s     Saga
 		state string
 	)
-	if err := row.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID); err != nil {
+	if err := row.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID, &s.LastFour); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -240,7 +247,7 @@ func (r *PGRepo) SetReservationID(ctx context.Context, orderID, reservationID st
 // bound tx size.
 func (r *PGRepo) ListExpired(ctx context.Context, limit int) ([]*Saga, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT order_id, state, items, total_cents, reservation_id
+		`SELECT order_id, state, items, total_cents, reservation_id, last_four
 		   FROM order_sagas
 		  WHERE expires_at < NOW()
 		    AND state NOT IN ('completed', 'compensated')
@@ -256,7 +263,7 @@ func (r *PGRepo) ListExpired(ctx context.Context, limit int) ([]*Saga, error) {
 			s     Saga
 			state string
 		)
-		if err := rows.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID); err != nil {
+		if err := rows.Scan(&s.OrderID, &state, &s.Items, &s.TotalCents, &s.ReservationID, &s.LastFour); err != nil {
 			return nil, err
 		}
 		s.State = saga.State(state)

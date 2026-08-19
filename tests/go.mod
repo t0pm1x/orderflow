@@ -8,6 +8,8 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.31.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.31.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.31.0
+	github.com/twmb/franz-go v1.21.6
+	github.com/twmb/franz-go/pkg/kmsg v1.13.1
 )
 
 require (

@@ -108,6 +108,7 @@ func TestE2E_Compensation_PaymentDeclined_CancelsOrder(t *testing.T) {
 	}
 	last := observed[len(observed)-1].State
 	if last != "cancelled" && last != "failed" {
+		dumpServiceLogs(t, 80)
 		t.Fatalf("order %s expected cancelled/failed, got %q; observed=%s; "+
 			"check tests/logs/{order,saga,inventory,payment}.log on the CI runner for chain stall",
 			created.ID, last, formatStates(observed))

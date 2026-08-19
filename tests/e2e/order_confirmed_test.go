@@ -111,6 +111,7 @@ func TestE2E_OrderReachesConfirmed(t *testing.T) {
 			created.ID, pollingBudget)
 	}
 	if observed[len(observed)-1].State != "confirmed" {
+		dumpServiceLogs(t, 80)
 		t.Fatalf("order %s did not reach confirmed; final state=%q, observed=%s; "+
 			"check tests/logs/{order,saga,inventory,payment}.log on the CI runner for chain stall",
 			created.ID,
