@@ -19,23 +19,31 @@ import (
 )
 
 type fakeOrderClient struct {
-	listResp     *backend.OrderList
-	listErr      error
-	submitResp   *backend.Order
-	submitErr    error
-	submitCallsN int
-	getResp      *backend.Order
-	getErr       error
-	getCalls     int
-	cancelCalls  int
-	cancelErr    error
-	lastCancel   string
-	lastSubmit   *backend.OrderSubmit
+	listResp       *backend.OrderList
+	listErr        error
+	listErrPending error
+	listErrReserved error
+	submitResp     *backend.Order
+	submitErr      error
+	submitCallsN   int
+	getResp        *backend.Order
+	getErr         error
+	getCalls       int
+	cancelCalls    int
+	cancelErr      error
+	lastCancel     string
+	lastSubmit     *backend.OrderSubmit
 }
 
 func (f *fakeOrderClient) List(_ context.Context, state backend.OrderState, _ int) (*backend.OrderList, error) {
 	if f.listErr != nil {
 		return f.listResp, f.listErr
+	}
+	if state == backend.OrderStatePending && f.listErrPending != nil {
+		return f.listResp, f.listErrPending
+	}
+	if state == backend.OrderStateReserved && f.listErrReserved != nil {
+		return f.listResp, f.listErrReserved
 	}
 	if state == "" || f.listResp == nil {
 		return f.listResp, f.listErr
@@ -1165,5 +1173,48 @@ func TestPagePaymentsSim_UpstreamError_HidesRawBody(t *testing.T) {
 	}
 	if strings.Contains(body, "secret info") {
 		t.Errorf("body leaked upstream payload 'secret info': %s", body)
+	}
+}
+
+// TestPagePaymentsSim_PartialFailure_HidesRawBody exercises the
+// partial-failure branch: the pending list returns a 4xx (bad filter)
+// while the reserved list succeeds. The handler must (a) hide the
+// upstream's raw payload, (b) route the 4xx through mapUpstreamError
+// so the operator sees a user-fixable message rather than the
+// hardcoded 5xx "temporarily unavailable" hint, and (c) still render
+// the reserved rows so the page stays usable.
+func TestPagePaymentsSim_PartialFailure_HidesRawBody(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-res-1", State: backend.OrderStateReserved},
+		}},
+		listErrPending: &backend.HTTPError{Status: 422, Body: "internal: invalid_state_filter 'pendng' at parse.go:42", URL: "http://order/v1/orders?state=pendng"},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/payments/sim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	for _, leak := range []string{"internal:", "invalid_state_filter", "parse.go", "pendng"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("body leaked upstream payload %q: %s", leak, body)
+		}
+	}
+	if !strings.Contains(body, "ord-res-1") {
+		t.Errorf("expected successful reserved row to render: %s", body)
+	}
+	if !strings.Contains(body, "Partial backend failure") {
+		t.Errorf("expected partial-failure banner: %s", body)
+	}
+	if strings.Contains(body, "temporarily unavailable") {
+		t.Errorf("4xx leaked as 5xx 'temporarily unavailable': %s", body)
 	}
 }

@@ -345,18 +345,19 @@ type paymentsRow struct {
 // (state=pending + state=reserved) so the operator can fire a webhook
 // for any of them. Both lists are queried independently so a partial
 // failure (one state errors out) still surfaces the other state.
-// BackendDown is only set when both queries fail.
+// BackendDown is only set when both queries fail. Errors are routed
+// through mapUpstreamError so the upstream payload is logged
+// server-side and the operator sees a safe, context-appropriate
+// message (4xx for bad filter, 5xx "try again", transport "check
+// connection") rather than a hardcoded "temporarily unavailable"
+// for every failure mode.
 // PagePaymentsSim serves GET /payments/sim — the payment-webhook
 // simulator. Lists orders in pending or reserved state so an
 // operator can fire a force-success or force-fail webhook.
 func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
-	pending, _ := s.Order.List(r.Context(), backend.OrderStatePending, 50)
-	reserved, _ := s.Order.List(r.Context(), backend.OrderStateReserved, 50)
+	pending, perr := s.Order.List(r.Context(), backend.OrderStatePending, 50)
+	reserved, rerr := s.Order.List(r.Context(), backend.OrderStateReserved, 50)
 	vm := paymentsSimVM{Body: "paymentsSimBody"}
-	if pending == nil && reserved == nil {
-		vm.BackendDown = true
-		vm.Error = "The order service is temporarily unavailable. Please try again in a moment."
-	}
 	addRows := func(items []backend.Order) {
 		for _, o := range items {
 			vm.InFlight = append(vm.InFlight, paymentsRow{
@@ -367,11 +368,26 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	if pending != nil {
+	if perr == nil && pending != nil {
 		addRows(pending.Items)
 	}
-	if reserved != nil {
+	if rerr == nil && reserved != nil {
 		addRows(reserved.Items)
+	}
+	switch {
+	case perr != nil && rerr != nil:
+		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders (payments-sim: pending)", perr)
+		if alt, _ := mapUpstreamError(s.Logger, "GET /v1/orders (payments-sim: reserved)", rerr); alt != "" && msg == "" {
+			msg = alt
+		}
+		vm.BackendDown = true
+		vm.Error = msg
+	case perr != nil:
+		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders (payments-sim: pending)", perr)
+		vm.Error = msg
+	case rerr != nil:
+		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders (payments-sim: reserved)", rerr)
+		vm.Error = msg
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.Templates.ExecuteTemplate(w, "layout", vm); err != nil {

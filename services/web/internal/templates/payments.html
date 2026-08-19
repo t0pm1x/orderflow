@@ -2,7 +2,7 @@
 <section>
   <h1>Payment webhook simulator</h1>
   <p class="muted">Fire a webhook into the Payment Service for any in-flight order below. The payment_id is derived deterministically from the order_id so replays are idempotent.</p>
-  {{if .BackendDown}}<div class="error">Backend unavailable: {{.Error}}</div>{{end}}
+  {{if .Error}}<div class="error">{{if .BackendDown}}Backend unavailable{{else}}Partial backend failure{{end}}: {{.Error}}</div>{{end}}
   {{if and (not .BackendDown) .InFlight}}
   <table>
     <thead><tr><th>Order</th><th>State</th><th>Fire succeeded</th><th>Fire failed</th></tr></thead>
