@@ -16,8 +16,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
+	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
 	"github.com/t0pm1x/orderflow/services/web/internal/static"
 )
 

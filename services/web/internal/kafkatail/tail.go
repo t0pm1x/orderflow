@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"sync"
 
-	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
 	kafkaconsumer "github.com/t0pm1x/orderflow/consumer"
+	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
 	"github.com/t0pm1x/orderflow/services/web/internal/events"
 )
 
@@ -37,13 +37,13 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 		Topics:  []string{topic},
 		// DLQ=nil + Deduper=nil: skip retries/dedup; UI just acks.
 	}, kafkaconsumer.HandlerRegistry{
-		"OrderCreated":            forwardToBus(bus),
-		"OrderConfirmed":          forwardToBus(bus),
-		"OrderCancelled":          forwardToBus(bus),
-		"StockReserveRequested":   forwardToBus(bus),
-		"StockReleaseRequested":   forwardToBus(bus),
-		"PaymentRequested":        forwardToBus(bus),
-		"OrderUpdated":            forwardToBus(bus),
+		"OrderCreated":          forwardToBus(bus),
+		"OrderConfirmed":        forwardToBus(bus),
+		"OrderCancelled":        forwardToBus(bus),
+		"StockReserveRequested": forwardToBus(bus),
+		"StockReleaseRequested": forwardToBus(bus),
+		"PaymentRequested":      forwardToBus(bus),
+		"OrderUpdated":          forwardToBus(bus),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("kafka tail: %w", err)

@@ -24,9 +24,11 @@ import (
 //
 //go:embed fetchPending.sql
 var fetchPendingSQL string
+
 //
 //go:embed markSent.sql
 var markSentSQL string
+
 //
 //go:embed markFailed.sql
 var markFailedSQL string
