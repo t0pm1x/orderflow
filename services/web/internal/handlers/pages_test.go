@@ -1669,6 +1669,115 @@ func TestPageEventsStream_Disabled_Returns503(t *testing.T) {
 	}
 }
 
+// TestPageEventsStream_EmitsIDLine covers P2.10: the SSE handler
+// must emit an `id: <EventID>` line in every event frame so the
+// browser EventSource can replay missed events on reconnect via the
+// Last-Event-ID header. Without the id line, a network blip silently
+// drops the events that arrived during the disconnect window. The
+// test publishes a bus envelope with a known EventID, streams a few
+// bytes off the open connection, and asserts the frame contains
+// `id: <EventID>`, `event: <EventType>`, and `data: ...` lines in
+// the SSE wire order (id, event, data).
+func TestPageEventsStream_EmitsIDLine(t *testing.T) {
+	handler, bus := newTestSetWithBus(t, &fakeOrderClient{}, &fakeInventoryClient{})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	type chunk struct {
+		n   int
+		buf []byte
+		err error
+	}
+	readCh := make(chan chunk, 32)
+	stop := make(chan struct{})
+	defer close(stop)
+
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events/stream", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			readCh <- chunk{err: fmt.Errorf("GET /events/stream: %w", err)}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != 200 {
+			readCh <- chunk{err: fmt.Errorf("status: got %d want 200", resp.StatusCode)}
+			return
+		}
+		ct := resp.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "text/event-stream") {
+			readCh <- chunk{err: fmt.Errorf("Content-Type: got %q want text/event-stream", ct)}
+			return
+		}
+		go func() {
+			<-stop
+			cancel()
+		}()
+		buf := make([]byte, 512)
+		for {
+			n, rerr := resp.Body.Read(buf)
+			cp := make([]byte, n)
+			copy(cp, buf[:n])
+			readCh <- chunk{n: n, buf: cp, err: rerr}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	// Brief sleep so the handler has registered as a bus subscriber
+	// before we publish. The handler's preamble flush happens
+	// immediately after Subscribe, so 50ms is comfortably over
+	// what's needed; this is a test, not a benchmark.
+	time.Sleep(50 * time.Millisecond)
+
+	bus.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{
+		EventID:     "replay-evt-42",
+		EventType:   "OrderCreated",
+		AggregateID: "ord-replay",
+		OccurredAt:  time.Now().UTC(),
+		Payload:     json.RawMessage(`{"sku":"X"}`),
+	}})
+
+	var captured strings.Builder
+	deadline := time.After(3 * time.Second)
+loop:
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for SSE event frame, captured: %q", captured.String())
+		case c := <-readCh:
+			if c.n > 0 {
+				captured.Write(c.buf)
+			}
+			if strings.Contains(captured.String(), "id: replay-evt-42") {
+				body := captured.String()
+				if !strings.Contains(body, "event: OrderCreated") {
+					t.Errorf("expected `event: OrderCreated` line, got: %s", body)
+				}
+				if !strings.Contains(body, "data: ") {
+					t.Errorf("expected `data: ...` line, got: %s", body)
+				}
+				idIdx := strings.Index(body, "id: replay-evt-42")
+				evIdx := strings.Index(body, "event: OrderCreated")
+				dataIdx := strings.Index(body, "data: ")
+				if !(idIdx >= 0 && evIdx > idIdx && dataIdx > evIdx) {
+					t.Errorf("SSE frame out of order (id=%d event=%d data=%d), body: %s", idIdx, evIdx, dataIdx, body)
+				}
+				break loop
+			}
+			if c.err != nil && c.err != io.EOF {
+				t.Fatalf("read error: %v, captured: %q", c.err, captured.String())
+			}
+			if c.err != nil {
+				break loop
+			}
+		}
+	}
+}
+
 // TestSidebar_Disabled_RendersBadge covers P1.2: with
 // Set.EventsEnabled == false, the layout renders a "disconnected"
 // badge next to the "Live events" heading and a muted paragraph

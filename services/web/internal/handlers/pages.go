@@ -607,9 +607,14 @@ func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
 			}
 			data, err := json.Marshal(ev.Envelope)
 			if err != nil {
+				s.Logger.Warn("SSE marshal envelope failed",
+					"event_id", ev.Envelope.EventID,
+					"event_type", ev.Envelope.EventType,
+					"err", err,
+				)
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Envelope.EventType, data); err != nil {
+			if _, err := fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", ev.Envelope.EventID, ev.Envelope.EventType, data); err != nil {
 				return
 			}
 			flusher.Flush()
