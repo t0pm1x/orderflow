@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Status: v1.0.0
+## Status: v1.2.0
 
 **First stable release.** The platform is end-to-end functional, saga recovery is wired, deployment is GitOps-ready, and CI is in place. Demo script + recording runbook included.
 
@@ -140,7 +140,6 @@ See [`docs/architecture/c4-level-2.puml`](docs/architecture/c4-level-2.puml) for
 - **Cache:** Redis 7
 - **Tracing:** OpenTelemetry (OTLP)
 - **Workspace:** `go.work` (1 platform module + 4 service modules + 5 cmd stubs; `services/web` hosts the orderflow-web playground UI)
-- **Migrations:** goose (planned, not yet wired)
 
 ## Building
 
@@ -159,14 +158,6 @@ make run-saga     # → :8084
 make test
 ```
 
-## Local development (planned, not yet wired)
-
-```bash
-docker compose -f deploy/docker-compose.yml up
-```
-
-This brings up postgres ×3, redis, redpanda (KRaft), kafka-init (creates 4 topics), otel-collector, prometheus, tempo, grafana. **Not yet functional** — services don't connect to it.
-
 ## Project structure
 
 ```
@@ -177,7 +168,7 @@ orderflow/
 │   ├── order/             # Order Service (most complete)
 │   ├── payment/           # Payment Service (mock provider only)
 │   ├── inventory/         # Inventory Service (stock model only)
-│   ├── saga/              # Saga orchestrator (stub)
+│   ├── saga/              # Saga orchestrator
 │   └── web/               # Orderflow-web playground UI (server-rendered HTML + htmx)
 ├── api/openapi.yaml        # REST API contract
 ├── deploy/
@@ -199,6 +190,7 @@ orderflow/
 - [0001-saga-vs-choreography.md](docs/adr/0001-saga-vs-choreography.md) — Saga orchestration over choreography
 - [0002-outbox-pattern.md](docs/adr/0002-outbox-pattern.md) — Transactional outbox + Kafka EOS
 - [0003-rest-vs-grpc.md](docs/adr/0003-rest-vs-grpc.md) — REST external + gRPC internal
+- [0004-w3c-tracecontext.md](docs/adr/0004-w3c-tracecontext.md) — W3C tracecontext propagation through Kafka
 
 ## Decision log
 
