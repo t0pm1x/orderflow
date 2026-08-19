@@ -1615,6 +1615,190 @@ func TestPageInventory_FetchesConcurrently(t *testing.T) {
 	}
 }
 
+// TestOrderSubmit_SKUTooLong_400 covers P1.12: an SKU longer than
+// 64 chars must be rejected with 400 before the form reaches the
+// backend. Without the length cap, a malicious POST could push a
+// megabyte-long SKU into the upstream body and DoS the order
+// service. The form re-renders with an error banner so the user
+// can shorten their SKU.
+func TestOrderSubmit_SKUTooLong_400(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "should-not-be-called",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	sku := strings.Repeat("A", 65)
+	form := strings.NewReader("sku=" + sku + "&quantity=1&idempotency_token=submit-sku-long-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	if oc.submitCalls() != 0 {
+		t.Errorf("Submit called %d times, want 0 (oversized SKU must NOT hit backend)", oc.submitCalls())
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(strings.ToLower(b.String()), "sku") {
+		t.Errorf("body should mention SKU in error, got: %s", b.String())
+	}
+}
+
+// TestOrderSubmit_QuantityTooLarge_400 covers P1.12: a quantity
+// above 10000 must be rejected with 400 before reaching the
+// backend. Without the cap, a typo of "100000" silently orders
+// 100x the intended stock and the upstream availability check
+// may not catch it before the saga starts.
+func TestOrderSubmit_QuantityTooLarge_400(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "should-not-be-called",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=10001&idempotency_token=submit-qty-large-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	if oc.submitCalls() != 0 {
+		t.Errorf("Submit called %d times, want 0 (oversized quantity must NOT hit backend)", oc.submitCalls())
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(strings.ToLower(b.String()), "quantity") {
+		t.Errorf("body should mention quantity in error, got: %s", b.String())
+	}
+}
+
+// TestOrderSubmit_NegativeUnitPrice_400 covers P1.12: a
+// unit_price_cents < 0 must be rejected with 400. The current
+// code silently parses negative values and forwards them to the
+// backend, which would let a refund-as-order exploit slip through.
+func TestOrderSubmit_NegativeUnitPrice_400(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "should-not-be-called",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1&unit_price_cents=-1&idempotency_token=submit-up-neg-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	if oc.submitCalls() != 0 {
+		t.Errorf("Submit called %d times, want 0 (negative unit_price_cents must NOT hit backend)", oc.submitCalls())
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	low := strings.ToLower(b.String())
+	if !strings.Contains(low, "unit_price_cents") && !strings.Contains(low, "unit price") {
+		t.Errorf("body should mention unit_price_cents in error, got: %s", b.String())
+	}
+}
+
+// TestOrderSubmit_UnitPriceTooLarge_400 covers P1.12: a
+// unit_price_cents above 100_000_000 (1M USD cents) must be
+// rejected with 400. The cap is a sanity check — anything above
+// 1M USD per item is almost certainly a typo or a fuzz attempt.
+func TestOrderSubmit_UnitPriceTooLarge_400(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "should-not-be-called",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1&unit_price_cents=100000001&idempotency_token=submit-up-huge-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	if oc.submitCalls() != 0 {
+		t.Errorf("Submit called %d times, want 0 (oversized unit_price_cents must NOT hit backend)", oc.submitCalls())
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	low := strings.ToLower(b.String())
+	if !strings.Contains(low, "unit_price_cents") && !strings.Contains(low, "unit price") {
+		t.Errorf("body should mention unit_price_cents in error, got: %s", b.String())
+	}
+}
+
+// TestOrderSubmit_NonNumericUnitPrice_400 covers P1.12: a
+// unit_price_cents that fails strconv.ParseInt (e.g. "abc" or
+// "1.5") must be rejected with 400 instead of silently falling
+// back to 0. The current code uses `strconv.ParseInt(up, 10, 64)`
+// and ignores the error, so a typo of "100$" would silently
+// forward unit_price_cents=0 to the backend.
+func TestOrderSubmit_NonNumericUnitPrice_400(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "should-not-be-called",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1&unit_price_cents=abc&idempotency_token=submit-up-nan-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	if oc.submitCalls() != 0 {
+		t.Errorf("Submit called %d times, want 0 (non-numeric unit_price_cents must NOT hit backend)", oc.submitCalls())
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	low := strings.ToLower(b.String())
+	if !strings.Contains(low, "unit_price_cents") && !strings.Contains(low, "unit price") {
+		t.Errorf("body should mention unit_price_cents in error, got: %s", b.String())
+	}
+}
+
 // TestPageInventory_PreservesSKUOrder verifies that the concurrent
 // fan-out preserves the dedup order of SKUs (first-seen wins) in
 // the rendered rows. The slow client returns SKUs in REVERSE order

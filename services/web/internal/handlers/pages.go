@@ -62,10 +62,46 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		EventsEnabled:    s.EventsEnabled,
 	}
 	if up := r.FormValue("unit_price_cents"); up != "" {
-		vm.UnitPriceCents, _ = strconv.ParseInt(up, 10, 64)
+		n, err := strconv.ParseInt(up, 10, 64)
+		if err != nil {
+			vm.Error = "unit_price_cents must be an integer"
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+			return
+		}
+		vm.UnitPriceCents = n
 	}
 	if vm.SKU == "" || vm.Quantity <= 0 {
 		vm.Error = "SKU and quantity (>0) are required"
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		return
+	}
+	if len(vm.SKU) > 64 {
+		vm.Error = "SKU must be 64 characters or fewer"
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		return
+	}
+	if vm.Quantity > 10000 {
+		vm.Error = "quantity must be 10000 or fewer"
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		return
+	}
+	if vm.UnitPriceCents < 0 {
+		vm.Error = "unit_price_cents must be 0 or greater"
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		return
+	}
+	if vm.UnitPriceCents > 100_000_000 {
+		vm.Error = "unit_price_cents must be 100000000 or fewer"
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
