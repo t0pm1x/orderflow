@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 160" role="img" aria-label="Saga happy path: OrderCreated, StockReserveRequested, StockReserved, PaymentRequested, PaymentCompleted, OrderConfirmed">
+  <title>Saga happy path</title>
+  <desc>OrderCreated → StockReserveRequested → StockReserved → PaymentRequested → PaymentCompleted → OrderConfirmed</desc>
+  <defs>
+    <marker id="arrow-happy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7d8590"/>
+    </marker>
+    <style>
+      .bg { fill: #161b22; stroke: #30363d; stroke-width: 1; }
+      .box { fill: #0e1116; stroke-width: 1.5; }
+      .box-warn { stroke: #d29922; }
+      .box-accent { stroke: #4493f8; }
+      .box-good { stroke: #56d364; }
+      .lbl-warn { fill: #d29922; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 11px; font-weight: 600; }
+      .lbl-accent { fill: #4493f8; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 11px; font-weight: 600; }
+      .lbl-good { fill: #56d364; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 11px; font-weight: 600; }
+      .arrow { stroke: #7d8590; stroke-width: 1.5; fill: none; }
+      .title { fill: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 13px; font-weight: 600; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1000" height="160" rx="6"/>
+  <text class="title" x="16" y="22">Saga — happy path</text>
+
+  <g>
+    <rect class="box box-warn" x="30" y="62" width="140" height="56" rx="6"/>
+    <text class="lbl-warn" x="100" y="86" text-anchor="middle">OrderCreated</text>
+    <text class="lbl-warn" x="100" y="102" text-anchor="middle" opacity="0.7">start</text>
+  </g>
+
+  <g>
+    <rect class="box box-warn" x="190" y="62" width="140" height="56" rx="6"/>
+    <text class="lbl-warn" x="260" y="84" text-anchor="middle">StockReserve</text>
+    <text class="lbl-warn" x="260" y="100" text-anchor="middle">Requested</text>
+  </g>
+
+  <g>
+    <rect class="box box-accent" x="350" y="62" width="140" height="56" rx="6"/>
+    <text class="lbl-accent" x="420" y="86" text-anchor="middle">StockReserved</text>
+    <text class="lbl-accent" x="420" y="102" text-anchor="middle" opacity="0.7">ok</text>
+  </g>
+
+  <g>
+    <rect class="box box-warn" x="510" y="62" width="140" height="56" rx="6"/>
+    <text class="lbl-warn" x="580" y="86" text-anchor="middle">PaymentRequested</text>
+  </g>
+
+  <g>
+    <rect class="box box-accent" x="670" y="62" width="140" height="56" rx="6"/>
+    <text class="lbl-accent" x="740" y="86" text-anchor="middle">PaymentCompleted</text>
+  </g>
+
+  <g>
+    <rect class="box box-good" x="830" y="62" width="140" height="56" rx="6"/>
+    <text class="lbl-good" x="900" y="86" text-anchor="middle">OrderConfirmed</text>
+    <text class="lbl-good" x="900" y="102" text-anchor="middle" opacity="0.7">done</text>
+  </g>
+
+  <line class="arrow" x1="170" y1="90" x2="190" y2="90" marker-end="url(#arrow-happy)"/>
+  <line class="arrow" x1="330" y1="90" x2="350" y2="90" marker-end="url(#arrow-happy)"/>
+  <line class="arrow" x1="490" y1="90" x2="510" y2="90" marker-end="url(#arrow-happy)"/>
+  <line class="arrow" x1="650" y1="90" x2="670" y2="90" marker-end="url(#arrow-happy)"/>
+  <line class="arrow" x1="810" y1="90" x2="830" y2="90" marker-end="url(#arrow-happy)"/>
+</svg>

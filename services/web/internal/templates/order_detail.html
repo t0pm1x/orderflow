@@ -51,6 +51,16 @@
     </ol>
     {{end}}
     <p class="muted">Page polls every 1s while non-terminal.</p>
+    <section class="saga-diagrams">
+      <figure>
+        <object type="image/svg+xml" data="/static/diagrams/saga_happy.svg" aria-label="Saga happy path diagram"></object>
+        <figcaption>Happy path: <span class="mono">OrderCreated</span> → <span class="mono">StockReserveRequested</span> → <span class="mono">StockReserved</span> → <span class="mono">PaymentRequested</span> → <span class="mono">PaymentCompleted</span> → <span class="mono">OrderConfirmed</span></figcaption>
+      </figure>
+      <figure>
+        <object type="image/svg+xml" data="/static/diagrams/saga_compensation.svg" aria-label="Saga compensation path diagram"></object>
+        <figcaption>Compensation: when <span class="mono">PaymentFailed</span> fires, the saga issues <span class="mono">StockReleaseRequested</span> and <span class="mono">OrderCancelled</span> in parallel.</figcaption>
+      </figure>
+    </section>
     {{end}}
   </section>
 </div>

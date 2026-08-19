@@ -74,6 +74,11 @@ button.copy-id:hover { color: var(--accent); }
 .timeline-payload { margin-top: 4px; }
 .timeline-payload pre { background: var(--bg); padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 11px; }
 
+.saga-diagrams { margin: 24px 0 8px; display: grid; gap: 16px; }
+.saga-diagrams figure { margin: 0; }
+.saga-diagrams figure object { display: block; width: 100%; max-width: 100%; height: auto; border-radius: 6px; }
+.saga-diagrams figcaption { margin-top: 6px; color: var(--muted); font-size: 12px; }
+
 @media (max-width: 720px) {
   .main { grid-template-columns: 1fr; }
   .sidebar { border-left: 0; border-top: 1px solid var(--border); max-height: 40vh; }
