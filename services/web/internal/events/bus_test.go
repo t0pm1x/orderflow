@@ -189,8 +189,11 @@ func TestBus_CloseRaceWithPublish(_ *testing.T) {
 			ch := ch
 			go func() {
 				defer drainWG.Done()
-				for range ch {
-					/* drain — see TestBus_CloseRaceWithPublish doc */
+				for {
+					_, ok := <-ch
+					if !ok {
+						return
+					}
 				}
 			}()
 		}
