@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>orderflow-web playground</title>
+  <title>OrderFlow — playground</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/vendor/htmx.min.js"></script>
   <script src="/static/vendor/htmx-sse.js" defer></script>
@@ -26,6 +26,7 @@
       {{if eq .Body "orderDetailBody"}}{{template "orderDetailBody" .}}{{end}}
       {{if eq .Body "inventoryBody"}}{{template "inventoryBody" .}}{{end}}
       {{if eq .Body "paymentsSimBody"}}{{template "paymentsSimBody" .}}{{end}}
+      {{if eq .Body "orderEventsBody"}}{{template "orderEventsBody" .}}{{end}}
     </section>
     <aside class="sidebar" hx-ext="sse" sse-connect="/events/stream" sse-swap="event" hx-swap="afterend">
       <h3>Live events{{if not .EventsEnabled}} <span class="badge cancelled" title="Kafka tail not started">disconnected</span>{{end}}</h3>

@@ -20,7 +20,7 @@
 -- is allowed (preserves the v1.x behavior for callers that didn't
 -- send payment info). The Get path scans into a sql.NullString so a
 -- NULL column maps to "" on the wire, exactly the same as the
--- in-memory Order.LasFour omitempty default.
+-- in-memory Order.LastFour omitempty default.
 --
 -- ADD COLUMN IF NOT EXISTS makes the migration idempotent against
 -- the test harness applyMigrations helper which re-runs every
