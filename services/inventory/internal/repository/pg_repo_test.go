@@ -292,3 +292,69 @@ func TestPGRepo_ReleaseStock_HappyPath(t *testing.T) {
 		t.Errorf("outbox rows for event %s: got %d want 1", ev.EventID, n)
 	}
 }
+
+// TestPGRepo_ReleaseStock_RejectsOverRelease is the v1.1.2
+// regression net for P0-#4: a release larger than `reserved`
+// must NOT decrement reserved (which would inflate available
+// forever). Pre-fix, the UPDATE matched any row and drove
+// reserved negative. The fix added `AND reserved >= qty` to
+// the WHERE clause; RowsAffected=0 surfaces as ErrNotFound.
+func TestPGRepo_ReleaseStock_RejectsOverRelease(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	seedStock(t, pool, "SKU-OVER", 5, 2)
+	ev := sampleRecord("SKU-OVER", "StockReleased")
+
+	err := repo.ReleaseStock(context.Background(), "SKU-OVER", 5, ev)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ReleaseStock(5, reserved=2): got %v want ErrNotFound", err)
+	}
+
+	s, err := repo.GetStock(context.Background(), "SKU-OVER")
+	if err != nil {
+		t.Fatalf("GetStock: %v", err)
+	}
+	if s.Available != 5 {
+		t.Errorf("available unchanged: got %d want 5", s.Available)
+	}
+	if s.Reserved != 2 {
+		t.Errorf("reserved unchanged: got %d want 2", s.Reserved)
+	}
+
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM inventory_outbox WHERE event_id = $1`, ev.EventID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("outbox after failed release: got %d rows want 0", n)
+	}
+}
+
+// TestPGRepo_ReleaseStock_RejectsNonPositiveQty is the unit-level
+// guard for the qty<=0 pre-check: ReleaseStock(0) and
+// ReleaseStock(-1) must return an error before any DB write.
+func TestPGRepo_ReleaseStock_RejectsNonPositiveQty(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	seedStock(t, pool, "SKU-ZERO", 5, 5)
+
+	for _, qty := range []int{0, -1, -100} {
+		ev := sampleRecord("SKU-ZERO", "StockReleased")
+		err := repo.ReleaseStock(context.Background(), "SKU-ZERO", qty, ev)
+		if err == nil {
+			t.Errorf("ReleaseStock(%d): got nil want error", qty)
+		}
+	}
+
+	s, err := repo.GetStock(context.Background(), "SKU-ZERO")
+	if err != nil {
+		t.Fatalf("GetStock: %v", err)
+	}
+	if s.Available != 5 || s.Reserved != 5 {
+		t.Errorf("stock unchanged check: got %d/%d want 5/5", s.Available, s.Reserved)
+	}
+}
