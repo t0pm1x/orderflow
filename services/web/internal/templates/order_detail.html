@@ -6,7 +6,7 @@
 {{end}}
   <section>
     <div class="row-between">
-      <h1>Order <span class="mono copy-id" data-id="{{if .Order}}{{.Order.ID}}{{end}}" title="Click to copy" role="button" tabindex="0">{{if .Order}}{{.Order.ID}}{{else}}?{{end}}</span></h1>
+      <h1>Order <button type="button" class="copy-id mono" data-id="{{if .Order}}{{.Order.ID}}{{end}}" title="Click to copy">{{if .Order}}{{.Order.ID}}{{else}}?{{end}}</button></h1>
       <div>
         <button hx-get="/orders/{{.Order.ID}}?frag=1" hx-target="#page-content" hx-swap="outerHTML">Refresh</button>
         <a class="btn secondary" href="/">&#8592; back to list</a>
