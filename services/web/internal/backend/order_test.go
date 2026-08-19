@@ -3,6 +3,7 @@ package backend_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,6 +141,35 @@ func TestOrderClient_Cancel_404IsOK(t *testing.T) {
 	// Per OpenAPI, idempotent — 404 on cancel is acceptable.
 	if err := c.Cancel(context.Background(), "missing"); err != nil {
 		t.Fatalf("Cancel should accept 404, got: %v", err)
+	}
+}
+
+// TestOrderClient_Cancel_500ReturnsHTTPError pins that a 5xx from
+// the Order service flows back as a *backend.HTTPError (not a
+// plain fmt.Errorf). This is the contract the BFF handler chain
+// relies on: handlers/errors.go branches on
+// `errors.As(err, &*backend.HTTPError{})` to render 4xx as a
+// user-facing message vs 5xx as a 502 with a "try again" hint.
+// Before this fix, Cancel returned a raw
+// `fmt.Errorf("order cancel: status %d", ...)` and the
+// `errors.As(&HTTPError{})` branch in the cancel handler was dead
+// code. After the fix, every non-2xx/404 surfaces as HTTPError.
+func TestOrderClient_Cancel_500ReturnsHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "db panic: nil pointer at saga.go:42", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := backend.New(nil, srv.URL, "http://localhost:8081", "http://localhost:8082")
+	err := c.Cancel(context.Background(), "boom")
+	if err == nil {
+		t.Fatal("Cancel: expected error on 500, got nil")
+	}
+	var he *backend.HTTPError
+	if !errors.As(err, &he) {
+		t.Fatalf("Cancel: want *HTTPError, got %T (%v)", err, err)
+	}
+	if he.Status != http.StatusInternalServerError {
+		t.Errorf("HTTPError.Status: got %d want %d", he.Status, http.StatusInternalServerError)
 	}
 }
 

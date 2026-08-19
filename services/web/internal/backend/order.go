@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,22 +80,25 @@ func (c *HTTPClient) Submit(ctx context.Context, in OrderSubmit) (*Order, error)
 	return &out, nil
 }
 
-// Cancel is idempotent: 204 and 404 both succeed.
+// Cancel is idempotent: 204 (cancelled) and 404 (already gone)
+// both succeed. Any other non-2xx surfaces as a wrapped
+// *HTTPError so callers (e.g. handlers/errors.go) can branch on
+// Status via errors.As — 4xx user-facing, 5xx upstream failure.
 func (c *HTTPClient) Cancel(ctx context.Context, id string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		fmt.Sprintf("%s/v1/orders/%s", c.orderURL, url.PathEscape(id)), nil)
 	if err != nil {
 		return fmt.Errorf("order cancel: %w", err)
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("order cancel: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+	err = c.do(req, nil)
+	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("order cancel: status %d", resp.StatusCode)
+	var he *HTTPError
+	if errors.As(err, &he) && (he.Status == http.StatusNoContent || he.Status == http.StatusNotFound) {
+		return nil
+	}
+	return fmt.Errorf("order cancel: %w", err)
 }
 
 // do runs req and decodes a JSON body on 2xx; on non-2xx returns a
