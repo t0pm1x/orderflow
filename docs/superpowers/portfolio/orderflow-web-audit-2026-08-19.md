@@ -19,7 +19,7 @@ validation, no URL escaping, no responsive layout, no ARIA, and several
 backend contracts (timestamps, `next_cursor`, `FailureReason`) silently
 drifted away from the order service. After a 32-phase audit we found **44
 defects** (4 BLOCKER + 10 P0 + 12 P1 + 10 P2 + 8 P3), closed them across
-**52 commits** in **45 plan tasks** executed in 6 stages over roughly 5
+**51 implementation commits + 1 final-report commit = 52 total** in **44 plan tasks** executed in 6 stages over roughly 5
 working days, and added **75 new tests** in the web packages (handlers +
 events + backend + kafkatail). The final test run on 2026-08-19 reports
 **105 passing tests, 0 failing** across the four non-empty web packages,
@@ -35,11 +35,11 @@ cosmetic or out-of-scope cleanups that do not affect a fresh user opening
 |--------|-------|
 | Brief phases | 32 |
 | Defects found | 44 (4 BL + 10 P0 + 12 P1 + 10 P2 + 8 P3) |
-| Plan tasks executed | 45 (44 fixes + 1 final report) |
+| Plan tasks executed | 44 (44 fixes; final-report commit is one of the 52 below) |
 | Git commits landed | 52 (range `d0d7361..b01d954`) |
 | New tests added | ~75 (handlers + events + backend + kafkatail) |
 | Final test count (web) | 105 pass / 0 fail |
-| Review-round fix commits | 9 (Tasks 2, 14, 16, 26, 27, 29, 38, plus neighbor-fix e54e3e8/54eeb6e/fcbd67c/3040d91) |
+| Review-round fix commits | 11 fix-and-neighbor commits across 7 tasks (Tasks 2, 14, 16, 26, 27, 29, 38, plus neighbor-fix e54e3e8/54eeb6e/fcbd67c/3040d91) |
 | Parked-for-follow-up items | 12 (see §8) |
 | Final verdict | **DEMO READY WITH MINOR ISSUES** |
 
@@ -142,6 +142,8 @@ implementation.
 | P1 | P1.9 | Cancel | `Cancel` did not use `do()` — returned raw `fmt.Errorf`. `errors.As(&HTTPError{})` in handler was dead code. | `Cancel` now calls `do(req, nil)`; 204/404 → nil; 500 → `*HTTPError`. (Task 22) |
 | P1 | P1.11 | Inventory page | Inventory page did serial N+1 `GetStock` per distinct SKU (up to 50 sequential HTTP calls). | `errgroup.WithContext` + `SetLimit(8)` for concurrent fan-out. SKU order preserved via pre-sliced `results[i]`. (Task 24) |
 | P1 | P1.12 | Order submit validation | Server-side validation only checked `sku != "" && quantity > 0`. No length cap, no quantity upper bound, no `unit_price_cents` bound, no type-coercion error surfacing. | 5 new validations: `sku > 64`, `qty > 10000`, `price < 0`, `price > 100M`, `strconv` error check. (Task 25) |
+
+**Note:** P0.8 ≡ BL.4 (same Kafka-tail handler-removal defect, tracked under BL) and P1.10 ⊂ P0.4 (subsumed by the UUID/path-escape work in Task 8). Both are referenced in the §2.2 track assignments but omitted from this table to avoid duplicate rows.
 
 ---
 
