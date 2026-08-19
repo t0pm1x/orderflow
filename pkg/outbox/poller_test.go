@@ -144,6 +144,13 @@ func TestPoller_PollsAndPublishesOnce(t *testing.T) {
 	if len(pub.batches) != 1 {
 		t.Errorf("publish calls: got %d want 1", len(pub.batches))
 	}
+	// ADVERSARIAL: the poller MUST transition rows to SENT so the
+	// next poll doesn't re-publish them. Without MarkSentTx,
+	// the same event is published to Kafka on every iteration
+	// forever — the row stays PENDING in the DB.
+	if got := len(src.sent); got != 2 {
+		t.Errorf("MarkSentTx calls: got %d want 2 (e1, e2). Without this, every event is re-published on every poll.", got)
+	}
 }
 
 func TestPoller_RetriesOnPublishError(t *testing.T) {

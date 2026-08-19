@@ -115,3 +115,31 @@ func (s *PGSource) MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []strin
 	_, err := tx.Exec(ctx, markFailedSQL, "publish failed", eventIDs)
 	return err
 }
+
+// AttemptsOfTx returns the current attempts counter for each given
+// event_id, read inside the supplied tx. Used by the poller after
+// MarkFailedTx to decide whether to DLQ a row. Reading from the DB
+// (instead of a per-Pod sync.Map) makes the retry budget survive
+// pod restarts and stay consistent across replicas.
+func (s *PGSource) AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []string) (map[string]int, error) {
+	if len(eventIDs) == 0 {
+		return map[string]int{}, nil
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT event_id, attempts FROM saga_outbox WHERE event_id = ANY($1)`,
+		eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int, len(eventIDs))
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
