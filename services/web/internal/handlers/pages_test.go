@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,10 +10,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 	"github.com/t0pm1x/orderflow/services/web/internal/events"
 	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
@@ -136,6 +139,21 @@ func newTestSetWithEvents(t *testing.T, oc backend.OrderClient, enabled bool) ht
 	r := chi.NewRouter()
 	h.Routes(r)
 	return r
+}
+
+// newTestSetWithBus is the bus-exposing sister of newTestSetWith:
+// returns both the http.Handler and the *events.Bus so tests that
+// exercise Bus.History (e.g. the PageOrderEvents timeline fragment
+// — Task 19) can publish envelopes before the GET and assert they
+// appear in the rendered HTML.
+func newTestSetWithBus(t *testing.T, oc backend.OrderClient, ic backend.InventoryClient) (http.Handler, *events.Bus) {
+	t.Helper()
+	bus := events.NewBus()
+	h := handlers.NewSet(oc, &fakePaymentClient{}, ic, bus, slog.Default())
+	h.SetEventsEnabled(true)
+	r := chi.NewRouter()
+	h.Routes(r)
+	return r, bus
 }
 
 func TestOrdersList_OK(t *testing.T) {
@@ -1322,5 +1340,204 @@ func TestSidebar_Enabled_NoBadge(t *testing.T) {
 	}
 	if strings.Contains(body, "KAFKA_BROKERS not set") {
 		t.Errorf("did not expect disconnected explanation when events enabled: %s", body)
+	}
+}
+
+// TestPageOrderEvents_Frag_RendersOnlyBody pins the htmx-polling
+// contract for the per-order timeline endpoint:
+// GET /orders/{id}/events?frag=1 returns ONLY the orderEventsBody
+// fragment — no <!doctype>, no topbar, no sidebar — so
+// hx-swap="outerHTML" can drop the response straight into the
+// existing timeline region without re-mounting the page shell. The
+// fragment must include the self-polling div (id, hx-get, hx-trigger)
+// so the next poll can fire from the rendered DOM.
+func TestPageOrderEvents_Frag_RendersOnlyBody(t *testing.T) {
+	idUUID := uuid.MustParse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").String()
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/" + idUUID + "/events?frag=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	// Layout chrome MUST NOT appear in the fragment — the whole
+	// point of ?frag=1 is "give me only the inner div".
+	for _, chrome := range []string{"<!doctype", `<header class="topbar">`, "Live events", `id="events"`} {
+		if strings.Contains(body, chrome) {
+			t.Errorf("frag leaked layout chrome %q: %s", chrome, body)
+		}
+	}
+	// The self-polling wrapper div MUST appear with the right
+	// hx-get URL + trigger so the next poll can fire.
+	if !strings.Contains(body, `id="timeline-`+idUUID+`"`) {
+		t.Errorf("frag missing timeline id div: %s", body)
+	}
+	if !strings.Contains(body, `hx-get="/orders/`+idUUID+`/events?frag=1"`) {
+		t.Errorf("frag missing self-polling hx-get: %s", body)
+	}
+	if !strings.Contains(body, `hx-trigger="every 1s"`) {
+		t.Errorf("frag missing every-1s poll trigger: %s", body)
+	}
+	if !strings.Contains(body, "Saga timeline") {
+		t.Errorf("frag missing timeline heading: %s", body)
+	}
+}
+
+// TestPageOrderEvents_EmptyHistory covers the "fresh order, no
+// Kafka events yet" path: the fragment must render the
+// "No events received yet" notice, NOT an empty <ol>. An empty
+// timeline list would silently look like a successful render with
+// zero data — the explicit notice makes the contract observable.
+func TestPageOrderEvents_EmptyHistory(t *testing.T) {
+	idUUID := uuid.MustParse("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee").String()
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/" + idUUID + "/events?frag=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "No events received yet") {
+		t.Errorf("missing empty-state message: %s", body)
+	}
+	if strings.Contains(body, `<ol class="timeline">`) {
+		t.Errorf("unexpected empty <ol> when no events: %s", body)
+	}
+}
+
+// TestPageOrderEvents_RendersBusHistory verifies the timeline
+// fragment renders events from Bus.History. We publish two
+// envelopes for the requested aggregate (plus one for a
+// different aggregate that MUST NOT leak — per-aggregate filtering)
+// then GET the fragment and assert the event types + the
+// timeline-{EventType} CSS classes appear in the HTML.
+func TestPageOrderEvents_RendersBusHistory(t *testing.T) {
+	idUUID := uuid.MustParse("ffffffff-ffff-4fff-8fff-ffffffffffff").String()
+	handler, bus := newTestSetWithBus(t, &fakeOrderClient{}, &fakeInventoryClient{})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	now := time.Now().UTC()
+	bus.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{
+		EventID:     "e1",
+		EventType:   "OrderCreated",
+		AggregateID: idUUID,
+		OccurredAt:  now,
+		Payload:     json.RawMessage(`{"sku":"X"}`),
+	}})
+	bus.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{
+		EventID:     "e2",
+		EventType:   "OrderConfirmed",
+		AggregateID: idUUID,
+		OccurredAt:  now.Add(time.Second),
+		Payload:     json.RawMessage(`{"id":"y"}`),
+	}})
+	bus.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{
+		EventID:     "other",
+		EventType:   "OrderCancelled",
+		AggregateID: "other-uuid-must-not-leak",
+		OccurredAt:  now,
+		Payload:     json.RawMessage(`null`),
+	}})
+
+	resp, err := http.Get(srv.URL + "/orders/" + idUUID + "/events?frag=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "OrderCreated") {
+		t.Errorf("missing OrderCreated event type: %s", body)
+	}
+	if !strings.Contains(body, "OrderConfirmed") {
+		t.Errorf("missing OrderConfirmed event type: %s", body)
+	}
+	if !strings.Contains(body, "timeline-OrderCreated") {
+		t.Errorf("missing timeline-OrderCreated CSS class: %s", body)
+	}
+	if !strings.Contains(body, "timeline-OrderConfirmed") {
+		t.Errorf("missing timeline-OrderConfirmed CSS class: %s", body)
+	}
+	if strings.Contains(body, "OrderCancelled") {
+		t.Errorf("leaked other-aggregate event OrderCancelled: %s", body)
+	}
+	if strings.Contains(body, "No events received yet") {
+		t.Errorf("rendered empty-state despite having events: %s", body)
+	}
+}
+
+// TestPageOrderEvents_BadID_RendersEmpty covers the path-param
+// guard: a non-UUID {id} must NOT crash the handler and MUST NOT
+// scan the bus. The response is the empty-state fragment
+// (timeline with no events), since we don't waste a History scan
+// on a malformed id. Without the guard, a stray path like
+// /orders/foo/events would round-trip through Bus.History which
+// iterates the whole ring.
+func TestPageOrderEvents_BadID_RendersEmpty(t *testing.T) {
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/not-a-uuid/events?frag=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "No events received yet") {
+		t.Errorf("expected empty-state for bad id: %s", body)
+	}
+}
+
+// TestPageOrderEvents_NoFrag_RendersLayout pins the no-?frag=1
+// path: GET /orders/{id}/events renders the layout shell. NOTE:
+// layout.html's body-switch chain does NOT include "orderEventsBody",
+// so the <section class="content"> region renders empty. This is
+// a Task 6 omission (the handler sets Body: "orderEventsBody" but
+// the layout has no if-clause matching that key) — tracked in the
+// Task 19 report. The contract this test pins is: the layout shell
+// DOES render (so a human navigating to the URL doesn't see a
+// blank browser tab), even though the body region is empty. A
+// future Task will add the missing body-switch entry.
+func TestPageOrderEvents_NoFrag_RendersLayout(t *testing.T) {
+	idUUID := uuid.MustParse("dddddddd-dddd-4ddd-8ddd-dddddddddddd").String()
+	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/" + idUUID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	body := b.String()
+	if !strings.Contains(body, "<!doctype") {
+		t.Errorf("expected layout doctype, got: %s", body)
+	}
+	if !strings.Contains(body, `<header class="topbar">`) {
+		t.Errorf("expected layout topbar, got: %s", body)
 	}
 }
