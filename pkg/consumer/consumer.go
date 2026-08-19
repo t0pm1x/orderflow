@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -201,6 +202,7 @@ func (c *Consumer) Stop() {
 // failure.
 func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	var env events.Envelope
+	fmt.Fprintf(os.Stderr, "[consumer dispatch] topic=%s partition=%d offset=%d bytes=%d\n", rec.Topic, rec.Partition, rec.Offset, len(rec.Value))
 	if err := json.Unmarshal(rec.Value, &env); err != nil {
 		// Decode failure: ship to DLQ for triage AND mark the
 		// record so the unparseable bytes don't loop on every

@@ -3,6 +3,8 @@ package outbox
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,6 +124,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	close(p.runningCh)
 	defer p.resetAttemptsForTest()
 
+	pollCount := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -132,11 +135,18 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 
 		start := time.Now()
+		pollCount++
 		err := p.src.RunInTx(ctx, p.cfg.BatchSize, func(tx pgx.Tx, recs []outbox.Record) error {
 			p.metrics.ObservePoll(ctx, len(recs), time.Since(start), nil)
 			if len(recs) == 0 {
+				if pollCount%50 == 1 {
+					fmt.Fprintf(os.Stderr, "[outbox poll] table=%s poll=%d fetched=0\n", p.cfg.Table, pollCount)
+				}
 				return errEmptyBatch
 			}
+
+			fmt.Fprintf(os.Stderr, "[outbox poll] table=%s poll=%d fetched=%d event_ids=%v topics=%v\n",
+				p.cfg.Table, pollCount, len(recs), eventIDs(recs), topicsOf(recs))
 
 			// Read the DB-authoritative retry budget inside the
 			// locked tx. v1.1.4 fix: the in-memory sync.Map is
@@ -152,11 +162,14 @@ func (p *Poller) Run(ctx context.Context) error {
 			}
 			dbAttempts, dbErr := p.src.AttemptsOfTx(ctx, tx, ids)
 			if dbErr != nil {
+				fmt.Fprintf(os.Stderr, "[outbox poll] table=%s AttemptsOfTx ERROR=%v\n", p.cfg.Table, dbErr)
 				return dbErr // rollback
 			}
+			fmt.Fprintf(os.Stderr, "[outbox poll] table=%s dbAttempts=%v\n", p.cfg.Table, dbAttempts)
 
 			if err := p.publishBatch(ctx, recs); err != nil {
 				p.metrics.ObservePublish(ctx, len(recs), err)
+				fmt.Fprintf(os.Stderr, "[outbox poll] table=%s publishBatch ERROR=%v\n", p.cfg.Table, err)
 				// For rows past MaxAttempts, MarkFailedTx sets
 				// status='FAILED' so the row stops being re-fetched.
 				// For rows still under the cap, MarkFailedTx is
@@ -168,11 +181,13 @@ func (p *Poller) Run(ctx context.Context) error {
 				// decides per row.
 				committable := p.handlePublishFailure(ctx, tx, recs, err, dbAttempts)
 				if committable {
+					fmt.Fprintf(os.Stderr, "[outbox poll] table=%s MarkFailedTx committed\n", p.cfg.Table)
 					return nil // commit: FAILED rows now terminal; no re-fetch
 				}
 				return err // rollback: rows stay PENDING, retried next poll
 			}
 			p.metrics.ObservePublish(ctx, len(recs), nil)
+			fmt.Fprintf(os.Stderr, "[outbox poll] table=%s publishBatch OK\n", p.cfg.Table)
 
 			// Mark the rows SENT inside the same tx so the row's
 			// status flip and the row's lock release commit
@@ -184,11 +199,13 @@ func (p *Poller) Run(ctx context.Context) error {
 			// new MarkSentTx call.) Re-uses `ids` from above.
 			if err := p.src.MarkSentTx(ctx, tx, ids); err != nil {
 				p.metrics.ObservePublish(ctx, len(recs), err)
+				fmt.Fprintf(os.Stderr, "[outbox poll] table=%s MarkSentTx ERROR=%v\n", p.cfg.Table, err)
 				return err // triggers rollback; rows stay PENDING
 			}
 			for _, r := range recs {
 				p.attempts.Delete(r.EventID)
 			}
+			fmt.Fprintf(os.Stderr, "[outbox poll] table=%s MarkSentTx OK\n", p.cfg.Table)
 			return nil
 		})
 		if err != nil && !errors.Is(err, errEmptyBatch) {
@@ -202,6 +219,32 @@ func (p *Poller) Run(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// eventIDs returns just the IDs of the fetched records, for the
+// temporary diagnostic Fprintf in Run.
+func eventIDs(recs []outbox.Record) []string {
+	out := make([]string, len(recs))
+	for i, r := range recs {
+		out[i] = r.EventID
+	}
+	return out
+}
+
+// topicsOf returns the distinct topics the records target. The
+// outbox poller is per-service; rows from one poller all carry the
+// same Topic (e.g. order-events for the order service). The
+// diagnostic just confirms that.
+func topicsOf(recs []outbox.Record) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, r := range recs {
+		if _, ok := seen[r.Topic]; !ok {
+			seen[r.Topic] = struct{}{}
+			out = append(out, r.Topic)
+		}
+	}
+	return out
 }
 
 // errEmptyBatch signals an empty fetch so the poller's outer loop
