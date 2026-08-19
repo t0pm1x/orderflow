@@ -19,11 +19,28 @@ type OrderItem struct {
 // internal/backend/order.go). Keeping it on the struct (rather
 // than threading it as a separate argument) lets the BFF set
 // both request body and header from one call site without
-// breaking the OrderClient interface signature.
+// breaking the OrderClient interface signature. Payment is the
+// optional payment-hint block: when set, the OrderSubmit wire
+// payload carries `payment.last_four` so the order service can
+// route to the payment mock's success/decline branch
+// deterministically rather than falling back to "derive from
+// order id" (legacy v1.x behavior). The BFF sets Payment only
+// when the operator submitted the prefill hero CTA (which
+// renders a hidden last_four input).
 type OrderSubmit struct {
-	CustomerID *string     `json:"customer_id,omitempty"`
+	CustomerID *string `json:"customer_id,omitempty"`
 	Items      []OrderItem `json:"items"`
-	IdempotencyKey string   `json:"-"`
+	Payment    *OrderSubmitPayment `json:"payment,omitempty"`
+	IdempotencyKey string `json:"-"`
+}
+
+// OrderSubmitPayment is the payment-hint block of OrderSubmit.
+// LastFour is the operator-supplied card last-four from the
+// prefill hero CTA (e.g. "4242" for happy, "0001" for
+// compensation). When omitempty and zero, the order service
+// falls back to its legacy "derive from order id" path.
+type OrderSubmitPayment struct {
+	LastFour string `json:"last_four,omitempty"`
 }
 
 // OrderState matches `OrderState` in api/openapi.yaml:216-222.

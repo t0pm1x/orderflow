@@ -422,6 +422,136 @@ func TestOrderNew_NoPrefill_NoHiddenField(t *testing.T) {
 	}
 }
 
+// TestOrderSubmit_PrefillHappy_PassesLastFourToBackend covers the
+// end-to-end wire contract for the "happy path" prefill CTA:
+// posting a form with `last_four=4242` must land on the
+// upstream-bound OrderSubmit as Payment.LastFour == "4242".
+// Without this plumbing, the form's hidden field renders and
+// echoes on validation failures but the value never reaches
+// the wire payload — the order service then falls back to its
+// legacy "derive from order id" behavior and the operator's
+// click on "happy path" can still route to the decline
+// branch of the payment mock. This regression is the
+// follow-up to Task 26 (P2.1), which left Step 5 ("Pass
+// through to OrderSubmit (new field)") unscoped.
+func TestOrderSubmit_PrefillHappy_PassesLastFourToBackend(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "happy-payload",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "SKU-DEMO", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=SKU-DEMO&quantity=1&unit_price_cents=1999&last_four=4242&idempotency_token=submit-prefill-4242-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if oc.submitCalls() != 1 {
+		t.Fatalf("Submit called %d times, want 1", oc.submitCalls())
+	}
+	if oc.lastSubmit == nil {
+		t.Fatal("Submit captured no OrderSubmit (handler must populate fakeOrderClient.lastSubmit)")
+	}
+	if oc.lastSubmit.Payment == nil {
+		t.Fatal("Payment block is nil — handler must forward last_four=4242 to OrderSubmit.Payment")
+	}
+	if got := oc.lastSubmit.Payment.LastFour; got != "4242" {
+		t.Errorf("Payment.LastFour: got %q want %q (handler must forward form value to wire payload)", got, "4242")
+	}
+}
+
+// TestOrderSubmit_PrefillFail_PassesLastFourToBackend mirrors the
+// happy-path test for the "compensation" CTA: posting
+// `last_four=0001` must reach the wire as Payment.LastFour ==
+// "0001" so the payment mock takes the decline branch and the
+// saga runs the compensation undo. A regression that hardcodes
+// 4242 (or always omits Payment for the fail path) would
+// silently route the compensation button into the happy path
+// and the operator would never observe the saga's undo.
+func TestOrderSubmit_PrefillFail_PassesLastFourToBackend(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "fail-payload",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "SKU-DEMO", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=SKU-DEMO&quantity=1&unit_price_cents=1999&last_four=0001&idempotency_token=submit-prefill-0001-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if oc.submitCalls() != 1 {
+		t.Fatalf("Submit called %d times, want 1", oc.submitCalls())
+	}
+	if oc.lastSubmit == nil {
+		t.Fatal("Submit captured no OrderSubmit")
+	}
+	if oc.lastSubmit.Payment == nil {
+		t.Fatal("Payment block is nil — handler must forward last_four=0001 to OrderSubmit.Payment")
+	}
+	if got := oc.lastSubmit.Payment.LastFour; got != "0001" {
+		t.Errorf("Payment.LastFour: got %q want %q (compensation CTA must carry decline suffix)", got, "0001")
+	}
+}
+
+// TestOrderSubmit_NoLastFour_OmitsPayment is the regression-pole
+// of the prefill plumbing: a non-prefill POST (no last_four
+// form field) MUST leave OrderSubmit.Payment == nil so the
+// order service falls back to its legacy "derive from order
+// id" path. Without this sister test, a naive change that
+// always populates Payment (e.g. with empty LastFour) would
+// pass the two prefill tests above but break the wire
+// contract for every non-prefill submit the playground sees.
+func TestOrderSubmit_NoLastFour_OmitsPayment(t *testing.T) {
+	oc := &fakeOrderClient{
+		submitResp: &backend.Order{
+			ID:    "no-prefill",
+			State: backend.OrderStatePending,
+			Items: []backend.OrderItem{{SKU: "X", Quantity: 1}},
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	form := strings.NewReader("sku=X&quantity=1&idempotency_token=submit-no-lastfour-tok")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if oc.submitCalls() != 1 {
+		t.Fatalf("Submit called %d times, want 1", oc.submitCalls())
+	}
+	if oc.lastSubmit == nil {
+		t.Fatal("Submit captured no OrderSubmit")
+	}
+	if oc.lastSubmit.Payment != nil {
+		t.Errorf("Payment: got %+v want nil (non-prefill POST must NOT populate Payment)", oc.lastSubmit.Payment)
+	}
+}
+
 // TestOrderSubmit_PrefillHappy_PreservesLastFourOnError covers the
 // validation-failure round-trip: when a prefill=happy submit
 // posts last_four=4242 but the request is otherwise invalid

@@ -187,6 +187,17 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 		in.CustomerID = &vm.CustomerID
 	}
 	in.IdempotencyKey = token
+	// Forward the operator-supplied last_four (rendered as a
+	// hidden input by the prefill hero CTAs) into the wire
+	// payload's payment block so the order service routes to
+	// the payment mock's success/decline branch deterministically.
+	// A non-prefill POST carries no last_four (TestOrderNew_NoPrefill
+	// pins this), so Payment stays nil and the order service
+	// falls back to its legacy "derive from order id" path —
+	// preserving the pre-prefill wire contract.
+	if lastFour := r.FormValue("last_four"); lastFour != "" {
+		in.Payment = &backend.OrderSubmitPayment{LastFour: lastFour}
+	}
 	out, err := s.Order.Submit(r.Context(), in)
 	if err != nil {
 		msg, status := mapUpstreamError(s.Logger, "POST /v1/orders", err)
