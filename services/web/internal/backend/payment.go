@@ -13,6 +13,11 @@ import (
 // web playground rather than an external provider.
 const idempotencyPrefix = "orderflow-web:"
 
+// FireWebhook posts a Payment webhook to the Payment service. The
+// function is also used by the web playground's force-success /
+// force-fail simulator (see /payments/sim). Sets a deterministic
+// Idempotency-Key so the upstream's idempotency middleware can
+// dedupe replays.
 func (c *HTTPClient) FireWebhook(ctx context.Context, w PaymentWebhook) error {
 	body, _ := json.Marshal(w)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

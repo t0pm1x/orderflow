@@ -21,6 +21,8 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("upstream status %d: %s", e.Status, e.Body)
 }
 
-// Status exposes the upstream HTTP status. Handy for callers that
-// want to do `var he *HTTPError; if errors.As(err, &he) { he.Status() }`.
+// StatusCode returns the upstream HTTP status code as an int.
+// Useful when callers want `var he *HTTPError; if errors.As(err,
+// &he) { switch he.StatusCode() { ... } }` without exposing
+// the unexported Status field.
 func (e *HTTPError) StatusCode() int { return e.Status }

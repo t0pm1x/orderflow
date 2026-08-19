@@ -6,6 +6,9 @@ import (
 	"net/http"
 )
 
+// GetStock fetches the current Inventory row for sku from the
+// Inventory service. Returns nil, err if the SKU is unknown or
+// the upstream is unreachable.
 func (c *HTTPClient) GetStock(ctx context.Context, sku string) (*StockItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("%s/v1/inventory/stock/%s", c.inventoryURL, sku), nil)

@@ -20,14 +20,21 @@ type OrderSubmit struct {
 }
 
 // OrderState matches `OrderState` in api/openapi.yaml:216-222.
+// The lifecycle is: pending → reserved → confirmed, with
+// cancelled / failed reachable from any non-terminal state.
 type OrderState string
 
 const (
-	OrderStatePending   OrderState = "pending"
-	OrderStateReserved  OrderState = "reserved"
+	// OrderStatePending — order accepted, awaiting stock reservation.
+	OrderStatePending OrderState = "pending"
+	// OrderStateReserved — stock reserved, awaiting payment.
+	OrderStateReserved OrderState = "reserved"
+	// OrderStateConfirmed — payment captured, terminal happy path.
 	OrderStateConfirmed OrderState = "confirmed"
+	// OrderStateCancelled — user-initiated cancel or saga compensation.
 	OrderStateCancelled OrderState = "cancelled"
-	OrderStateFailed    OrderState = "failed"
+	// OrderStateFailed — saga timed out before reaching a clean state.
+	OrderStateFailed OrderState = "failed"
 )
 
 // Order matches `Order` in api/openapi.yaml:257-288.
