@@ -152,7 +152,9 @@ func TestBus_ConcurrentPublishSubscribe(_ *testing.T) {
 		go func() {
 			defer wg.Done()
 			ch, _ := b.Subscribe()
-			for j := 0; j < 100; j++ { <-ch }
+			for j := 0; j < 100; j++ {
+				<-ch
+			}
 		}()
 	}
 	for i := 0; i < 1000; i++ {

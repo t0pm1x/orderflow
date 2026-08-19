@@ -16,14 +16,14 @@ import (
 )
 
 type orderNewVM struct {
-	Body            string
-	SKU             string
-	Quantity        int
-	UnitPriceCents  int64
-	CustomerID      string
+	Body             string
+	SKU              string
+	Quantity         int
+	UnitPriceCents   int64
+	CustomerID       string
 	IdempotencyToken string
-	Error           string
-	EventsEnabled   bool
+	Error            string
+	EventsEnabled    bool
 	// Prefill is the optional ?prefill=happy|fail query value.
 	// When set, the template pre-populates SKU/Quantity/UnitPriceCents
 	// with the demo defaults AND renders a hidden `last_four` input
@@ -441,9 +441,9 @@ type paymentsSimVM struct {
 // (and vice-versa) — the form-render contract is "one token per
 // submit button, valid for the lifetime of this page render".
 type paymentsRow struct {
-	ID            string
-	State         backend.OrderState
-	TokenForceOK  string
+	ID             string
+	State          backend.OrderState
+	TokenForceOK   string
 	TokenForceFail string
 }
 

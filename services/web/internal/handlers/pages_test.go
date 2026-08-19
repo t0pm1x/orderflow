@@ -24,20 +24,20 @@ import (
 )
 
 type fakeOrderClient struct {
-	listResp       *backend.OrderList
-	listErr        error
-	listErrPending error
+	listResp        *backend.OrderList
+	listErr         error
+	listErrPending  error
 	listErrReserved error
-	submitResp     *backend.Order
-	submitErr      error
-	submitCallsN   int
-	getResp        *backend.Order
-	getErr         error
-	getCalls       int
-	cancelCalls    int
-	cancelErr      error
-	lastCancel     string
-	lastSubmit     *backend.OrderSubmit
+	submitResp      *backend.Order
+	submitErr       error
+	submitCallsN    int
+	getResp         *backend.Order
+	getErr          error
+	getCalls        int
+	cancelCalls     int
+	cancelErr       error
+	lastCancel      string
+	lastSubmit      *backend.OrderSubmit
 }
 
 func (f *fakeOrderClient) List(_ context.Context, state backend.OrderState, _ int) (*backend.OrderList, error) {
