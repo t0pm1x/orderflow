@@ -521,8 +521,8 @@ func TestPaymentsSim_OK(t *testing.T) {
 	if !strings.Contains(body, "o-1") {
 		t.Errorf("missing order id: %s", body)
 	}
-	if !strings.Contains(body, "force") {
-		t.Errorf("missing force buttons: %s", body)
+	if !strings.Contains(body, "Force succeed") || !strings.Contains(body, "Force fail") {
+		t.Errorf("expected Force succeed/Fail buttons, got: %s", body)
 	}
 	if !strings.Contains(body, "/payments/sim/fire") {
 		t.Errorf("missing fire action URL: %s", body)
