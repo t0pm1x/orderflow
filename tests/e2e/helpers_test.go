@@ -24,6 +24,28 @@
 //	  waitForServiceUp()   — binary listening (200 on /healthz) —
 //	                        only signal we have for payment / inventory / saga.
 //
+// POST /v1/orders retry safety:
+//
+//	The order service's POST /v1/orders handler has no Idempotency-Key
+//	header support. domain.NewOrder calls uuid.New() for the order id,
+//	so a retry after the server committed but the client didn't see
+//	the response (network blip / timeout) would create a duplicate
+//	order. The handler's 5xx path returns BEFORE repo.Insert in the
+//	buildErr / InsertErr branches — those are safe to retry — but
+//	post-Insert failures (rare json.Encode path) are NOT safe.
+//	postOrder is therefore a single attempt: 201 → continue, anything
+//	else is fatal with full diagnostic. A test that retries a
+//	non-idempotent POST is a test that hides a real production bug.
+//
+// Stage budgets as real hard deadlines:
+//
+//	Every helper that takes a budget derives a stageCtx via
+//	context.WithDeadline(parentCtx, deadline). stageCtx cancels at
+//	exactly min(parentCtx deadline, now+budget). All HTTP, sleep,
+//	and JSON-parse work inside the loop uses stageCtx — a hung
+//	request cannot outlive the budget even if the per-iteration
+//	check never runs.
+//
 // Concurrency / ctx discipline:
 //
 //	Every HTTP request and every sleep observes the supplied ctx
@@ -56,17 +78,19 @@ const (
 	perRequestBudget = 5 * time.Second
 	startupBudget    = 60 * time.Second // binary boot + first-poll latency
 	overallBudget    = 120 * time.Second
-	postStartBudget  = 30 * time.Second // readiness + first POST retries
+	postStartBudget  = 30 * time.Second // readiness + first POST
 )
 
 // httpClient builds a single client per test. Timeout is a safety
 // net on top of the per-request ctx.
 func httpClient() *http.Client { return &http.Client{Timeout: perRequestBudget} }
 
-// httpDo performs req with per-request ctx (parent + perRequestBudget)
-// and closes Body on the way out. Returns (status, body, err).
-// Body is always read+discarded so the connection can be reused
-// for keep-alive. The caller MUST close Body — httpDo does that.
+// httpDo performs req with per-request ctx (parent +
+// perRequestBudget). The response Body is fully drained and
+// closed before returning. Returns (status, body, err).
+//
+// The body is read+discarded so the connection can be reused for
+// keep-alive. The caller does NOT need to close Body.
 func httpDo(parent context.Context, client *http.Client, req *http.Request) (status int, body []byte, err error) {
 	pctx, cancel := context.WithTimeout(parent, perRequestBudget)
 	defer cancel()
@@ -108,15 +132,21 @@ func pickFreePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// startDeadline returns min(parentCtx deadline, now+budget). Use
-// over time.Now().Add(budget) so the per-stage budget cannot
-// outlive the test's overall deadline.
-func startDeadline(parentCtx context.Context, base time.Time, budget time.Duration) time.Time {
-	d := base.Add(budget)
-	if dl, ok := parentCtx.Deadline(); ok && d.After(dl) {
-		d = dl
+// stageContext derives a child context whose deadline is
+// min(parentCtx deadline, now+budget). All work inside a polling
+// loop should use the stage context so a hung request or a slow
+// sleep cannot outlive the per-stage budget. The cancel func is
+// returned for the caller to defer.
+//
+// The parent context is left untouched; the stage context is
+// derived from it and is cancelled at the stage deadline.
+func stageContext(parentCtx context.Context, budget time.Duration) (context.Context, context.CancelFunc, time.Time) {
+	deadline := time.Now().Add(budget)
+	if dl, ok := parentCtx.Deadline(); ok && deadline.After(dl) {
+		deadline = dl
 	}
-	return d
+	stage, cancel := context.WithDeadline(parentCtx, deadline)
+	return stage, cancel, deadline
 }
 
 // orderStateResponse mirrors the public Order shape documented in
@@ -127,11 +157,16 @@ type orderStateResponse struct {
 	State string `json:"state"`
 }
 
-// waitUntil polls URL until it returns wantStatus, the ctx
-// deadline elapses, or the deadline budget expires — whichever
-// comes first. Errors and unexpected statuses log t.Logf and
-// retry; the loop exits only on a clean wantStatus or a real
-// timeout.
+// waitUntil polls URL until it returns wantStatus, or until the
+// stage context (derived from parentCtx + budget) is cancelled.
+// Errors and unexpected statuses log t.Logf and retry; the loop
+// exits only on a clean wantStatus or a real timeout.
+//
+// The stage context's deadline is enforced by context — a hung
+// HTTP request or sleep returns immediately when the stage
+// deadline elapses, no matter where the loop is currently
+// parked. The post-deadline `time.Now().After(deadline)` is a
+// belt-and-suspenders check for log clarity.
 //
 // waitUntil is the lowest-level shared helper. Prefer the
 // purpose-built wrappers below (waitForOrderReady,
@@ -139,24 +174,26 @@ type orderStateResponse struct {
 // intent of the probe.
 func waitUntil(ctx context.Context, t *testing.T, client *http.Client, url string, wantStatus int, budget time.Duration) {
 	t.Helper()
-	deadline := startDeadline(ctx, time.Now(), budget)
+	stage, cancel, deadline := stageContext(ctx, budget)
+	defer cancel()
 	for {
-		if time.Now().After(deadline) {
-			t.Fatalf("waitUntil(%s): status %d not reached by %s", url, wantStatus, deadline)
+		if stage.Err() != nil {
+			t.Fatalf("waitUntil(%s): status %d not reached by %s: %v", url, wantStatus, deadline, stage.Err())
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		status, body, err := httpDo(ctx, client, req)
+		req, err := http.NewRequestWithContext(stage, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("waitUntil(%s): build request: %v", url, err)
+		}
+		status, body, err := httpDo(stage, client, req)
 		switch {
 		case err != nil:
 			t.Logf("waitUntil(%s): err=%v", url, err)
 		case status == wantStatus:
 			return
-		case status >= 500:
-			t.Logf("waitUntil(%s): status=%d body=%s", url, status, body)
 		default:
 			t.Logf("waitUntil(%s): status=%d body=%s", url, status, body)
 		}
-		sleepCtx(ctx, pollInterval)
+		sleepCtx(stage, pollInterval)
 	}
 }
 
@@ -200,63 +237,62 @@ func readRepoFile(t *testing.T, parts ...string) []byte {
 	return b
 }
 
-// retryPost posts body once and retries on transient failures
-// (network blip, 5xx while the order-events topic is auto-created
-// on first publish). 4xx is fatal — the body is wrong or the
-// API contract was broken. ctx deadline aborts the loop.
-func retryPost(ctx context.Context, t *testing.T, client *http.Client, baseURL string, body []byte) orderStateResponse {
+// postOrder submits body to POST baseURL+"/v1/orders" and returns
+// the parsed order. Single attempt — see the package doc for
+// the POST /v1/orders retry-safety rationale. On anything but
+// 201 the test fails with a diagnostic including the full body
+// and the request's context error.
+func postOrder(ctx context.Context, t *testing.T, client *http.Client, baseURL string, body []byte) orderStateResponse {
 	t.Helper()
-	deadline := startDeadline(ctx, time.Now(), postStartBudget)
+	stage, cancel, _ := stageContext(ctx, postStartBudget)
+	defer cancel()
 	url := baseURL + "/v1/orders"
-	var attempts int
-	var lastStatus int
-	var lastBody []byte
-	var lastErr error
-	for {
-		attempts++
-		if ctx.Err() != nil {
-			t.Fatalf("retryPost aborted: %v (after %d attempts, last status=%d, body=%s, last err=%v)",
-				ctx.Err(), attempts, lastStatus, lastBody, lastErr)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("retryPost deadline exceeded: %d attempts, last status=%d, body=%s, last err=%v",
-				attempts, lastStatus, lastBody, lastErr)
-		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		status, b, err := httpDo(ctx, client, req)
-		lastStatus = status
-		lastBody = b
-		lastErr = err
-		switch {
-		case err != nil:
-			t.Logf("POST %s: err=%v (retry %d)", url, err, attempts)
-			sleepCtx(ctx, pollInterval)
-		case status == http.StatusCreated:
-			var sr orderStateResponse
-			if uerr := json.Unmarshal(b, &sr); uerr != nil {
-				t.Fatalf("POST %s: decode 201: %v body=%s", url, uerr, b)
-			}
-			if sr.ID == "" {
-				t.Fatalf("POST %s: 201 but empty id, body=%s", url, b)
-			}
-			return sr
-		case status >= 500:
-			t.Logf("POST %s: status=%d body=%s (retry %d)", url, status, b, attempts)
-			sleepCtx(ctx, pollInterval)
-		default:
-			t.Fatalf("POST %s: status=%d body=%s", url, status, b)
-		}
+	req, err := http.NewRequestWithContext(stage, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("postOrder(%s): build request: %v", url, err)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	status, b, err := httpDo(stage, client, req)
+	if err != nil {
+		t.Fatalf("postOrder(%s): %v (POST is non-idempotent — server may have committed; not retrying)", url, err)
+	}
+	switch status {
+	case http.StatusCreated:
+		var sr orderStateResponse
+		if uerr := json.Unmarshal(b, &sr); uerr != nil {
+			t.Fatalf("postOrder(%s): decode 201: %v body=%s", url, uerr, b)
+		}
+		if sr.ID == "" {
+			t.Fatalf("postOrder(%s): 201 but empty id, body=%s", url, b)
+		}
+		return sr
+	default:
+		t.Fatalf("postOrder(%s): status=%d body=%s (POST is non-idempotent — not retrying)", url, status, b)
+		// Unreachable: t.Fatalf calls runtime.Goexit, but the
+		// compiler doesn't know that. Returning a zero value keeps
+		// the function total.
+		return orderStateResponse{}
+	}
+}
+
+// validOrderState lists every legal Order state, derived from
+// services/order/internal/domain/state.go. Any observed state
+// outside this set is a chain-regression signature (a real
+// schema or producer bug, not a test flake).
+func validOrderState(s string) bool {
+	switch s {
+	case "pending", "reserved", "confirmed", "cancelled", "failed":
+		return true
+	}
+	return false
 }
 
 // waitForStateFn polls GET /v1/orders/{id} on a ctx-cancellable
 // interval and returns every response observed (in order). Stops
-// when ctx deadline elapses, when isDone returns true, or when
-// GET returns a 404 that won't self-heal. isFailure is consulted
-// on every observed state — if it returns true the test fails
-// with a regression-style message. Both callbacks receive the
-// current state string.
+// when the stage context is cancelled, when isDone returns true,
+// or when GET returns a 404 that won't self-heal. isFailure is
+// consulted on every observed state — if it returns true the test
+// fails with a regression-style message.
 //
 // Tests pass concrete expected-state predicates:
 //
@@ -265,11 +301,21 @@ func retryPost(ctx context.Context, t *testing.T, client *http.Client, baseURL s
 //	    func(s string) bool { return s == "cancelled" },     // fail on cancelled
 //	)
 //
-// isDone returning nil false-y and isFailure returning nil on a
-// pending row is fine — failure is what stops the test.
+// isDone returning false or isFailure returning false on a
+// pending row is fine; success is what stops the test.
+//
+// A GET 404 after POST 201 is a HARD failure: the order service's
+// handler commits the row + OrderCreated outbox row atomically
+// inside a single pgx.BeginFunc. Once 201 is written, the row is
+// in the DB and visible to subsequent reads. A 404 means the
+// order vanished — that's a real bug, not a transient.
 func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, baseURL, orderID string, isDone, isFailure func(string) bool) []orderStateResponse {
 	t.Helper()
-	deadline, _ := ctx.Deadline()
+	// Single attempt loop is bounded by the parent context's
+	// overall budget — there is no inner per-stage slice because
+	// the test only transitions through a few states and each
+	// tick is cheap. A custom stage budget could be added if a
+	// future test demands it.
 	url := baseURL + "/v1/orders/" + orderID
 	var observed []orderStateResponse
 	for {
@@ -278,10 +324,10 @@ func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, base
 			return observed
 		default:
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			return observed
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("waitForStateFn: build GET request: %v", err)
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		status, body, err := httpDo(ctx, client, req)
 		if err != nil {
 			t.Logf("GET %s: %v", url, err)
@@ -292,7 +338,7 @@ func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, base
 		case http.StatusOK:
 			// happy path — fall through to decode
 		case http.StatusNotFound:
-			t.Fatalf("GET %s: 404 (order %s vanished)", url, orderID)
+			t.Fatalf("GET %s: 404 (order %s vanished; row was committed in same tx as 201 response, so this is a real bug, not eventual consistency)", url, orderID)
 		default:
 			t.Logf("GET %s: status=%d body=%s (retry)", url, status, body)
 			sleepCtx(ctx, pollInterval)
@@ -305,6 +351,10 @@ func waitForStateFn(ctx context.Context, t *testing.T, client *http.Client, base
 			continue
 		}
 		observed = append(observed, sr)
+		if !validOrderState(sr.State) {
+			t.Errorf("GET %s: order %s reached unknown state %q (chain schema regression). observed=%s",
+				url, orderID, sr.State, formatStates(observed))
+		}
 		if isFailure != nil && isFailure(sr.State) {
 			t.Fatalf("GET %s: order %s reached failure state %q. observed=%s",
 				url, orderID, sr.State, formatStates(observed))

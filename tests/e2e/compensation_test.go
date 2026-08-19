@@ -88,7 +88,7 @@ func TestE2E_Compensation_PaymentDeclined_CancelsOrder(t *testing.T) {
         "items": [{"sku": "SKU-001", "quantity": 1, "unit_price_cents": 1999}],
         "payment": {"last_four": "0001"}
     }`)
-	created := retryPost(ctx, t, client, orderBase, body)
+	created := postOrder(ctx, t, client, orderBase, body)
 	t.Logf("POST /v1/orders → id=%s", created.ID)
 
 	// The failure path is terminal: cancelled or failed. A

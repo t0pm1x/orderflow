@@ -99,7 +99,7 @@ func TestE2E_OrderReachesConfirmed(t *testing.T) {
 	waitForServiceUp(ctx, t, client, sagaBase)
 
 	body := readRepoFile(t, "examples", "order.json")
-	created := retryPost(ctx, t, client, orderBase, body)
+	created := postOrder(ctx, t, client, orderBase, body)
 	t.Logf("POST /v1/orders → id=%s", created.ID)
 
 	observed := waitForState(ctx, t, client, orderBase, created.ID, "confirmed")
@@ -112,17 +112,5 @@ func TestE2E_OrderReachesConfirmed(t *testing.T) {
 			created.ID,
 			observed[len(observed)-1].State,
 			formatStates(observed))
-	}
-	// Defensive final sweep: every observed state must be one of
-	// pending / reserved / confirmed. A cancelled/failed state
-	// would already have triggered a hard failure inside
-	// waitForState; this is to keep the test self-documenting.
-	for _, o := range observed {
-		switch o.State {
-		case "pending", "reserved", "confirmed":
-			// expected states
-		default:
-			t.Errorf("observed unexpected state %q in chain", o.State)
-		}
 	}
 }
