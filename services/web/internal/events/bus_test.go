@@ -160,3 +160,56 @@ func TestBus_ConcurrentPublishSubscribe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestBus_CloseRaceWithPublish exercises the window between Publish
+// releasing the mutex (after snapshotting subscribers) and the
+// per-channel select. During that window Close() or an unsubscribe
+// can close a snapshotted channel, which would panic with "send on
+// closed channel" without the per-channel defer recover. The test
+// asserts no panic fires by completing cleanly under -race across
+// many concurrent publishers and a mid-flight Close.
+func TestBus_CloseRaceWithPublish(t *testing.T) {
+	const trials = 5
+	for trial := 0; trial < trials; trial++ {
+		b := events.NewBus()
+		const N = 200
+		const S = 32
+
+		subs := make([]chan events.BusEvent, S)
+		unsubs := make([]func(), S)
+		for i := range subs {
+			subs[i], unsubs[i] = b.Subscribe()
+		}
+
+		var drainWG sync.WaitGroup
+		drainWG.Add(S)
+		for _, ch := range subs {
+			ch := ch
+			go func() {
+				defer drainWG.Done()
+				for range ch {
+				}
+			}()
+		}
+
+		closer := func() {
+			time.Sleep(100 * time.Microsecond)
+			for _, u := range unsubs {
+				u()
+			}
+		}
+		go closer()
+
+		var pubWG sync.WaitGroup
+		pubWG.Add(N)
+		for i := 0; i < N; i++ {
+			go func() {
+				defer pubWG.Done()
+				b.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{EventType: "X", AggregateID: "a"}})
+			}()
+		}
+		pubWG.Wait()
+		b.Close()
+		drainWG.Wait()
+	}
+}

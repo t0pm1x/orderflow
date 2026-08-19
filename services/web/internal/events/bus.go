@@ -38,7 +38,7 @@ type BusEvent struct {
 // the most recent events so late-arriving HTTP clients can fetch
 // historical events per-aggregate via History.
 type Bus struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	subs map[chan BusEvent]struct{}
 	ring []ringEntry
 	done chan struct{}
@@ -78,11 +78,16 @@ func (b *Bus) Subscribe() (chan BusEvent, func()) {
 // be retrieved via History; when the ring overflows, the oldest
 // 10% entries are dropped in one slice trim.
 //
-// Concurrency: subscribers are snapshotted under the mutex so the
-// fan-out runs lock-free. A slow subscriber can no longer block
-// other publishers — the per-channel send is non-blocking and the
-// drop-oldest uses a single atomic select so the drain and the push
-// cannot be interleaved by another publisher.
+// Concurrency: subscribers are snapshotted under the write lock so
+// the fan-out runs lock-free from other publishers. Each per-channel
+// send holds a read lock — Close() / unsubscribe() block on the
+// write lock until all in-flight RLocks release, so a snapshotted
+// channel cannot be closed concurrently with the send (Unlock(Write)
+// synchronizes-with the next RLock). The per-channel defer recover
+// is a belt-and-suspenders safety net for "send on closed channel"
+// in case the synchronization is ever bypassed. The send is
+// non-blocking and the drop-oldest uses a single atomic select so
+// the drain and the push cannot be interleaved by another publisher.
 func (b *Bus) Publish(e BusEvent) {
 	b.mu.Lock()
 	if b.closed() {
@@ -101,19 +106,29 @@ func (b *Bus) Publish(e BusEvent) {
 	b.mu.Unlock()
 
 	for _, ch := range snapshot {
-		select {
-		case ch <- e:
-		default:
-			// Drop oldest, push newest in one atomic select:
-			// either we drain one (then we have guaranteed room
-			// and the unconditional send wins), or another
-			// goroutine drained it for us and the send case wins.
+		ch := ch
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					_ = r // channel closed mid-fan-out — drop this event silently
+				}
+			}()
+			b.mu.RLock()
+			defer b.mu.RUnlock()
 			select {
-			case <-ch:
-				ch <- e
 			case ch <- e:
+			default:
+				// Drop oldest, push newest in one atomic select:
+				// either we drain one (then we have guaranteed room
+				// and the unconditional send wins), or another
+				// goroutine drained it for us and the send case wins.
+				select {
+				case <-ch:
+					ch <- e
+				case ch <- e:
+				}
 			}
-		}
+		}()
 	}
 }
 
