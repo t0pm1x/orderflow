@@ -25,9 +25,9 @@
 ### Quickstart
 ```bash
 # Easy run — full stack on your laptop in one command (requires Docker + Go + Make)
-bash scripts/run.sh                                          # macOS / Linux / WSL
-pwsh -ExecutionPolicy Bypass -File scripts\run.ps1           # Windows
-# tear down:  bash scripts/stop.sh   /   pwsh scripts\stop.ps1
+bash scripts/run.sh                                                       # macOS / Linux / WSL
+powershell -ExecutionPolicy Bypass -File scripts\run.ps1                  # Windows (PowerShell 5.1 default; or `pwsh ...` if you have 7+)
+# tear down:  bash scripts/stop.sh  /  powershell scripts\stop.ps1
 
 # Local happy-path demo (requires docker + 8GB RAM)
 bash docs/demo/demo.sh

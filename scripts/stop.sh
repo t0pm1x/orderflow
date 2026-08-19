@@ -4,6 +4,10 @@
 # Kills the 5 service binaries (if running) and stops the docker
 # compose infra. Volumes are preserved; pass --volumes to drop them
 # too (resets Postgres state — order_sagas, payments, reservations).
+#
+# Windows users: use the sibling scripts/stop.ps1 instead:
+#     powershell -ExecutionPolicy Bypass -File scripts\stop.ps1
+# (or `pwsh ...` if you have PowerShell 7+ installed).
 
 set -uo pipefail
 

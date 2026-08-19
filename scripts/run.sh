@@ -18,6 +18,11 @@
 #
 # Requires: docker daemon running, docker compose v2, Go 1.25+, GNU
 # Make, ~4 GB RAM. Logs land in tests/logs/<svc>.log (one per service).
+#
+# Windows users: there is no bash script here — use the sibling
+# scripts/run.ps1 instead:
+#     powershell -ExecutionPolicy Bypass -File scripts\run.ps1
+# (or `pwsh ...` if you have PowerShell 7+ installed).
 
 set -uo pipefail
 

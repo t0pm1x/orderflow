@@ -18,6 +18,14 @@
 #
 # Requires: Docker Desktop running, Go 1.25+, GNU Make, ~4 GB RAM.
 # Logs land in tests\logs\<svc>.log (one per service).
+#
+# Compatible with both Windows PowerShell 5.1 (the default that
+# ships with Windows) and PowerShell 7+. Invoke it from cmd.exe /
+# PowerShell with:
+#     powershell -ExecutionPolicy Bypass -File scripts\run.ps1
+# or, if you've installed PowerShell 7 (`winget install
+# Microsoft.PowerShell`):
+#     pwsh -ExecutionPolicy Bypass -File scripts\run.ps1
 
 [CmdletBinding()]
 param(
@@ -125,8 +133,14 @@ $env:OTEL_EXPORTER = 'stdout'
 function Start-Svc {
     param($name, $exe, $envHash)
     foreach ($k in $envHash.Keys) {
-        if ($envHash[$k]) { [Environment]::SetEnvironmentVariable($k, $envHash[$k], 'Process') }
-        else { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+        if ($envHash[$k]) {
+            [Environment]::SetEnvironmentVariable($k, $envHash[$k], 'Process')
+        } else {
+            # PowerShell 5.1 doesn't resolve `Env:$k` inside double-quoted
+            # strings for `Remove-Item`; use the .NET API which works on
+            # both 5.1 and 7+.
+            [Environment]::SetEnvironmentVariable($k, $null, 'Process')
+        }
     }
     $p = Start-Process -FilePath $exe `
         -RedirectStandardOutput "$log\$name.log" `

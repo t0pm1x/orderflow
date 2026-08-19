@@ -6,7 +6,7 @@ One-command local stack: 8 infra containers + 5 service binaries, end-to-end run
 
 | OS      | Command                                                                  |
 |---------|--------------------------------------------------------------------------|
-| Windows | `pwsh -ExecutionPolicy Bypass -File scripts\run.ps1`                      |
+| Windows | `powershell -ExecutionPolicy Bypass -File scripts\run.ps1` (or `pwsh ...` if you have PowerShell 7+ installed) |
 | macOS   | `bash scripts/run.sh`                                                    |
 | Linux   | `bash scripts/run.sh` (incl. WSL)                                         |
 
@@ -14,10 +14,12 @@ Tear down:
 
 | OS      | Soft (keep volumes)                                  | Hard (wipe Postgres state)                       |
 |---------|------------------------------------------------------|--------------------------------------------------|
-| Windows | `pwsh -ExecutionPolicy Bypass -File scripts\stop.ps1` | `pwsh -ExecutionPolicy Bypass -File scripts\stop.ps1 -Volumes` |
+| Windows | `powershell -ExecutionPolicy Bypass -File scripts\stop.ps1` (or `pwsh ...`) | `powershell ... scripts\stop.ps1 -Volumes` (or `pwsh ...`) |
 | macOS/Linux | `bash scripts/stop.sh`                            | `bash scripts/stop.sh --volumes`                 |
 
 Followed by `docker compose -f deploy/docker-compose.yml down` if you also want the compose-managed infra gone (the stop scripts already call `docker compose down`, so this is only needed if you started compose manually).
+
+The Windows examples prefer `powershell` over `pwsh` because the former is the default Windows PowerShell 5.1 that ships with Windows 10/11; `pwsh` only exists when you've installed PowerShell 7 (e.g. via `winget install Microsoft.PowerShell`). The script is compatible with both — the .NET `Environment.SetEnvironmentVariable` API it uses for env propagation works on both 5.1 and 7+.
 
 ## Prerequisites
 
