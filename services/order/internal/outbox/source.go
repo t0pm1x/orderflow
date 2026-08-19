@@ -24,12 +24,18 @@ import (
 //
 //go:embed fetchPending.sql
 var fetchPendingSQL string
-
+//
 //go:embed markSent.sql
 var markSentSQL string
-
+//
 //go:embed markFailed.sql
 var markFailedSQL string
+
+// attemptsOfSQL reads the current attempts counter for each given
+// event_id inside the supplied tx. The poller uses this to read
+// the DB-authoritative retry budget instead of trusting its
+// per-Pod in-memory sync.Map (which is wiped on pod restart).
+const attemptsOfSQL = `SELECT event_id, attempts FROM order_outbox WHERE event_id = ANY($1)`
 
 // PGSource reads/marks rows in the order_outbox table.
 type PGSource struct {
@@ -93,6 +99,30 @@ func (s *PGSource) MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []strin
 	if len(eventIDs) == 0 {
 		return nil
 	}
-	_, err := tx.Exec(ctx, markFailedSQL, eventIDs)
+	_, err := tx.Exec(ctx, markFailedSQL, "publish failed", eventIDs)
 	return err
+}
+
+// AttemptsOfTx returns the current attempts counter for each given
+// event_id, read inside the supplied tx. Returns 0 for event_ids the
+// poller has never seen (and for unknown ids).
+func (s *PGSource) AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []string) (map[string]int, error) {
+	if len(eventIDs) == 0 {
+		return map[string]int{}, nil
+	}
+	rows, err := tx.Query(ctx, attemptsOfSQL, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int, len(eventIDs))
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }

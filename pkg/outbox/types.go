@@ -33,10 +33,18 @@ import (
 // MarkFailedTx to advance rows; on a nil return the tx commits
 // (releasing the locks); on a non-nil return it rolls back so the
 // rows stay PENDING and will be re-fetched on the next poll.
+//
+// AttemptsOfTx is the v1.1.4 fix for v1.1.2 P1-#3: the in-memory
+// retry counter survives only within a single pod lifetime, so a
+// pod restart wiping the counter would silently re-DLQ a row that
+// had already been moved past the retry budget. Reading attempts
+// from the DB row inside the locked tx makes the budget durable
+// across restarts and consistent across replicas.
 type Source interface {
 	RunInTx(ctx context.Context, limit int, fn func(tx pgx.Tx, recs []outbox.Record) error) error
 	MarkSentTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error
 	MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error
+	AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []string) (map[string]int, error)
 }
 
 // Publisher ships a batch of outbox records to Kafka. Returns nil

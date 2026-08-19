@@ -23,6 +23,12 @@ var markSentSQL string
 //go:embed markFailed.sql
 var markFailedSQL string
 
+// attemptsOfSQL mirrors the saga source pattern: the poller's
+// per-Pod in-memory retry counter is volatile across restarts, so
+// we read attempts from the DB row itself inside the locked tx.
+// See services/saga/internal/outbox/source.go for the original.
+const attemptsOfSQL = `SELECT event_id, attempts FROM payment_outbox WHERE event_id = ANY($1)`
+
 // PGSource reads/marks rows in the payment_outbox table.
 type PGSource struct {
 	pool *pgxpool.Pool
@@ -83,6 +89,30 @@ func (s *PGSource) MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []strin
 	if len(eventIDs) == 0 {
 		return nil
 	}
-	_, err := tx.Exec(ctx, markFailedSQL, eventIDs)
+	_, err := tx.Exec(ctx, markFailedSQL, "publish failed", eventIDs)
 	return err
+}
+
+// AttemptsOfTx returns the current attempts counter for each given
+// event_id inside the supplied tx. See saga/internal/outbox/source.go
+// for the full rationale.
+func (s *PGSource) AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []string) (map[string]int, error) {
+	if len(eventIDs) == 0 {
+		return map[string]int{}, nil
+	}
+	rows, err := tx.Query(ctx, attemptsOfSQL, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int, len(eventIDs))
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }
