@@ -43,7 +43,7 @@ if ($list.Content -match 'OrderFlow|orderflow-web') { Pass "/ contains brand" } 
 
 # 4. happy path: POST /v1/orders
 Step "happy path"
-$body = @{ customer_id = [guid]::NewGuid().ToString(); items = @(@{ sku = 'SKU-SMOKE'; quantity = 1; unit_price_cents = 1999 }); payment = @{ last_four = '4242' } } | ConvertTo-Json -Depth 5
+$body = @{ customer_id = [guid]::NewGuid().ToString(); items = @(@{ sku = 'SKU-001'; quantity = 1; unit_price_cents = 1999 }); payment = @{ last_four = '4242' } } | ConvertTo-Json -Depth 5
 $created = Invoke-WebRequest "$OrderUrl/v1/orders" -Method Post -ContentType 'application/json' -Body $body -UseBasicParsing -TimeoutSec 5
 Expect $created.StatusCode 201 "POST /v1/orders"
 $oid = ($created.Content | ConvertFrom-Json).id
@@ -61,7 +61,7 @@ Expect $state 'confirmed' "final state"
 
 # 6. compensation path
 Step "compensation path"
-$body2 = @{ customer_id = [guid]::NewGuid().ToString(); items = @(@{ sku = 'SKU-SMOKE'; quantity = 1; unit_price_cents = 1999 }); payment = @{ last_four = '0001' } } | ConvertTo-Json -Depth 5
+$body2 = @{ customer_id = [guid]::NewGuid().ToString(); items = @(@{ sku = 'SKU-001'; quantity = 1; unit_price_cents = 1999 }); payment = @{ last_four = '0001' } } | ConvertTo-Json -Depth 5
 $created2 = Invoke-WebRequest "$OrderUrl/v1/orders" -Method Post -ContentType 'application/json' -Body $body2 -UseBasicParsing -TimeoutSec 5
 Expect $created2.StatusCode 201 "POST compensation"
 $oid2 = ($created2.Content | ConvertFrom-Json).id

@@ -124,7 +124,7 @@ fi
 step "happy path"
 HAPPY_BODY=$(jq -nc \
     --arg cid "$(new_uuid)" \
-    '{customer_id: $cid, items: [{sku: "SKU-SMOKE", quantity: 1, unit_price_cents: 1999}], payment: {last_four: "4242"}}')
+    '{customer_id: $cid, items: [{sku: "SKU-001", quantity: 1, unit_price_cents: 1999}], payment: {last_four: "4242"}}')
 code=$(url_status "$ORDER_URL/v1/orders" \
     -X POST -H 'Content-Type: application/json' -d "$HAPPY_BODY")
 expect "$code" "201" "POST /v1/orders"
@@ -154,7 +154,7 @@ expect "$state" "confirmed" "final state"
 step "compensation path"
 FAIL_BODY=$(jq -nc \
     --arg cid "$(new_uuid)" \
-    '{customer_id: $cid, items: [{sku: "SKU-SMOKE", quantity: 1, unit_price_cents: 1999}], payment: {last_four: "0001"}}')
+    '{customer_id: $cid, items: [{sku: "SKU-001", quantity: 1, unit_price_cents: 1999}], payment: {last_four: "0001"}}')
 code=$(url_status "$ORDER_URL/v1/orders" \
     -X POST -H 'Content-Type: application/json' -d "$FAIL_BODY")
 expect "$code" "201" "POST compensation"
