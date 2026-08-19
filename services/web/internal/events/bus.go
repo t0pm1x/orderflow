@@ -37,6 +37,13 @@ type BusEvent struct {
 // first, never blocking the publisher. A bounded ring buffer mirrors
 // the most recent events so late-arriving HTTP clients can fetch
 // historical events per-aggregate via History.
+//
+// The drop-oldest path is non-blocking on every channel send: if the
+// per-subscriber buffer is still full after draining one, the new
+// event is dropped for that subscriber rather than blocking the
+// publisher. This is the only safe behavior — a blocking send here
+// would wedge every publisher while waiting on the slowest consumer
+// and prevent Close() from acquiring the write lock.
 type Bus struct {
 	mu   sync.RWMutex
 	subs map[chan BusEvent]struct{}
@@ -84,10 +91,17 @@ func (b *Bus) Subscribe() (chan BusEvent, func()) {
 // write lock until all in-flight RLocks release, so a snapshotted
 // channel cannot be closed concurrently with the send (Unlock(Write)
 // synchronizes-with the next RLock). The per-channel defer recover
-// is a belt-and-suspenders safety net for "send on closed channel"
-// in case the synchronization is ever bypassed. The send is
-// non-blocking and the drop-oldest uses a single atomic select so
-// the drain and the push cannot be interleaved by another publisher.
+// is therefore load-bearing in one specific case: Close() / an
+// unsub() can acquire the write lock AFTER the publisher snapshots
+// the channel but BEFORE the publisher's RLock — in that window
+// `close(ch)` runs without any RLock synchronizing-with the pending
+// send, and recover is the only thing preventing a "send on closed
+// channel" panic from crashing the process. The send itself is
+// non-blocking throughout: drop-oldest uses a drain (`<-ch`) plus a
+// second non-blocking send, and both sends have `default` branches.
+// A blocking send anywhere in this path would deadlock Close()
+// (which waits on the write lock) once any single subscriber's
+// buffer stayed full.
 func (b *Bus) Publish(e BusEvent) {
 	b.mu.Lock()
 	if b.closed() {
@@ -117,16 +131,17 @@ func (b *Bus) Publish(e BusEvent) {
 			defer b.mu.RUnlock()
 			select {
 			case ch <- e:
+				return
 			default:
-				// Drop oldest, push newest in one atomic select:
-				// either we drain one (then we have guaranteed room
-				// and the unconditional send wins), or another
-				// goroutine drained it for us and the send case wins.
-				select {
-				case <-ch:
-					ch <- e
-				case ch <- e:
-				}
+			}
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- e:
+			default:
+				// give up — drop this event for this slow subscriber
 			}
 		}()
 	}

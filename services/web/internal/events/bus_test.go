@@ -213,3 +213,51 @@ func TestBus_CloseRaceWithPublish(t *testing.T) {
 		drainWG.Wait()
 	}
 }
+
+// TestBus_SlowSubscriberDoesNotDeadlock reproduces the deadlock
+// reported by the reviewer for the "atomic single select" drop-oldest
+// pattern (`case <-ch: ch <- e`). With 16 concurrent publishers and
+// a single subscriber that never reads, the subscriber's buffered
+// channel (cap 64) fills up immediately. Each publisher's drop-oldest
+// path drains one then attempts an UNCONDITIONAL send — if another
+// publisher refills the slot in between, that send blocks forever
+// while holding RLock, which prevents Close() from ever acquiring
+// the write lock and wedges every publisher in the process.
+//
+// With the non-blocking drop-oldest (drain + second non-blocking
+// send, both with default branches) the publisher simply drops the
+// event for the slow subscriber and moves on. The whole test must
+// complete in well under a second.
+func TestBus_SlowSubscriberDoesNotDeadlock(t *testing.T) {
+	const P = 16
+	const PerPub = 200 // 16 * 200 = 3200 events vs. cap 64 → guaranteed overflow
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b := events.NewBus()
+		defer b.Close()
+
+		ch, _ := b.Subscribe()
+		_ = ch // intentionally never drained — the stalled subscriber
+
+		var wg sync.WaitGroup
+		wg.Add(P)
+		for i := 0; i < P; i++ {
+			go func() {
+				defer wg.Done()
+				for j := 0; j < PerPub; j++ {
+					b.Publish(events.BusEvent{Envelope: pkgEvents.Envelope{EventType: "X", AggregateID: "a"}})
+				}
+			}()
+		}
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+		// pass — finished under the deadline
+	case <-time.After(time.Second):
+		t.Fatal("bus deadlocked: 16 publishers + 1 stalled subscriber did not complete in 1s")
+	}
+}
