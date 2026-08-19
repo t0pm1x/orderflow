@@ -187,6 +187,73 @@ func TestList_OK(t *testing.T) {
 	}
 }
 
+// TestList_NextCursor_SetWhenPageFull pins P0.6: when the page
+// is full (len(items) == limit), the response MUST include a
+// `next_cursor` field whose value is the id of the last item,
+// and MUST NOT include the legacy `has_more` boolean. The web
+// BFF types OrderList.NextCursor as a (non-pointer) string, so
+// this test also doubles as a wire-shape contract for that
+// struct. A regression that swaps back to `has_more`, drops the
+// field entirely, or sends the first item's id would break
+// the web's pagination UI and fail this test.
+func TestList_NextCursor_SetWhenPageFull(t *testing.T) {
+	repo := newMockRepo()
+	o := domain.NewOrder(types.NewCustomerID(), []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 100}})
+	if err := repo.Insert(context.Background(), o); err != nil {
+		t.Fatalf("mockRepo.Insert: %v", err)
+	}
+	h := NewHandler(repo)
+	req := httptest.NewRequest("GET", "/v1/orders?limit=1", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.Body.String())
+	}
+	if _, ok := body["has_more"]; ok {
+		t.Errorf("response must not include has_more; body=%s", w.Body.String())
+	}
+	raw, ok := body["next_cursor"]
+	if !ok {
+		t.Fatalf("response must include next_cursor when page is full; body=%s", w.Body.String())
+	}
+	var got string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("next_cursor must be a JSON string, got %s", raw)
+	}
+	if got != o.ID.String() {
+		t.Errorf("next_cursor: got %q want %q (id of last item)", got, o.ID.String())
+	}
+}
+
+// TestList_NextCursor_OmittedWhenPartial pins the negative side
+// of P0.6: when the page is NOT full (len(items) < limit), the
+// `next_cursor` field must be omitted entirely (omitempty) so
+// the web BFF's `if nextCursor != ""` short-circuit keeps
+// working and clients don't see a misleading empty string.
+func TestList_NextCursor_OmittedWhenPartial(t *testing.T) {
+	h := NewHandler(newMockRepo())
+	req := httptest.NewRequest("GET", "/v1/orders", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.Body.String())
+	}
+	if _, ok := body["has_more"]; ok {
+		t.Errorf("response must not include has_more; body=%s", w.Body.String())
+	}
+	if _, ok := body["next_cursor"]; ok {
+		t.Errorf("next_cursor must be omitted when page is not full; body=%s", w.Body.String())
+	}
+}
+
 // TestCancel_OK verifies that DELETE /v1/orders/{id} calls
 // Repository.Cancel and returns 204. The cancel contract is idempotent:
 // terminal orders (confirmed/cancelled/failed) should also return 204

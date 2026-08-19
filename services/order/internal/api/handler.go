@@ -184,11 +184,15 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "LIST_FAILED", err.Error(), err))
 		return
 	}
+	next := ""
+	if len(items) == limit {
+		next = items[len(items)-1].ID.String()
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"items":    items,
-		"has_more": len(items) == limit,
-	})
+	_ = json.NewEncoder(w).Encode(struct {
+		Items      []*domain.Order `json:"items"`
+		NextCursor string          `json:"next_cursor,omitempty"`
+	}{Items: items, NextCursor: next})
 }
 
 // cancel handles DELETE /v1/orders/{id}. Idempotent: a missing or

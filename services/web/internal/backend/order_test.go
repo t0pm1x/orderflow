@@ -40,6 +40,34 @@ func TestOrderClient_List(t *testing.T) {
 	}
 }
 
+// TestOrderClient_List_NextCursor pins P0.6: the upstream's
+// `next_cursor` field must deserialize into OrderList.NextCursor
+// as a non-empty string when present, and the struct field must
+// be a plain `string` (not `*string`) so the existing `if
+// nextCursor != ""` short-circuit in the BFF's pagination UI
+// keeps working without a nil check. A regression that flips
+// NextCursor back to *string, or the upstream that drops the
+// field, would either fail to compile or fail this test.
+func TestOrderClient_List_NextCursor(t *testing.T) {
+	const wantCursor = "550e8400-e29b-41d4-a716-446655440000"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[
+			{"id":"` + wantCursor + `","state":"pending","items":[],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+		],"next_cursor":"` + wantCursor + `"}`))
+	}))
+	defer srv.Close()
+
+	c := backend.New(nil, srv.URL, "http://localhost:8081", "http://localhost:8082")
+	got, err := c.List(context.Background(), backend.OrderStatePending, 1)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got.NextCursor != wantCursor {
+		t.Errorf("NextCursor: got %q want %q", got.NextCursor, wantCursor)
+	}
+}
+
 func TestOrderClient_Get_NotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"code":"not_found","message":"order not found"}`, http.StatusNotFound)

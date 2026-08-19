@@ -297,7 +297,11 @@ components:
             $ref: '#/components/schemas/Order'
         next_cursor:
           type: string
-          nullable: true
+          description: |
+            Opaque pagination cursor. Set to the `id` of the last item
+            in the current page when the page is full; omitted when
+            the page is partial (no more results).
+          example: 550e8400-e29b-41d4-a716-446655440000
 
     PaymentWebhook:
       type: object

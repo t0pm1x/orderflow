@@ -60,7 +60,7 @@ type Order struct {
 // OrderList matches `OrderList` in api/openapi.yaml:290-300.
 type OrderList struct {
 	Items      []Order `json:"items"`
-	NextCursor *string `json:"next_cursor,omitempty"`
+	NextCursor string  `json:"next_cursor,omitempty"`
 }
 
 // StockItem matches `model.Stock` in
