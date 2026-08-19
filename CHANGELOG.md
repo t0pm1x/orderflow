@@ -34,6 +34,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-08-19
+
+### Fixed
+
+- **Flaky `TestRun_ServesHealthzAndMetrics`** in 3 of 5 service
+  binaries (`order`, `payment`, `inventory`). The test polled
+  `ListenAddr()` to detect when the HTTP server was bound, but
+  `boundAddr.Store(...)` runs **before** `httpSrv.Serve(ln)`,
+  so the test sometimes returned an address whose listener
+  was bound but not yet accepting. The `http.Get` then got
+  ECONNREFUSED ~4 of 5 runs. Fix: poll via successful
+  `GET /healthz` (pattern lifted from the saga binary, which
+  fixed the same race earlier — see
+  `services/saga/cmd/saga/main_test.go:waitForFreshReadyAddr`).
+  Verified stable across `-race -count=20`. No production code
+  change: the production runtime bound → ready transition is
+  correct; only the test synchronisation was racy. Web service
+  has no `main_test.go` so was unaffected.
+
+### Tests
+
+- `services/{order,payment,inventory}/internal/outbox/sql_test.go`:
+  `TestFetchPendingSQL_OrdersByCreatedAt` now also asserts the
+  embedded `fetchPendingSQL` contains `FOR UPDATE SKIP LOCKED`
+  (and `status = 'PENDING'` in payment/inventory, which were
+  missing). Catches the v1.1.1 regression class — a removed
+  row-lock would no longer pass.
+
+- `services/payment/internal/consumer/handlers_test.go`:
+  `TestSetHandler_RaceWithLoad` — 4 writers × 200 ops hammering
+  `SetHandler` while 8 readers hammer `Registry`. Race detector
+  fails immediately on a regression to the plain-pointer
+  pre-v1.1.2 design.
+
+- `services/inventory/internal/consumer/handlers_test.go`:
+  `TestSetPool_RaceWithRegistry` — same shape for the
+  inventory `globalDeps atomic.Pointer[handlerDeps]`.
+
+- `services/payment/internal/idempotency/middleware_test.go`:
+  `TestMiddleware_ConcurrentSameKey_ExactlyOneHandlerCall` —
+  32 goroutines fire the same Idempotency-Key, assert exactly
+  one handler invocation. Catches the pre-v1.1.1 bug where
+  duplicates got HTTP 200 with body `"in-flight"` (which the
+  saga falsely treated as success).
+
+- `services/inventory/internal/repository/pg_repo_test.go`:
+  `TestPGRepo_ReleaseStock_RejectsOverRelease` (release qty >
+  reserved returns ErrNotFound, stock unchanged, outbox empty)
+  and `TestPGRepo_ReleaseStock_RejectsNonPositiveQty` (qty
+  0/-1 rejected before any DB write). Both require DATABASE_URL;
+  skip otherwise (same pattern as the rest of the file).
+
+- `services/saga/internal/outbox/poller_pg_test.go` (NEW):
+  real-PG `TestPoller_RoutesToDLQAfterMaxAttempts_PG` exercises
+  the saga's `saga_outbox` schema against a live Postgres,
+  pins the `attempts + 1` increment + status='FAILED'
+  transition. Requires DATABASE_URL. (Located in the saga
+  package rather than `pkg/outbox` to avoid a circular
+  import — `pkg/outbox` is consumed by the saga, not vice
+  versa.)
+
+### Deferred to v1.2+
+
+- (unchanged from v1.1.2) P1-#3 per-Pod attempts counter,
+  P1-#4 KafkaPublisher atomic batch, Stripe-style webhook
+  body-vs-strict-mode handling.
+
 ## [1.1.2] - 2026-08-18
 
 ### Fixed — adversarial-audit follow-up
