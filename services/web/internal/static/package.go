@@ -7,5 +7,5 @@ import "embed"
 // binary at build time. The web server's /static handler serves
 // it via io/fs.
 //
-//go:embed styles.css
+//go:embed styles.css vendor/*
 var FS embed.FS

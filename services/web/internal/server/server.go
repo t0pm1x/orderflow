@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -83,22 +85,22 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Static assets (CSS, future images). Mounted before the handler
+	// Static assets (CSS, vendored JS). Mounted before the handler
 	// set so the layout.html <link rel=stylesheet href=/static/styles.css>
-	// resolves on every page render.
+	// and <script src=/static/vendor/htmx.min.js> resolve on every page.
 	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
 		p := strings.TrimPrefix(req.URL.Path, "/static/")
-		data, err := static.FS.ReadFile("styles.css")
+		data, err := static.FS.ReadFile(p)
 		if err != nil {
 			http.NotFound(w, req)
 			return
 		}
-		if p == "styles.css" {
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-			_, _ = w.Write(data)
-			return
+		contentType := mime.TypeByExtension(filepath.Ext(p))
+		if contentType == "" {
+			contentType = "application/octet-stream"
 		}
-		http.NotFound(w, req)
+		w.Header().Set("Content-Type", contentType+"; charset=utf-8")
+		_, _ = w.Write(data)
 	})
 
 	if s.opt.Handlers != nil {
