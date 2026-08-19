@@ -41,4 +41,7 @@ func TestFetchPendingSQL_OrdersByCreatedAt(t *testing.T) {
 		!strings.Contains(fetchPendingSQL, "status='PENDING'") {
 		t.Errorf("fetchPendingSQL missing status filter:\n%s", fetchPendingSQL)
 	}
+	if !strings.Contains(strings.ToUpper(fetchPendingSQL), "FOR UPDATE SKIP LOCKED") {
+		t.Errorf("fetchPendingSQL missing FOR UPDATE SKIP LOCKED (regression risk: two pollers would publish the same row):\n%s", fetchPendingSQL)
+	}
 }
