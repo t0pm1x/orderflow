@@ -133,15 +133,116 @@ func TestChaos_KafkaKill_OrderServiceSurvives(t *testing.T) {
 
 // NOTE: An earlier revision of this file also asserted full
 // end-to-end recovery via `TestChaos_KafkaKill_ChainRecoversAfterKafkaRestart`.
-// That test was structurally impossible to pass with the current
-// outbox design: a fresh Kafka container has no data; the order's
-// outbox row is already `status='SENT'` because the OLD broker
-// ProduceSync-ACK'd the publish before the kill; the new broker
-// has nothing to consume from. The test was removed (audit
-// NEW-P0-4) for a future design rework (either persistent Kafka
-// volumes, or an outbox that re-emits on broker-recovery). For now
-// this single test owns the "chain stalls when broker dies" half
-// of the contract; the recovery half is a known gap.
+// That test was structurally impossible to pass with the pre-NEW-P0-4
+// harness: `RestartKafka` Terminate'd the old container and re-Ran
+// a fresh one, which has no data; the order's outbox row was already
+// `status='SENT'` (the OLD broker ProduceSync-ACK'd before the kill),
+// the new broker had nothing to consume from, and the chain could
+// never complete.
+//
+// The current harness exposes `StopKafka` + `StartKafka` which pause
+// and resume the SAME container (audit NEW-P0-4 mitigation: the
+// broker's data volume survives the stop). `TestChaos_KafkaKill_ChainRecoversAfterKafkaRestart`
+// below re-adds the recovery assertion on top of that helper.
+func TestChaos_KafkaKill_ChainRecoversAfterKafkaRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos requires docker")
+	}
+	h := harness.New(t)
+
+	stopOrder := h.StartService(t, "order", "order", map[string]string{
+		"DATABASE_URL": h.PostgresURLs["order"],
+		"KAFKA_BROKER": h.KafkaBrokers[0],
+		"HTTP_ADDR":    "127.0.0.1:18081",
+	})
+	defer stopOrder()
+	stopPayment := h.StartService(t, "payment", "payment", map[string]string{
+		"DATABASE_URL": h.PostgresURLs["payment"],
+		"KAFKA_BROKER": h.KafkaBrokers[0],
+		"HTTP_ADDR":    "127.0.0.1:18082",
+	})
+	defer stopPayment()
+	stopInv := h.StartService(t, "inventory", "inventory", map[string]string{
+		"DATABASE_URL": h.PostgresURLs["inventory"],
+		"KAFKA_BROKER": h.KafkaBrokers[0],
+		"REDIS_URL":    h.RedisURL,
+		"HTTP_ADDR":    "127.0.0.1:18083",
+	})
+	defer stopInv()
+	stopSaga := h.StartService(t, "saga", "saga", map[string]string{
+		"DATABASE_URL": h.PostgresURLs["order"],
+		"KAFKA_BROKER": h.KafkaBrokers[0],
+		"HTTP_ADDR":    "127.0.0.1:18084",
+	})
+	defer stopSaga()
+
+	waitForHealth(t, "http://127.0.0.1:18081/healthz", 30*time.Second)
+	waitForHealth(t, "http://127.0.0.1:18082/healthz", 30*time.Second)
+	waitForHealth(t, "http://127.0.0.1:18083/healthz", 30*time.Second)
+	waitForHealth(t, "http://127.0.0.1:18084/healthz", 30*time.Second)
+
+	body := osReadFile(t, "../../examples/order.json")
+	resp, err := http.Post(
+		"http://127.0.0.1:18081/v1/orders",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST /v1/orders: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /v1/orders: status=%d", resp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("empty order id")
+	}
+	t.Logf("created order %s", created.ID)
+
+	// Give the saga a few seconds to drive the chain forward, but
+	// stop well short of the 60s happy-path budget so the order
+	// has NOT reached confirmed before we kill Kafka. If we let it
+	// fully complete there's nothing to recover.
+	time.Sleep(3 * time.Second)
+	preState := getOrderState(t, created.ID)
+	t.Logf(">>> pre-kill order state: %s", preState)
+
+	t.Log(">>> stopping Kafka container (preserves data volume)")
+	if err := h.StopKafka(context.Background()); err != nil {
+		t.Fatalf("stop kafka: %v", err)
+	}
+
+	// The outbox poller will be unable to publish while the
+	// broker is down; OBX-004's exponential backoff keeps the
+	// rows PENDING. Consumers are stuck mid-group-rebalance.
+	time.Sleep(5 * time.Second)
+
+	t.Log(">>> starting Kafka container (data volume intact)")
+	if err := h.StartKafka(context.Background()); err != nil {
+		t.Fatalf("start kafka: %v", err)
+	}
+
+	// NEW-P0-4 mitigation: with the data volume intact, the broker
+	// comes back online with the same topic state. The consumer
+	// rebalances, the poller resumes, and the order reaches
+	// confirmed. 60s budget mirrors tests/e2e.
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if getOrderState(t, created.ID) == "confirmed" {
+			t.Log(">>> chain recovered after Kafka restart")
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("order %s did not reach confirmed within 60s after Kafka restart", created.ID)
+}
+
 func getOrderState(t *testing.T, id string) string {
 	t.Helper()
 	resp, err := http.Get("http://127.0.0.1:18081/v1/orders/" + id)

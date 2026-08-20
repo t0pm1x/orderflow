@@ -388,6 +388,45 @@ func (h *Harness) RestartKafka(ctx context.Context) error {
 	return nil
 }
 
+// StopKafka pauses the running Kafka container via docker stop
+// (preserves the container's data volume) so a chaos test can
+// simulate a broker outage without losing topic state. Audit
+// NEW-P0-4: the prior RestartKafka helper Terminate'd + re-Ran,
+// which gave the new container empty data and made full chain
+// recovery impossible to assert. StopKafka + StartKafka keep the
+// same container so any committed offsets, topics, and SENT
+// outbox markers survive the outage.
+//
+// After StopKafka returns, the broker's TCP port is unreachable
+// from the host. Callers that need to send new events during the
+// outage must NOT do so — the broker will reject produces until
+// StartKafka brings the container back up.
+func (h *Harness) StopKafka(ctx context.Context) error {
+	if h.kafkaContainer == nil {
+		return errors.New("harness: no kafka container to stop")
+	}
+	if err := h.kafkaContainer.Stop(ctx, nil); err != nil {
+		return fmt.Errorf("harness: stop kafka container: %w", err)
+	}
+	return nil
+}
+
+// StartKafka resumes a previously StopKafka'd container. Because
+// StopKafka preserves the container's data volume (in contrast to
+// RestartKafka's Terminate), StartKafka brings the broker back
+// online with all prior topics, offsets, and consumer-group
+// state intact. h.KafkaBrokers is unchanged (the host:port
+// mapping survives a stop/start cycle).
+func (h *Harness) StartKafka(ctx context.Context) error {
+	if h.kafkaContainer == nil {
+		return errors.New("harness: no kafka container to start")
+	}
+	if err := h.kafkaContainer.Start(ctx); err != nil {
+		return fmt.Errorf("harness: start kafka container: %w", err)
+	}
+	return nil
+}
+
 // pgHandle bundles a running Postgres container with its connection
 // string so cleanup and reporting have one value to pass around.
 type pgHandle struct {

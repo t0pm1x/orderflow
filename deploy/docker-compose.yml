@@ -93,6 +93,20 @@ services:
     ports:
       - "9092:9092"
       - "9644:9644"
+    # audit NEW-P0-4: redpanda now uses a named volume so the
+    # broker's data dir survives container restart. Pre-fix the
+    # broker kept state in the container's writable layer; a
+    # `docker compose restart redpanda` (or `docker kill` followed
+    # by `docker start`) wiped every topic, every offset, every
+    # SENT marker — the saga's consumer-group join then found
+    # nothing and the chain stalled because every outbox row was
+    # SENT (the producer's ProduceSync-ACK'd before the kill) but
+    # no consumer ever read the events. With the named volume the
+    # broker recovers its state across restarts and the chaos
+    # test's recovery assertion holds. Operators can wipe the
+    # volume deliberately via `docker compose down -v`.
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy -X brokers=redpanda:9092"]
       interval: 5s
@@ -204,3 +218,7 @@ volumes:
   redis_data:
   grafana_data:
   grafana_secret:
+  # audit NEW-P0-4: persistent volume for the redpanda data dir so
+  # broker state survives container restart. See the comment on
+  # the redpanda service for the full rationale.
+  redpanda_data:
