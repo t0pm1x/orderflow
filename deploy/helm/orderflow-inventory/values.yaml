@@ -8,13 +8,16 @@ service:
   port: 80
   targetPort: 8083
 env:
-  DATABASE_URL: ""
-  KAFKA_BROKER: ""
-  REDIS_URL: ""
   HTTP_ADDR: ":8083"
   OTEL_EXPORTER: "otlp"
   OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
   LOG_LEVEL: "info"
+# Connection strings come from a Secret. See secret.create / secret.existingSecret
+# and the values-override.yaml.example file.
+secret:
+  create: true
+  existingSecret: ""
+  data: {}
 resources:
   requests:
     cpu: "100m"
@@ -28,9 +31,19 @@ probes:
     initialDelaySeconds: 5
     periodSeconds: 10
   readiness:
-    path: /healthz
+    path: /readyz
     initialDelaySeconds: 2
     periodSeconds: 5
 serviceAccount:
   create: true
   name: ""
+
+# Horizontal Pod Autoscaler. Pre-existing in deployment.yaml template;
+# defaulting so the chart renders without a values override. Set
+# `autoscaling.enabled: true` and supply min/max replicas + target metrics
+# to wire up HPA. When enabled, `replicas` is ignored.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70

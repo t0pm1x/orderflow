@@ -1,0 +1,28 @@
+# Example values-override file for the Inventory Service chart.
+# Copy this file to `values-override.yaml` (or pass via `--values`)
+# and fill in real connection strings. Without these, the chart's
+# Secret is created with empty values and the pods will fail their
+# liveness probe at startup.
+#
+# Two ways to provide secrets:
+#
+# (a) Chart-managed Secret (default — `secret.create: true`).
+#     Populate `secret.data` with the real values:
+#
+# secret:
+#   create: true
+#   data:
+#     DATABASE_URL: "postgres://orderflow:CHANGEME@postgres:5432/inventory_inventory?sslmode=disable"
+#     KAFKA_BROKER: "redpanda:9092"
+#     REDIS_URL: "redis://redis:6379/0"
+#
+# (b) Externally-managed Secret. Set `secret.create: false` and
+#     `secret.existingSecret` to the Secret name you provisioned:
+#
+# secret:
+#   create: false
+#   existingSecret: "orderflow-inventory-secrets"
+# # Required keys in the Secret:
+# #   - DATABASE_URL
+# #   - KAFKA_BROKER
+# #   - REDIS_URL

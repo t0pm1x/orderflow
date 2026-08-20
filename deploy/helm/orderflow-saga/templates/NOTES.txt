@@ -1,2 +1,20 @@
 Saga orchestrator deployed!
 Get pods: kubectl get pods -l app.kubernetes.io/name={{ include "orderflow-saga.name" . }}
+
+KNOWN LIMITATIONS (NOT VERIFIED, see audit/FINAL_AUDIT.md):
+  - K8S-5: No `startupProbe`. Cold starts with OTel init may exceed the 5 s
+    `initialDelaySeconds` on the liveness probe. Recommended fix: add a
+    `startupProbe` that hits `/healthz` with generous `failureThreshold`
+    and gate the liveness probe behind it. Requires cluster validation.
+  - K8S-6: No `preStop` lifecycle hook. Rolling deploys may SIGKILL pods
+    mid-request. Recommended fix: add `lifecycle.preStop.exec.command`
+    invoking `sleep 5` (or a graceful-shutdown HTTP call). Requires
+    cluster validation.
+  - K8S-7: `runAsUser`/`runAsGroup` not set. Pin to 65532 once validated.
+  - K8S-8: Liveness probe targets `/healthz`, which is hard-coded 200 OK
+    (OBS-1). Switch to `/readyz` once the binary exposes it.
+  - K8S-13: The chart sets `KAFKA_BROKER` (singular); the saga binary
+    prefers `KAFKA_BROKERS` (plural). Standardize once multi-broker is
+    exercised. (Compounded by SAGA-12 which joins multi-broker env into
+    a single CSV string for the consumer side.)
+  - K8S-15: Per-chart ServiceAccount has no RoleBinding.

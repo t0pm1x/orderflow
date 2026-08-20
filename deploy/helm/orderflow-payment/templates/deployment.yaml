@@ -33,9 +33,23 @@ spec:
               protocol: TCP
           env:
             - name: DATABASE_URL
-              value: {{ .Values.env.DATABASE_URL | quote }}
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.secret.existingSecret }}
+                  name: {{ .Values.secret.existingSecret }}
+                  {{- else }}
+                  name: {{ include "orderflow-payment.fullname" . }}
+                  {{- end }}
+                  key: DATABASE_URL
             - name: KAFKA_BROKER
-              value: {{ .Values.env.KAFKA_BROKER | quote }}
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.secret.existingSecret }}
+                  name: {{ .Values.secret.existingSecret }}
+                  {{- else }}
+                  name: {{ include "orderflow-payment.fullname" . }}
+                  {{- end }}
+                  key: KAFKA_BROKER
             - name: HTTP_ADDR
               value: {{ .Values.env.HTTP_ADDR | quote }}
             - name: OTEL_EXPORTER

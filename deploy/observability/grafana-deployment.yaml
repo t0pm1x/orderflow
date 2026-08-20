@@ -1,0 +1,115 @@
+---
+# Grafana Deployment for k8s observability stack.
+# Mirrors the compose `grafana` service at deploy/docker-compose.yml:140-149
+# but uses a Secret for the admin password (SEC-2/K8S-4 fix). The compose
+# service is left untouched because that file is in dirty-state (uncommitted
+# v1.1.5 advertise-address fix); see audit/FINAL_AUDIT.md lines 285-292.
+#
+# Usage:
+#   kubectl apply -f deploy/observability/grafana-deployment.yaml
+#   kubectl create secret generic grafana-admin \
+#     --from-literal=admin-user=admin \
+#     --from-literal=admin-password=<strong-password> --dry-run=client -o yaml | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: orderflow
+type: Opaque
+stringData:
+  admin-user: admin
+  # Default-empty. Populate via `kubectl create secret ... --from-literal=admin-password=...`
+  # The Deployment below reads from this key; empty value means pods will not start
+  # until a password is provided.
+  admin-password: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: orderflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboards
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+            optional: true
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: orderflow
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: grafana

@@ -12,8 +12,17 @@ storage:
 
 auth:
   username: orderflow
-  password: orderflow
+  # Password is intentionally NOT defaulted. Empty value forces operators to
+  # either populate it via a values override or via secret.create/existingSecret.
+  # See templates/secret.yaml and templates/statefulset.yaml.
+  password: ""
   database: orderflow
+
+# Chart-managed Secret for the postgres credentials. Operators may instead
+# point `existingSecret` at a Secret they provisioned themselves.
+secret:
+  create: true
+  existingSecret: ""
 
 databases:
   - name: order_order
