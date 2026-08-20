@@ -3,6 +3,7 @@ package saga
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -111,16 +112,24 @@ func TestCompensators_NilGuards(t *testing.T) {
 
 func TestWatchdog_RegisterDeregisterExpire(t *testing.T) {
 	w := NewWatchdog(50 * time.Millisecond)
+	var mu sync.Mutex
 	var expired []string
 	done := make(chan struct{})
 	go func() {
-		w.Run(context.Background(), func(id string) { expired = append(expired, id) })
+		w.Run(context.Background(), func(id string) {
+			mu.Lock()
+			expired = append(expired, id)
+			mu.Unlock()
+		})
 		close(done)
 	}()
 	w.Register("o1")
 	time.Sleep(120 * time.Millisecond)
-	if len(expired) != 1 || expired[0] != "o1" {
-		t.Errorf("expired: got %v want [o1]", expired)
+	mu.Lock()
+	got := append([]string(nil), expired...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "o1" {
+		t.Errorf("expired: got %v want [o1]", got)
 	}
 	w.Stop()
 	<-done
