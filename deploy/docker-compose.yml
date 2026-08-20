@@ -73,7 +73,17 @@ services:
       - redpanda
       - start
       - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+      # v1.1.5: advertise the host-reachable address (127.0.0.1:9092
+      # via the published port 9092:9092) rather than the in-network
+      # hostname `redpanda:9092`. Pre-v1.1.5 the advertised addr was
+      # `redpanda:9092`; the host's franz-go clients bootstrap to
+      # 127.0.0.1:9092, get metadata saying "the broker is actually
+      # at redpanda:9092", then fail with
+      # `dial tcp: lookup redpanda: no such host`. The
+      # kafka-init container still bootstraps via
+      # `rpk ... -X brokers=redpanda:9092` (it never goes through
+      # metadata), so the in-network hostname is unused at runtime.
+      - --advertise-kafka-addr=PLAINTEXT://127.0.0.1:9092
       - --smp=1
       - --memory=512M
       - --overprovisioned

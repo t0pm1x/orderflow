@@ -101,18 +101,35 @@ if (-not $ok) {
 }
 
 # ---- 3. saga migrations on order DB ----
+# The saga service shares the order PG (DATABASE_URL points at
+# the order DB). deploy/postgres/init-order.sh only applies order
+# migrations, so the saga's schema (order_sagas, saga_outbox) must
+# be applied here too. Without these the saga runtime fails on
+# every event with `relation "order_sagas" does not exist`.
 Step "Saga migrations on order DB (saga shares the order PG)"
 $hasSagas = docker exec deploy-postgres-order-1 psql -U orderflow -d order_order -tAc "SELECT 1 FROM pg_tables WHERE tablename='order_sagas'" 2>$null
 if ($hasSagas -ne '1') {
-    Die "order_sagas missing in order_order - postgres-order volume predates the v1.1.5 fix. Reset: docker compose -f deploy\docker-compose.yml down -v"
-}
-$hasLastFour = docker exec deploy-postgres-order-1 psql -U orderflow -d order_order -tAc "SELECT 1 FROM information_schema.columns WHERE table_name='order_sagas' AND column_name='last_four'" 2>$null
-if ($hasLastFour -ne '1') {
-    Get-Content (Join-Path $root 'services\saga\migrations\0003_saga_payment_last_four.sql') |
-        docker exec -i deploy-postgres-order-1 psql -U orderflow -d order_order 2>&1 | Out-Null
-    Ok "applied 0003_saga_payment_last_four.sql"
+    # order_sagas missing entirely: apply the full saga migration
+    # set (0001_init, 0002_saga_outbox, 0003_payment_last_four).
+    # 0001+0002 are unconditional CREATE TABLE / ALTER TABLE; 0003
+    # uses ADD COLUMN IF NOT EXISTS so re-runs are idempotent.
+    $sagaMigDir = Join-Path $root 'services\saga\migrations'
+    foreach ($f in '0001_init.sql','0002_saga_outbox.sql','0003_saga_payment_last_four.sql') {
+        Get-Content (Join-Path $sagaMigDir $f) |
+            docker exec -i deploy-postgres-order-1 psql -U orderflow -d order_order 2>&1 | Out-Null
+        Ok "applied saga migration $f"
+    }
 } else {
-    Ok "order_sagas.last_four already present"
+    $hasLastFour = docker exec deploy-postgres-order-1 psql -U orderflow -d order_order -tAc "SELECT 1 FROM information_schema.columns WHERE table_name='order_sagas' AND column_name='last_four'" 2>$null
+    if ($hasLastFour -ne '1') {
+        # Existing pre-v1.1.5 install: order_sagas exists but the
+        # last_four column is missing. Apply just 0003.
+        Get-Content (Join-Path $root 'services\saga\migrations\0003_saga_payment_last_four.sql') |
+            docker exec -i deploy-postgres-order-1 psql -U orderflow -d order_order 2>&1 | Out-Null
+        Ok "applied 0003_saga_payment_last_four.sql"
+    } else {
+        Ok "order_sagas.last_four already present"
+    }
 }
 
 # ---- 4. build binaries ----
