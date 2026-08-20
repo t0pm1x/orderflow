@@ -77,11 +77,18 @@ func Redact(s string) string {
 // PII redaction filter is active. Match is case-insensitive. Add new
 // keys here when the audit or a code-review surfaces a new PII field
 // in a log line.
+//
+// Note: "key" is intentionally included. The payment idempotency
+// middleware emits `slog.Default().Error("idempotency: handler panic",
+// "key", key, ...)` — the attribute is named "key" (short for
+// "idempotency key"), not "idempotency_key". Without this entry the
+// panic path would leak the key verbatim, defeating the SEC-12 fix.
 var piiKeys = map[string]struct{}{
 	"last_four":       {},
 	"card_number":     {},
 	"customer_id":     {},
 	"idempotency_key": {},
+	"key":             {},
 	"password":        {},
 }
 

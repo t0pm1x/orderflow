@@ -236,3 +236,28 @@ func TestPiiHandler_WithAttrsRedacts(t *testing.T) {
 		t.Errorf("last_four (WithAttrs): got %v want [REDACTED]", entry["last_four"])
 	}
 }
+
+// TestPiiHandler_RedactsKeyAttribute is the reviewer-found regression
+// net. The payment idempotency middleware emits
+//
+//	slog.Default().Error("idempotency: handler panic", "key", key, ...)
+//
+// (attribute name "key", not "idempotency_key"). The piiHandler
+// must mask this; otherwise the panic path leaks the idempotency key
+// verbatim. Pre-fix the entry was missing, so the panic path bypassed
+// redaction.
+func TestPiiHandler_RedactsKeyAttribute(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	masked := slog.New(piiHandler{inner: handler})
+	masked.Error("idempotency: handler panic",
+		"key", "idem-xyz-very-secret",
+		"panic", "boom")
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, buf.String())
+	}
+	if entry["key"] != "[REDACTED]" {
+		t.Errorf("key attribute: got %v want [REDACTED] (reviewer-found regression: SEC-12 half-fix)", entry["key"])
+	}
+}
