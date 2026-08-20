@@ -79,6 +79,15 @@ spec:
                   name: {{ include "orderflow-saga.fullname" . }}
                   {{- end }}
                   key: KAFKA_BROKERS
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.secret.existingSecret }}
+                  name: {{ .Values.secret.existingSecret }}
+                  {{- else }}
+                  name: {{ include "orderflow-saga.fullname" . }}
+                  {{- end }}
+                  key: REDIS_URL
             - name: HTTP_ADDR
               value: {{ .Values.env.HTTP_ADDR | quote }}
             - name: OTEL_EXPORTER

@@ -14,6 +14,7 @@
 #   data:
 #     DATABASE_URL: "postgres://orderflow:CHANGEME@postgres:5432/order_order?sslmode=disable"
 #     KAFKA_BROKERS: "redpanda:9092"
+#     REDIS_URL: "redis://redis:6379/0"
 #
 # (b) Externally-managed Secret. Set `secret.create: false` and
 #     `secret.existingSecret` to the Secret name you provisioned:
@@ -24,3 +25,4 @@
 # # Required keys in the Secret:
 # #   - DATABASE_URL
 # #   - KAFKA_BROKERS
+# #   - REDIS_URL

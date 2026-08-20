@@ -60,6 +60,8 @@ spec:
               value: ""
             - name: KAFKA_BROKERS
               value: ""
+            - name: REDIS_URL
+              value: ""
             - name: HTTP_ADDR
               value: ":8081"
             - name: OTEL_EXPORTER
