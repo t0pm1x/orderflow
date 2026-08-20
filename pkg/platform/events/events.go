@@ -8,6 +8,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/t0pm1x/orderflow/kafkaprop"
 )
 
 // Envelope is the standard event wrapper used across all orderflow topics.
@@ -81,30 +84,73 @@ func (c *Client) Publish(ctx context.Context, topic string, env *Envelope) error
 // optionally attaching the given string-string headers as Kafka
 // record headers. Used by the outbox poller (3.7.b) which has the
 // wire format already from the outbox row.
+//
+// OBS-5: the active OTel span on ctx is injected into the record
+// headers as a W3C traceparent (and tracestate, baggage). This is
+// the cross-process trace propagation ADR-0004 mandates; without
+// it, every consuming service starts a fresh trace root and the
+// Tempo service map breaks across Kafka topic boundaries. The
+// caller's `headers` map is preserved verbatim — any business
+// headers the producer wants to attach (e.g. saga-id) ride along
+// with the trace headers.
 func (c *Client) PublishRaw(ctx context.Context, topic, key string, body []byte, headers map[string]string) error {
+	carrier := make(kafkaprop.RecordHeaderCarrier, len(headers)+2)
+	for k, v := range headers {
+		carrier[k] = v
+	}
+	// Inject mutates the carrier in-place. The propagator reads
+	// ctx for the active span; on a no-active-span ctx the
+	// propagator is a no-op so the carrier's existing keys (the
+	// business headers) survive untouched.
+	kafkaprop.Inject(ctx, propagation.TextMapCarrier(carrier))
+
 	record := &kgo.Record{
 		Topic:   topic,
 		Key:     []byte(key),
 		Value:   body,
-		Headers: headersToRecord(headers),
+		Headers: carrierToKgo(carrier),
 	}
 	return c.kgo.ProduceSync(ctx, record).FirstErr()
 }
 
-// headersToRecord converts a string-string header map to the
-// []kgo.RecordHeader shape franz-go expects on a Produce call.
-func headersToRecord(headers map[string]string) []kgo.RecordHeader {
-	if len(headers) == 0 {
+// carrierToKgo flattens a kafkaprop.RecordHeaderCarrier (a
+// map[string]string populated by kafkaprop.Inject on the publish
+// path) back to the []kgo.RecordHeader slice franz-go expects on
+// a Produce call. OBS-5: previously headersToRecord handled only
+// the producer's business headers; the carrier now carries the
+// W3C trace headers too.
+func carrierToKgo(carrier kafkaprop.RecordHeaderCarrier) []kgo.RecordHeader {
+	if len(carrier) == 0 {
 		return nil
 	}
-	out := make([]kgo.RecordHeader, 0, len(headers))
-	for k, v := range headers {
+	out := make([]kgo.RecordHeader, 0, len(carrier))
+	for k, v := range carrier {
 		out = append(out, kgo.RecordHeader{Key: k, Value: []byte(v)})
 	}
 	return out
 }
 
+// headersToRecord is retained as an alias for backwards-compatible
+// callers (the OBS-9 instrumentation paths still pass a map directly
+// in some places). It is a thin wrapper over carrierToKgo.
+func headersToRecord(headers map[string]string) []kgo.RecordHeader {
+	if len(headers) == 0 {
+		return nil
+	}
+	return carrierToKgo(kafkaprop.RecordHeaderCarrier(headers))
+}
+
 // Close shuts down the client.
 func (c *Client) Close() {
 	c.kgo.Close()
+}
+
+// Ping verifies at least one Kafka broker is reachable by issuing a
+// broker-only Metadata request. It is the OBS-1 readiness probe
+// primitive: a /readyz handler invokes Ping with a short ctx so a
+// dead broker returns within the readiness timeout rather than
+// blocking the kubelet's HTTP request. Errors are surfaced verbatim
+// so the handler can include them in the JSON failure response.
+func (c *Client) Ping(ctx context.Context) error {
+	return c.kgo.Ping(ctx)
 }

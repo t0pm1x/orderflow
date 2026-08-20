@@ -109,12 +109,13 @@ func Run(ctx context.Context) error {
 
 func startOutbox(ctx context.Context, logger *slog.Logger, dbURL string, brokers []string, httpAddr string) (func(context.Context) error, error) {
 	var (
-		wg       sync.WaitGroup
-		httpSrv  *http.Server
-		ln       net.Listener
-		pool     *pgxpool.Pool
-		poller   *pkgoutbox.Poller
-		outboxOn = dbURL != "" && len(brokers) > 0
+		wg          sync.WaitGroup
+		httpSrv     *http.Server
+		ln          net.Listener
+		pool        *pgxpool.Pool
+		kafkaClient *events.Client
+		poller      *pkgoutbox.Poller
+		outboxOn    = dbURL != "" && len(brokers) > 0
 	)
 
 	if outboxOn {
@@ -127,7 +128,6 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL string, brokers
 			pool.Close()
 			return nil, fmt.Errorf("postgres ping: %w", err)
 		}
-		var kafkaClient *events.Client
 		kafkaClient, err = events.NewClient(brokers, "inventory")
 		if err != nil {
 			pool.Close()
@@ -138,10 +138,13 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL string, brokers
 		dlq := pkgoutbox.NewKafkaDLQ(kafkaClient)
 		metrics := pkgoutbox.NewPrometheusMetrics(TableName, prometheus.DefaultRegisterer)
 		poller = pkgoutbox.New(pkgoutbox.PollerConfig{
-			Table:       TableName,
-			BatchSize:   100,
-			Interval:    100 * time.Millisecond,
-			MaxAttempts: 5,
+			Table:          TableName,
+			BatchSize:      100,
+			Interval:       100 * time.Millisecond,
+			MaxAttempts:    5,                // poison-message cap
+			MaxRetryAge:    15 * time.Minute, // infrastructure-outage cap (OBX-004)
+			MaxInterval:    5 * time.Second,  // exponential-backoff cap
+			JitterFraction: 0.2,              // ±20% full jitter
 		}, src, pub, dlq, metrics)
 
 		wg.Add(1)
@@ -162,6 +165,29 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL string, brokers
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		})
+		// OBS-1: /readyz returns 200 only when every dependency
+		// probe succeeds. Pool and kafkaClient checks are only
+		// registered when those subsystems are wired (outboxOn);
+		// in disabled mode the endpoint reports 200 with no
+		// checks so a service starting without DB/Kafka env vars
+		// is still ready.
+		var (
+			readyzNames  []string
+			readyzChecks []mw.Check
+		)
+		if pool != nil {
+			readyzNames = append(readyzNames, "postgres")
+			readyzChecks = append(readyzChecks, func(ctx context.Context) error {
+				return pool.Ping(ctx)
+			})
+		}
+		if kafkaClient != nil {
+			readyzNames = append(readyzNames, "kafka")
+			readyzChecks = append(readyzChecks, func(ctx context.Context) error {
+				return kafkaClient.Ping(ctx)
+			})
+		}
+		r.Get("/readyz", mw.ReadyHandler(readyzNames, readyzChecks))
 		r.Handle("/metrics", promhttp.Handler())
 
 		// Mount the Inventory REST stock endpoint only when the DB
@@ -279,6 +305,13 @@ func startOutbox(ctx context.Context, logger *slog.Logger, dbURL string, brokers
 // Main is the function called by cmd/inventory/main.go; it owns
 // the signal-aware context lifecycle.
 func Main() {
+	// OBS-6: install the JSON slog handler as the package default so
+	// every downstream slog.Default() call emits parseable JSON to
+	// stderr. Before this fix the binaries used Go's stdlib text
+	// handler, which downstream log shipping (Tempo/Loki) could not
+	// parse without a regex extractor.
+	slog.SetDefault(platform.NewLogger())
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	err := Run(ctx)
 	cancel()

@@ -78,6 +78,50 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 	}
 }
 
+// TestRun_ServesReadyzInDisabledMode is the OBS-1 regression net
+// for the saga binary. /readyz must be reachable in disabled mode
+// (DATABASE_URL/KAFKA_BROKERS unset) and must return 200 because
+// no dependencies are wired. Before the fix the endpoint did not
+// exist at all and a /readyz probe would 404.
+func TestRun_ServesReadyzInDisabledMode(t *testing.T) {
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("OTEL_EXPORTER", "stdout")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- saga.Run(ctx)
+	}()
+
+	addr := waitForFreshReadyAddr(t, 3*time.Second)
+	t.Cleanup(func() { cancel() })
+
+	resp, err := http.Get("http://" + addr + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/readyz status: got %d want 200; body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"status":"ok"`) {
+		t.Errorf("/readyz body: got %q want to contain %q", body, `"status":"ok"`)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run returned: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return within 3s after cancel")
+	}
+}
+
 // TestRun_GoroutinesExitOnCancel verifies that Run returns within a
 // bounded shutdown timeout after ctx is cancelled. This is a
 // regression net for the WaitGroup-based shutdown contract: the

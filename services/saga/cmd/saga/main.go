@@ -98,6 +98,7 @@ func Run(ctx context.Context) error {
 	var (
 		wg            sync.WaitGroup
 		pool          *pgxpool.Pool
+		kafkaClient   *events.Client
 		httpSrv       *http.Server
 		ln            net.Listener
 		consumerClose func(context.Context) error
@@ -124,7 +125,7 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("consumer start: %w", err)
 		}
 
-		outboxClose, err = startSagaOutbox(ctx, logger, pool, brokers, &wg)
+		kafkaClient, outboxClose, err = startSagaOutbox(ctx, logger, pool, brokers, &wg)
 		if err != nil {
 			_ = consumerClose(context.Background())
 			pool.Close()
@@ -156,6 +157,28 @@ func Run(ctx context.Context) error {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	// OBS-1: /readyz returns 200 only when every dependency probe
+	// succeeds. Pool and kafkaClient checks are only registered
+	// when those subsystems are wired (dbURL != "" && broker != "");
+	// in disabled mode the endpoint reports 200 with no checks so a
+	// service starting without DB/Kafka env vars is still ready.
+	var (
+		readyzNames  []string
+		readyzChecks []mw.Check
+	)
+	if pool != nil {
+		readyzNames = append(readyzNames, "postgres")
+		readyzChecks = append(readyzChecks, func(ctx context.Context) error {
+			return pool.Ping(ctx)
+		})
+	}
+	if kafkaClient != nil {
+		readyzNames = append(readyzNames, "kafka")
+		readyzChecks = append(readyzChecks, func(ctx context.Context) error {
+			return kafkaClient.Ping(ctx)
+		})
+	}
+	r.Get("/readyz", mw.ReadyHandler(readyzNames, readyzChecks))
 	r.Handle("/metrics", promhttp.Handler())
 
 	ln, err = net.Listen("tcp", httpAddr)
@@ -190,10 +213,12 @@ func Run(ctx context.Context) error {
 // caller passes a WaitGroup so the poller goroutine is tracked and
 // the close fn can wait for it on shutdown. Mirrors
 // services/order/cmd/order/main.go's startOutbox + WaitGroup pattern.
-func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, brokers []string, wg *sync.WaitGroup) (func(context.Context) error, error) {
+// The *events.Client is returned alongside the close fn so the
+// caller can wire /readyz's kafka Ping check against it.
+func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, brokers []string, wg *sync.WaitGroup) (*events.Client, func(context.Context) error, error) {
 	kafkaClient, err := events.NewClient(brokers, "saga")
 	if err != nil {
-		return nil, fmt.Errorf("kafka client: %w", err)
+		return nil, nil, fmt.Errorf("kafka client: %w", err)
 	}
 
 	src := svcoutbox.NewPGSource(pool)
@@ -202,10 +227,13 @@ func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Poo
 	metrics := pkgoutbox.NewPrometheusMetrics(TableName, prometheus.DefaultRegisterer)
 
 	poller := pkgoutbox.New(pkgoutbox.PollerConfig{
-		Table:       TableName,
-		BatchSize:   100,
-		Interval:    100 * time.Millisecond,
-		MaxAttempts: 5,
+		Table:          TableName,
+		BatchSize:      100,
+		Interval:       100 * time.Millisecond,
+		MaxAttempts:    5,                // poison-message cap
+		MaxRetryAge:    15 * time.Minute, // infrastructure-outage cap (OBX-004)
+		MaxInterval:    5 * time.Second,  // exponential-backoff cap
+		JitterFraction: 0.2,              // ±20% full jitter
 	}, src, pub, dlq, metrics)
 
 	wg.Add(1)
@@ -216,7 +244,7 @@ func startSagaOutbox(ctx context.Context, logger *slog.Logger, pool *pgxpool.Poo
 		}
 	}()
 
-	return func(_ context.Context) error {
+	return kafkaClient, func(_ context.Context) error {
 		poller.Stop()
 		kafkaClient.Close()
 		return nil
@@ -266,6 +294,13 @@ func redact(s string) string {
 // Main is the function called by cmd/saga/main.go; it owns the
 // signal-aware context lifecycle.
 func Main() {
+	// OBS-6: install the JSON slog handler as the package default so
+	// every downstream slog.Default() call emits parseable JSON to
+	// stderr. Before this fix the binaries used Go's stdlib text
+	// handler, which downstream log shipping (Tempo/Loki) could not
+	// parse without a regex extractor.
+	slog.SetDefault(platform.NewLogger())
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	err := Run(ctx)
 	cancel()
