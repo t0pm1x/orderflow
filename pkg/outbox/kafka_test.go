@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -179,5 +180,97 @@ func TestRecordToEnvelope_NoSpan_LeavesIDsEmpty(t *testing.T) {
 	}
 	if env.TraceID != "" || env.SpanID != "" {
 		t.Errorf("expected empty trace_id/span_id, got %q/%q", env.TraceID, env.SpanID)
+	}
+}
+
+// fakeBatchKafka satisfies both KafkaClient (via PublishRaw) and
+// KafkaBatchClient (via PublishBatch). The recorder asserts that the
+// publisher took the fast path: exactly ONE PublishBatch call for N
+// records, regardless of N.
+type fakeBatchKafka struct {
+	mu          sync.Mutex
+	batchCalls  int
+	rawCalls    int
+	allRecords  []*kgo.Record
+	errByRecord map[string]error
+}
+
+func (f *fakeBatchKafka) PublishRaw(_ context.Context, topic, key string, body []byte, _ map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rawCalls++
+	return nil
+}
+
+func (f *fakeBatchKafka) PublishBatch(_ context.Context, recs []*kgo.Record) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.batchCalls++
+	f.allRecords = append(f.allRecords, recs...)
+	for _, r := range recs {
+		if err, ok := f.errByRecord[string(r.Key)]; ok && err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// TestKafkaPublisher_OBX005_BatchUsesSingleRoundTrip is the OBX-005
+// regression net: when the client implements KafkaBatchClient the
+// publisher must issue exactly ONE PublishBatch call for the whole
+// batch (not N PublishRaw calls). Pre-fix the implementation did N
+// serial PublishRaw calls inside the open DB transaction — 100
+// sequential blocking round-trips per poll at BatchSize=100.
+func TestKafkaPublisher_OBX005_BatchUsesSingleRoundTrip(t *testing.T) {
+	fk := &fakeBatchKafka{}
+	kp := NewKafkaPublisher(fk)
+	recs := make([]outbox.Record, 10)
+	for i := range recs {
+		recs[i] = outbox.Record{
+			EventID:     "e" + string(rune('0'+i)),
+			EventType:   "OrderCreated",
+			AggregateID: "o" + string(rune('0'+i)),
+			Topic:       "order-events",
+			Payload:     []byte(`{}`),
+		}
+	}
+	if err := kp.Publish(context.Background(), recs); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if fk.batchCalls != 1 {
+		t.Errorf("PublishBatch calls: got %d want 1 (OBX-005 regression: must batch, not serial)", fk.batchCalls)
+	}
+	if fk.rawCalls != 0 {
+		t.Errorf("PublishRaw calls: got %d want 0 (batch path bypasses serial fallback)", fk.rawCalls)
+	}
+	if len(fk.allRecords) != 10 {
+		t.Errorf("records in batch: got %d want 10", len(fk.allRecords))
+	}
+	// Every record must carry a unique topic + key per outbox.Record.
+	for i, r := range fk.allRecords {
+		want := "o" + string(rune('0'+i))
+		if r.Topic != "order-events" || string(r.Key) != want {
+			t.Errorf("record[%d]: topic=%q key=%q want order-events/%s", i, r.Topic, r.Key, want)
+		}
+	}
+}
+
+// TestKafkaPublisher_OBX005_FallsBackToSerialWhenNoBatchClient is the
+// regression net for the slow path: when the client does NOT implement
+// KafkaBatchClient (e.g. legacy fakes), the publisher falls back to
+// serial PublishRaw. This keeps existing tests working without
+// forcing every test fake to implement the batch interface.
+func TestKafkaPublisher_OBX005_FallsBackToSerialWhenNoBatchClient(t *testing.T) {
+	fk := &fakeKafka{}
+	kp := NewKafkaPublisher(fk)
+	recs := []outbox.Record{
+		{EventID: "e1", EventType: "OrderCreated", AggregateID: "o1", Topic: "order-events", Payload: []byte(`{}`)},
+		{EventID: "e2", EventType: "OrderCreated", AggregateID: "o2", Topic: "order-events", Payload: []byte(`{}`)},
+	}
+	if err := kp.Publish(context.Background(), recs); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(fk.calls) != 2 {
+		t.Errorf("PublishRaw calls: got %d want 2 (legacy fallback path)", len(fk.calls))
 	}
 }

@@ -134,6 +134,28 @@ func (c *Client) Close() {
 	c.kgo.Close()
 }
 
+// PublishBatch ships one or more records in a single franz-go
+// ProduceSync round-trip. Used by the outbox poller's fast path
+// (OBX-005): with BatchSize=100 the previous serial implementation
+// performed 100 sequential blocking round-trips inside the open
+// DB transaction; this collapses them into one.
+//
+// Each record's headers carry the active span's W3C traceparent
+// (mirrors PublishRaw's behavior). On any error, franz-go returns
+// a ProduceResults value with per-record errors; we surface the
+// first one as the error.
+//
+// This satisfies pkg/outbox.KafkaBatchClient; the outbox publisher
+// type-asserts to that interface and falls back to PublishRaw when
+// the client does not expose it (tests using a fake).
+func (c *Client) PublishBatch(ctx context.Context, recs []*kgo.Record) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	results := c.kgo.ProduceSync(ctx, recs...)
+	return results.FirstErr()
+}
+
 // Ping verifies at least one Kafka broker is reachable by issuing a
 // broker-only Metadata request. It is the OBS-1 readiness probe
 // primitive: a /readyz handler invokes Ping with a short ctx so a

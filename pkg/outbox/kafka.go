@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/t0pm1x/orderflow/kafkaprop"
 	"github.com/t0pm1x/orderflow/platform/events"
 	"github.com/t0pm1x/orderflow/platform/outbox"
 )
@@ -22,19 +25,36 @@ type KafkaClient interface {
 	PublishRaw(ctx context.Context, topic, key string, body []byte, headers map[string]string) error
 }
 
+// KafkaBatchClient is the optional fast path: a KafkaClient that
+// also exposes variadic batch publish. The real *events.Client
+// satisfies this via franz-go's ProduceSync(ctx, rec, recs...) —
+// one network round-trip regardless of batch size. When the
+// publisher's client satisfies this interface the publisher uses
+// the batch path; otherwise it falls back to serial PublishRaw
+// calls (one round-trip per record).
+type KafkaBatchClient interface {
+	PublishBatch(ctx context.Context, recs []*kgo.Record) error
+}
+
 // KafkaPublisher adapts events.Client (franz-go) to the
 // outbox.Publisher interface.
 //
-// Semantics: at-least-once per record, batched into a single Kafka
-// producer transaction. The poller marks rows SENT only after
-// Kafka has confirmed the publish; on Kafka error the rows stay
-// PENDING and the poller retries (3.7.c) or moves them to DLQ
-// after MaxAttempts (3.7.d).
+// Semantics: at-least-once per record. The poller marks rows SENT
+// only after Kafka has confirmed the publish; on Kafka error the
+// rows stay PENDING and the poller retries (3.7.c) or moves them
+// to DLQ after MaxAttempts (3.7.d).
 //
-// True cross-system EOS is impossible (DB tx + Kafka tx cannot be
-// committed atomically); we provide effective EOS by giving every
-// event a unique event_id and having consumers dedupe on it
-// (sub-stage 3.8.b). See ADR-0002 for the design rationale.
+// When the underlying client implements KafkaBatchClient, the
+// publisher builds a single franz-go ProduceSync call with all
+// records in the batch (one network round-trip). Otherwise it
+// falls back to serial PublishRaw — one round-trip per record.
+// Either way, the publish does NOT span a Kafka transactional
+// producer (no BeginTransaction/EndTransaction): we never claim
+// atomic batch semantics. True cross-system EOS is impossible
+// (DB tx + Kafka tx cannot be committed atomically); we provide
+// effective EOS by giving every event a unique event_id and
+// having consumers dedupe on it (sub-stage 3.8.b). See ADR-0002
+// for the design rationale.
 type KafkaPublisher struct {
 	client KafkaClient
 }
@@ -48,15 +68,49 @@ func NewKafkaPublisher(c KafkaClient) *KafkaPublisher {
 var _ Publisher = (*KafkaPublisher)(nil)
 
 // Publish converts each outbox.Record into an Envelope (preserving
-// the topic from the record) and publishes them in one transaction.
-// Returns nil only after Kafka confirms every record in the batch.
+// the topic from the record) and publishes them. When the client
+// implements KafkaBatchClient the whole batch goes out in a single
+// franz-go ProduceSync round-trip; otherwise records are published
+// one at a time.
 //
-// If any record fails, the entire batch is aborted and the poller
-// will retry the whole batch on the next iteration.
+// Returns nil only after Kafka confirms every record in the batch.
+// On error the poller treats the entire batch as failed and the
+// rows stay PENDING for the next poll (see OBX-005 — the pre-fix
+// implementation made the same per-record promise; this version
+// adds the optional fast path without changing the at-least-once
+// contract).
 func (k *KafkaPublisher) Publish(ctx context.Context, recs []outbox.Record) error {
 	if len(recs) == 0 {
 		return nil
 	}
+	// Fast path: client exposes variadic batch. Build all records,
+	// one ProduceSync, one round-trip regardless of batch size.
+	if bc, ok := k.client.(KafkaBatchClient); ok {
+		krecs := make([]*kgo.Record, 0, len(recs))
+		for _, r := range recs {
+			env, err := recordToEnvelope(ctx, r)
+			if err != nil {
+				return fmt.Errorf("build envelope: %w", err)
+			}
+			body, err := json.Marshal(env)
+			if err != nil {
+				return fmt.Errorf("marshal envelope: %w", err)
+			}
+			headers := k.headersFromCarrier(ctx, r.Headers)
+			krecs = append(krecs, &kgo.Record{
+				Topic:   r.Topic,
+				Key:     []byte(r.AggregateID),
+				Value:   body,
+				Headers: headers,
+			})
+		}
+		if err := bc.PublishBatch(ctx, krecs); err != nil {
+			return fmt.Errorf("publish batch (%d records): %w", len(recs), err)
+		}
+		return nil
+	}
+	// Fallback: serial PublishRaw. Pre-OBX-005 behavior; one
+	// round-trip per record.
 	for _, r := range recs {
 		env, err := recordToEnvelope(ctx, r)
 		if err != nil {
@@ -71,6 +125,26 @@ func (k *KafkaPublisher) Publish(ctx context.Context, recs []outbox.Record) erro
 		}
 	}
 	return nil
+}
+
+// headersFromCarrier builds the kgo.RecordHeader slice for one
+// record: the row's stored business headers (always empty in
+// current producers — see OBX-009) plus the W3C traceparent
+// injected from the active span on ctx (OBS-5).
+func (k *KafkaPublisher) headersFromCarrier(ctx context.Context, rowHeaders map[string]string) []kgo.RecordHeader {
+	carrier := make(kafkaprop.RecordHeaderCarrier, len(rowHeaders)+2)
+	for kk, vv := range rowHeaders {
+		carrier[kk] = vv
+	}
+	kafkaprop.Inject(ctx, propagation.TextMapCarrier(carrier))
+	if len(carrier) == 0 {
+		return nil
+	}
+	out := make([]kgo.RecordHeader, 0, len(carrier))
+	for kk, vv := range carrier {
+		out = append(out, kgo.RecordHeader{Key: kk, Value: []byte(vv)})
+	}
+	return out
 }
 
 // recordToEnvelope lifts an outbox.Record into a publishable Envelope
