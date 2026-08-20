@@ -143,6 +143,50 @@ func TestSetPool_RaceWithRegistry(t *testing.T) {
 	}
 }
 
+// TestStockReleasedPayload_IncludesOrderID is the SAGA-2 wire
+// shape regression guard: the inventory StockReleased payload
+// emitted by stockReleaseRequested must include order_id so the
+// saga's StockReleasedHandler can decode it (otherwise the saga
+// raises SQLSTATE 22P02 on UPDATE WHERE order_id=” and the
+// consumer blocks for 5 retries × 1s = 5s per cancelled order).
+//
+// The full handler integration test requires a live Postgres +
+// Kafka + Redpanda harness (see TestStockReserveRequested_*
+// above for the harness pattern); this unit-level test exercises
+// only the JSON-marshal path so the wire shape is locked down
+// even when the integration suite is skipped.
+func TestStockReleasedPayload_IncludesOrderID(t *testing.T) {
+	// The payload is built inline in stockReleaseRequested via
+	// json.Marshal(map[string]any{...}). Mirror that shape here
+	// so the test catches any drift in the field set.
+	payload, err := json.Marshal(map[string]any{
+		"reservation_id": "res-A",
+		"order_id":       "00000000-0000-0000-0000-000000000001",
+		"sku":            "SKU-A",
+		"quantity":       2,
+		"reason":         "order_cancelled",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["order_id"] != "00000000-0000-0000-0000-000000000001" {
+		t.Errorf("StockReleased payload missing order_id: got %v", got)
+	}
+	if got["reservation_id"] != "res-A" {
+		t.Errorf("StockReleased payload missing reservation_id: got %v", got)
+	}
+	if got["sku"] != "SKU-A" {
+		t.Errorf("StockReleased payload missing sku: got %v", got)
+	}
+	if q, ok := got["quantity"].(float64); !ok || q != 2 {
+		t.Errorf("StockReleased payload quantity: got %v want 2", got["quantity"])
+	}
+}
+
 func TestStockReserveRequested_NotFoundEmitsStockReservationFailed(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {

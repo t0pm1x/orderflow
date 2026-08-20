@@ -18,6 +18,9 @@ import (
 // StockReserved, PaymentCompleted, PaymentFailed, StockReleased)
 // plus StockReservationFailed which the existing saga state
 // machine already handles as compensation.
+//
+// SAGA-5: OrderCancelled is added so a user-initiated DELETE on
+// /v1/orders/{id} cancels the saga instead of being ack-and-skipped.
 func TestRegistry_HasAllEventTypes(t *testing.T) {
 	r := newRegistryForTest()
 	want := []string{
@@ -27,6 +30,7 @@ func TestRegistry_HasAllEventTypes(t *testing.T) {
 		"PaymentFailed",
 		"StockReleased",
 		"StockReservationFailed",
+		"OrderCancelled",
 	}
 	for _, ev := range want {
 		if _, ok := r[ev]; !ok {
@@ -48,6 +52,7 @@ func TestRegistry_NoUnexpectedEventTypes(t *testing.T) {
 		"PaymentFailed":          true,
 		"StockReleased":          true,
 		"StockReservationFailed": true,
+		"OrderCancelled":         true,
 	}
 	for ev := range r {
 		if !want[ev] {

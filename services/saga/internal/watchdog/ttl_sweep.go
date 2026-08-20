@@ -113,11 +113,14 @@ func (t *TTLSweep) RunOnce(ctx context.Context) {
 // malformed payload aborts the tx cleanly instead of crashing the
 // whole saga service mid-tx.
 //
-// The UPDATE carries a state guard so a saga that was already
-// compensated by PaymentFailedHandler between the sweep's SELECT
-// and UPDATE is a no-op for state — and crucially, RowsAffected=0
-// skips the outbox emission so a race with the in-flight consumer
-// handler doesn't double-emit compensation events.
+// The UPDATE carries BOTH a state guard AND an expires_at < NOW()
+// guard so a saga whose expires_at was refreshed by TransitionStateTx
+// (SAGA-1 fix) between the sweep's SELECT and UPDATE is a no-op for
+// state — and crucially, RowsAffected=0 skips the outbox emission
+// so a race with the in-flight consumer handler doesn't double-emit
+// compensation events. Pre-fix, the UPDATE only guarded on state,
+// which let the sweep charge-and-cancel a saga that had just been
+// transitioned by a handler.
 func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 	cancelPayload, err := json.Marshal(sagaev.OrderCancelledPayload{
 		OrderID: s.OrderID,
@@ -133,17 +136,19 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 			`UPDATE order_sagas
 			    SET state = 'compensated', updated_at = NOW()
 			  WHERE order_id = $1
-			    AND state NOT IN ('completed', 'compensated')`, s.OrderID)
+			    AND state NOT IN ('completed', 'compensated')
+			    AND expires_at < NOW()`, s.OrderID)
 		if err != nil {
 			return err
 		}
 		if ct.RowsAffected() == 0 {
-			// Saga was already terminal by the time the sweep
-			// got here (either another sweep already compensated
-			// it, or PaymentFailedHandler just beat us to it).
-			// Skip the outbox emission to avoid duplicate
-			// compensation events downstream.
-			t.logger.Info("ttl sweep: saga already terminal, skipping emit",
+			// Saga was already terminal OR alive (expires_at
+			// refreshed by a concurrent TransitionStateTx) by the
+			// time the sweep got here. Either way: skip the outbox
+			// emission to avoid duplicate compensation events
+			// downstream and to avoid charge-and-cancel on an
+			// alive saga (SAGA-1).
+			t.logger.Info("ttl sweep: saga already terminal or alive, skipping emit",
 				"order_id", s.OrderID)
 			return nil
 		}
@@ -167,13 +172,51 @@ func (t *TTLSweep) compensate(ctx context.Context, s *repository.Saga) error {
 // saga reserved. Decodes the saga row's JSONB items blob; emits
 // nothing when the items list is empty (the OrderCreatedHandler
 // already ack-skips empty-item payloads so this should be rare).
+//
+// SAGA-3: each emitted StockReleaseRequested carries the per-item
+// reservation_id persisted on the saga row's items blob, so
+// inventory's release flow can match by reservation_id and only
+// touch stock this saga actually reserved.
 func appendReleaseEvents(ctx context.Context, tx pgx.Tx, writer *sagaoutbox.PGWriter, s *repository.Saga) error {
-	var items []struct {
-		SKU      string `json:"sku"`
-		Quantity int    `json:"quantity"`
-	}
+	var items []sagaev.PersistedItem
 	if err := json.Unmarshal(s.Items, &items); err != nil {
-		return fmt.Errorf("decode saga items for release: %w", err)
+		// Legacy rows (pre-SAGA-3) may have the old {sku, quantity}
+		// shape without reservation_id. Decode those as a fallback
+		// and emit releases with the saga's primary reservation_id.
+		var legacy []struct {
+			SKU      string `json:"sku"`
+			Quantity int    `json:"quantity"`
+		}
+		if lerr := json.Unmarshal(s.Items, &legacy); lerr != nil {
+			return fmt.Errorf("decode saga items for release: %w", lerr)
+		}
+		for _, it := range legacy {
+			if it.Quantity <= 0 || it.SKU == "" {
+				continue
+			}
+			payload, perr := json.Marshal(sagaev.StockReleaseRequestedPayload{
+				OrderID:       s.OrderID,
+				ReservationID: s.ReservationID,
+				SKU:           it.SKU,
+				Quantity:      it.Quantity,
+			})
+			if perr != nil {
+				return fmt.Errorf("marshal StockReleaseRequested: %w", perr)
+			}
+			if err := writer.Append(ctx, tx, platformoutbox.Record{
+				EventID:       uuid.NewString(),
+				AggregateID:   s.OrderID,
+				AggregateType: "Order",
+				EventType:     "StockReleaseRequested",
+				SchemaVersion: "1.0",
+				Topic:         sagaoutbox.Topic,
+				Payload:       payload,
+				Headers:       map[string]string{},
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	for _, it := range items {
 		if it.Quantity <= 0 || it.SKU == "" {
@@ -181,7 +224,7 @@ func appendReleaseEvents(ctx context.Context, tx pgx.Tx, writer *sagaoutbox.PGWr
 		}
 		payload, perr := json.Marshal(sagaev.StockReleaseRequestedPayload{
 			OrderID:       s.OrderID,
-			ReservationID: s.ReservationID,
+			ReservationID: it.ReservationID,
 			SKU:           it.SKU,
 			Quantity:      it.Quantity,
 		})

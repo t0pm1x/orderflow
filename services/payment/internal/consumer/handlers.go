@@ -73,7 +73,8 @@ func Registry(logger *slog.Logger) pkgconsumer.HandlerRegistry {
 	}
 	if h := globalHandler.Load(); h != nil {
 		return pkgconsumer.HandlerRegistry{
-			"PaymentRequested": h.PaymentRequested,
+			"PaymentRequested":      h.PaymentRequested,
+			"PaymentRefundRequested": h.PaymentRefundRequested,
 		}
 	}
 	stub := func(eventType string) pkgconsumer.Handler {
@@ -203,6 +204,93 @@ func (h *Handler) PaymentRequested(ctx context.Context, env *events.Envelope) er
 			paymentID, p.OrderID, p.AmountCents, result.Status, result.ErrorCode, lastFour,
 		); err != nil {
 			return fmt.Errorf("insert payment: %w", err)
+		}
+		return h.writer.Append(ctx, tx, rec)
+	})
+}
+
+// PaymentRefundRequested handles a refund request emitted by the saga
+// when PaymentCompleted lands on an already-compensated saga (audit
+// NEW-P0-2 / SAGA-4). Calls provider.Refund and writes a
+// PaymentRefunded outbox event in the same transaction so the saga
+// can audit the refund chain.
+//
+// Terminal-state guard: only refunds payments that are still in a
+// succeeded state. If the row is already refunded/failed, the
+// handler is a no-op so duplicate deliveries don't double-refund.
+func (h *Handler) PaymentRefundRequested(ctx context.Context, env *events.Envelope) error {
+	var p struct {
+		OrderID     string `json:"order_id"`
+		PaymentID   string `json:"payment_id"`
+		AmountCents int64  `json:"amount_cents"`
+		Reason      string `json:"reason,omitempty"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return fmt.Errorf("decode PaymentRefundRequested: %w", err)
+	}
+	if p.OrderID == "" {
+		return errors.New("PaymentRefundRequested: order_id is required")
+	}
+
+	// Payment ID defaults to order_id, matching the
+	// UNIQUE(order_id) invariant enforced by PaymentRequested.
+	paymentID := p.PaymentID
+	if paymentID == "" {
+		paymentID = p.OrderID
+	}
+
+	// Refund via the provider. The mock's Refund always succeeds.
+	if _, err := provider.Refund(ctx, paymentID, p.AmountCents); err != nil {
+		return fmt.Errorf("provider.Refund: %w", err)
+	}
+
+	// Emit PaymentRefunded for downstream audit (saga + web
+	// playground). Terminal-state guard on the UPDATE: only the
+	// succeeded → refunded transition is allowed.
+	refundedPayload, err := json.Marshal(map[string]any{
+		"order_id":   p.OrderID,
+		"payment_id": paymentID,
+		"amount_cents": p.AmountCents,
+		"reason":     p.Reason,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal refund outbox payload: %w", err)
+	}
+
+	rec := pkgox.Record{
+		EventID:       uuid.NewString(),
+		AggregateID:   p.OrderID,
+		AggregateType: "Order",
+		EventType:     "PaymentRefunded",
+		SchemaVersion: "1.0",
+		Topic:         topic,
+		Payload:       refundedPayload,
+	}
+
+	h.logger.Info("payment service handling PaymentRefundRequested",
+		"order_id", p.OrderID,
+		"payment_id", paymentID,
+		"amount_cents", p.AmountCents,
+	)
+
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		// Terminal-state guard: only mark the payment row as
+		// refunded if it's currently 'succeeded'. Idempotent on
+		// redelivery.
+		tag, err := tx.Exec(ctx,
+			`UPDATE payments SET status = 'refunded' WHERE id = $1 AND status = 'succeeded'`,
+			paymentID,
+		)
+		if err != nil {
+			return fmt.Errorf("update payment status: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			// Already refunded or never succeeded; ack-drop so
+			// the saga audit isn't re-emitted.
+			h.logger.Info("PaymentRefundRequested: payment not in succeeded state, ack-drop",
+				"payment_id", paymentID,
+			)
+			return nil
 		}
 		return h.writer.Append(ctx, tx, rec)
 	})

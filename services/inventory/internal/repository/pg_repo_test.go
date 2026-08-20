@@ -191,9 +191,14 @@ func sampleRecord(sku, eventType string) outbox.Record {
 func TestPGRepo_ReserveStock_HappyPath(t *testing.T) {
 	pool := testDB(t)
 	repo := NewPGRepo(pool)
+	ctx := context.Background()
 
+	if err := ensureStockReservationsTable(ctx, pool); err != nil {
+		t.Fatalf("ensure stock_reservations table: %v", err)
+	}
 	seedStock(t, pool, "SKU-R1", 10, 0)
-	ev := sampleRecord("SKU-R1", "StockReserved")
+	ev := sampleRecord("res-R1", "StockReserved")
+	ev.AggregateID = "res-R1"
 
 	if err := repo.ReserveStock(context.Background(), "SKU-R1", 3, ev); err != nil {
 		t.Fatalf("ReserveStock: %v", err)
@@ -260,14 +265,31 @@ func TestPGRepo_ReserveStock_InsufficientStock(t *testing.T) {
 
 // TestPGRepo_ReleaseStock_HappyPath releases 2 of 5 reserved and
 // asserts available is restored and reserved is decremented.
+//
+// SAGA-3: the test seeds a stock_reservations row (via
+// ReserveStock on a fresh reservation_id) and releases by that
+// reservation_id. Without the SAGA-3 fix, ReleaseStock keyed on
+// sku+qty only and could decrement reserved for a stock_items row
+// the saga never reserved.
 func TestPGRepo_ReleaseStock_HappyPath(t *testing.T) {
 	pool := testDB(t)
 	repo := NewPGRepo(pool)
+	ctx := context.Background()
 
+	if err := ensureStockReservationsTable(ctx, pool); err != nil {
+		t.Fatalf("ensure stock_reservations table: %v", err)
+	}
 	seedStock(t, pool, "SKU-R3", 5, 5)
+	const reservationID = "res-R3"
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO stock_reservations (reservation_id, sku, quantity)
+		 VALUES ($1, $2, 2) ON CONFLICT (reservation_id) DO NOTHING`,
+		reservationID, "SKU-R3"); err != nil {
+		t.Fatalf("seed reservation: %v", err)
+	}
 	ev := sampleRecord("SKU-R3", "StockReleased")
 
-	if err := repo.ReleaseStock(context.Background(), "SKU-R3", 2, ev); err != nil {
+	if err := repo.ReleaseStock(context.Background(), reservationID, "SKU-R3", 2, ev); err != nil {
 		t.Fatalf("ReleaseStock: %v", err)
 	}
 
@@ -302,11 +324,22 @@ func TestPGRepo_ReleaseStock_HappyPath(t *testing.T) {
 func TestPGRepo_ReleaseStock_RejectsOverRelease(t *testing.T) {
 	pool := testDB(t)
 	repo := NewPGRepo(pool)
+	ctx := context.Background()
 
+	if err := ensureStockReservationsTable(ctx, pool); err != nil {
+		t.Fatalf("ensure stock_reservations table: %v", err)
+	}
 	seedStock(t, pool, "SKU-OVER", 5, 2)
+	const reservationID = "res-OVER"
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO stock_reservations (reservation_id, sku, quantity)
+		 VALUES ($1, $2, 5) ON CONFLICT (reservation_id) DO NOTHING`,
+		reservationID, "SKU-OVER"); err != nil {
+		t.Fatalf("seed reservation: %v", err)
+	}
 	ev := sampleRecord("SKU-OVER", "StockReleased")
 
-	err := repo.ReleaseStock(context.Background(), "SKU-OVER", 5, ev)
+	err := repo.ReleaseStock(context.Background(), reservationID, "SKU-OVER", 5, ev)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ReleaseStock(5, reserved=2): got %v want ErrNotFound", err)
 	}
@@ -344,7 +377,7 @@ func TestPGRepo_ReleaseStock_RejectsNonPositiveQty(t *testing.T) {
 
 	for _, qty := range []int{0, -1, -100} {
 		ev := sampleRecord("SKU-ZERO", "StockReleased")
-		err := repo.ReleaseStock(context.Background(), "SKU-ZERO", qty, ev)
+		err := repo.ReleaseStock(context.Background(), "res-ZERO", "SKU-ZERO", qty, ev)
 		if err == nil {
 			t.Errorf("ReleaseStock(%d): got nil want error", qty)
 		}
@@ -356,5 +389,89 @@ func TestPGRepo_ReleaseStock_RejectsNonPositiveQty(t *testing.T) {
 	}
 	if s.Available != 5 || s.Reserved != 5 {
 		t.Errorf("stock unchanged check: got %d/%d want 5/5", s.Available, s.Reserved)
+	}
+}
+
+// ensureStockReservationsTable creates the stock_reservations table
+// if it doesn't exist yet. The inventory test DB shares the
+// order's PG in some test configurations; running the migration is
+// idempotent because of CREATE TABLE IF NOT EXISTS.
+func ensureStockReservationsTable(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx,
+		`CREATE TABLE IF NOT EXISTS stock_reservations (
+			reservation_id TEXT NOT NULL PRIMARY KEY,
+			sku            TEXT NOT NULL,
+			quantity       INTEGER NOT NULL CHECK (quantity > 0),
+			order_id       TEXT,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+	return err
+}
+
+// TestPGRepo_ReserveStock_TracksReservation is the SAGA-3
+// regression guard: ReserveStock must INSERT a stock_reservations
+// row so a later ReleaseStock can match by reservation_id (rather
+// than blindly decrementing any reserved counter that happens to
+// be >= qty for the SKU). Pre-fix, ReleaseStock keyed on sku+qty
+// only and could decrement another order's reservation — cross-
+// order stock theft.
+func TestPGRepo_ReserveStock_TracksReservation(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+	ctx := context.Background()
+
+	if err := ensureStockReservationsTable(ctx, pool); err != nil {
+		t.Fatalf("ensure stock_reservations table: %v", err)
+	}
+	seedStock(t, pool, "SKU-TRACK", 10, 0)
+	ev := sampleRecord("res-track", "StockReserved")
+	ev.AggregateID = "res-track"
+
+	if err := repo.ReserveStock(ctx, "SKU-TRACK", 2, ev); err != nil {
+		t.Fatalf("ReserveStock: %v", err)
+	}
+
+	var qty int
+	if err := pool.QueryRow(ctx,
+		`SELECT quantity FROM stock_reservations WHERE reservation_id = $1`,
+		"res-track",
+	).Scan(&qty); err != nil {
+		t.Fatalf("query stock_reservations: %v", err)
+	}
+	if qty != 2 {
+		t.Errorf("reservation quantity: got %d want 2", qty)
+	}
+}
+
+// TestPGRepo_ReleaseStock_RefusesUnknownReservation is the SAGA-3
+// regression guard for cross-order stock theft: ReleaseStock for a
+// reservation_id that doesn't exist returns ErrNotFound and leaves
+// stock_items unchanged. Pre-fix, ReleaseStock keyed on sku+qty
+// only and would decrement reserved even when the release didn't
+// match the saga's own reservation.
+func TestPGRepo_ReleaseStock_RefusesUnknownReservation(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+	ctx := context.Background()
+
+	if err := ensureStockReservationsTable(ctx, pool); err != nil {
+		t.Fatalf("ensure stock_reservations table: %v", err)
+	}
+	seedStock(t, pool, "SKU-X", 5, 0)
+	ev := sampleRecord("res-does-not-exist", "StockReleased")
+
+	err := repo.ReleaseStock(ctx, "res-does-not-exist", "SKU-X", 2, ev)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("ReleaseStock for unknown reservation: got %v want ErrNotFound", err)
+	}
+
+	var reserved int
+	if err := pool.QueryRow(ctx,
+		`SELECT reserved FROM stock_items WHERE sku = $1`, "SKU-X",
+	).Scan(&reserved); err != nil {
+		t.Fatalf("query stock_items: %v", err)
+	}
+	if reserved != 0 {
+		t.Errorf("reserved after refused release: got %d want 0 (SAGA-3: cross-order theft prevented)", reserved)
 	}
 }

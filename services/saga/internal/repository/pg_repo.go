@@ -45,7 +45,11 @@ type Saga struct {
 // that don't need atomicity.
 type Repository interface {
 	Insert(ctx context.Context, s *Saga) error
-	InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) error
+	// InsertTx is the SAGA-6 idempotent insert. Returns (true, nil)
+	// when a fresh row was inserted, (false, nil) when an existing
+	// row was found (redelivery / replay). Callers must skip the
+	// downstream outbox emission in the (false, nil) branch.
+	InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) (bool, error)
 	Get(ctx context.Context, orderID string) (*Saga, error)
 	GetTx(ctx context.Context, tx pgx.Tx, orderID string) (*Saga, error)
 	UpdateState(ctx context.Context, orderID string, state saga.State) error
@@ -84,10 +88,16 @@ var _ Repository = (*PGRepo)(nil)
 // of truth for the watchdog sweep across restarts (sub-stage 3.9.c
 // follow-up). A duplicate order_id surfaces as a unique-violation
 // error from pgx; callers treat that as "already started".
+//
+// SAGA-6: the SAGA-6 fix made InsertTx idempotent (see below); the
+// non-tx Insert keeps the old unique-violation behavior because
+// the only caller in the runtime is the test fixture, and the
+// order_id collisions during testing are useful to surface.
 func (r *PGRepo) Insert(ctx context.Context, s *Saga) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, last_four, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')`,
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')
+		 ON CONFLICT (order_id) DO NOTHING`,
 		s.OrderID, string(s.State), s.Items, s.TotalCents, s.ReservationID, s.LastFour,
 	)
 	return err
@@ -97,13 +107,27 @@ func (r *PGRepo) Insert(ctx context.Context, s *Saga) error {
 // transaction lifecycle — typically pgx.BeginFunc wrapping both the
 // Insert and a downstream outbox.Append so the saga row and its
 // events commit (or roll back) atomically.
-func (r *PGRepo) InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) error {
-	_, err := tx.Exec(ctx,
+//
+// SAGA-6: now idempotent via ON CONFLICT (order_id) DO NOTHING.
+// Returns (true, nil) when a fresh row was inserted, (false, nil)
+// when an existing row was found (redelivery / replay). The
+// caller skips the downstream outbox emission in the (false, nil)
+// branch so a Kafka re-delivery of OrderCreated doesn't fan out
+// into N duplicate StockReserveRequested outbox rows. Pre-fix, the
+// duplicate raised SQLSTATE 23505, bubbled up as a handler error,
+// retried 5×1s, and DLQ'd — every redelivery blocked the saga
+// consumer for 5 seconds.
+func (r *PGRepo) InsertTx(ctx context.Context, tx pgx.Tx, s *Saga) (bool, error) {
+	ct, err := tx.Exec(ctx,
 		`INSERT INTO order_sagas (order_id, state, items, total_cents, reservation_id, last_four, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')`,
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')
+		 ON CONFLICT (order_id) DO NOTHING`,
 		s.OrderID, string(s.State), s.Items, s.TotalCents, s.ReservationID, s.LastFour,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return ct.RowsAffected() == 1, nil
 }
 
 // Get reads a saga row by order_id. Returns ErrNotFound when the
@@ -195,10 +219,21 @@ func (r *PGRepo) UpdateStateTx(ctx context.Context, tx pgx.Tx, orderID string, s
 // let the same logical event fan out into multiple outbox rows on
 // every Kafka redelivery — surfacing as duplicate PaymentRequested
 // (and double-charge) in production.
+//
+// SAGA-1: every transition refreshes expires_at to NOW() +
+// 5 minutes. The pre-fix behavior set expires_at once at INSERT
+// and never refreshed it, so an in-flight handler that transitioned
+// the saga just before its expires_at elapsed could be charged
+// and cancelled by the TTL sweep (SAGA-1, "TTL sweep compensates
+// alive sagas"). The TTL sweep's UPDATE now also guards on
+// expires_at < NOW(), so the two halves of the fix close the race
+// from both sides.
 func (r *PGRepo) TransitionStateTx(ctx context.Context, tx pgx.Tx, orderID string, from, to saga.State) (bool, error) {
 	ct, err := tx.Exec(ctx,
 		`UPDATE order_sagas
-		    SET state = $1, updated_at = NOW()
+		    SET state = $1,
+		        updated_at = NOW(),
+		        expires_at = NOW() + INTERVAL '5 minutes'
 		  WHERE order_id = $2
 		    AND state = $3`,
 		string(to), orderID, string(from))

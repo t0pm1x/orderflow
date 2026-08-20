@@ -131,6 +131,10 @@ func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 			Payload:       payload,
 			Headers:       map[string]string{},
 		}
+		// SAGA-3: ReserveStock uses the AggregateID (the
+		// reservation_id) to record a per-reservation row in
+		// stock_reservations, so a later ReleaseStock matches
+		// only this saga's reservation.
 		err = deps.repo.ReserveStock(ctx, p.SKU, p.Quantity, outRec)
 		if errors.Is(err, repository.ErrInsufficientStock) {
 			return emitStockReservationFailed(ctx, p.OrderID, p.SKU, "insufficient_stock", logger)
@@ -148,6 +152,16 @@ func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 // leaked on every cancelled order). The handler releases the stock
 // and emits a StockReleased event, both in one transaction so the
 // counter and the downstream event commit (or roll back) together.
+//
+// SAGA-2: the StockReleased payload now includes order_id. Pre-fix
+// inventory emitted StockReleased with AggregateID=reservation_id
+// and no order_id field; the saga's StockReleasedHandler decoded
+// OrderID="" and ran UPDATE WHERE order_id=” against the UUID
+// column, raising SQLSTATE 22P02 — non-nil, retry-5x, DLQ. Every
+// cancelled order blocked the saga consumer for 5 seconds. The
+// saga handler also gains a defensive ack-skip on empty order_id
+// (see services/saga/internal/consumer/handlers.go) so any pre-fix
+// straggler events don't loop.
 func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 	return func(ctx context.Context, env *events.Envelope) error {
 		deps := loadDeps()
@@ -179,8 +193,11 @@ func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 				"reservation_id", p.ReservationID)
 			return nil
 		}
+		// SAGA-2: include order_id on the StockReleased payload so
+		// the saga's StockReleasedHandler can UPDATE the saga row.
 		payload, err := json.Marshal(map[string]any{
 			"reservation_id": p.ReservationID,
+			"order_id":       p.OrderID,
 			"sku":            p.SKU,
 			"quantity":       p.Quantity,
 			"reason":         "order_cancelled",
@@ -198,9 +215,16 @@ func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 			Payload:       payload,
 			Headers:       map[string]string{},
 		}
-		if err := deps.repo.ReleaseStock(ctx, p.SKU, p.Quantity, outRec); err != nil {
+		if err := deps.repo.ReleaseStock(ctx, p.ReservationID, p.SKU, p.Quantity, outRec); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
-				logger.Warn("inventory StockReleaseRequested: sku not found",
+				// SAGA-3: a reservation_id mismatch (the release
+				// tries to release stock this saga never reserved)
+				// surfaces as ErrNotFound. Ack-and-skip so the
+				// poison event doesn't loop. Pre-fix this path
+				// would silently oversell stock from another
+				// order's reservation.
+				logger.Warn("inventory StockReleaseRequested: reservation not found",
+					"reservation_id", p.ReservationID,
 					"sku", p.SKU, "order_id", p.OrderID)
 				return nil
 			}

@@ -68,3 +68,42 @@ type OrderCancelledPayload struct {
 	Reason  string `json:"reason"`
 	Source  string `json:"source"`
 }
+
+// PersistedItem is the per-item shape the saga stores on the
+// order_sagas row's JSONB items column. It carries the
+// reservation_id minted in OrderCreatedHandler so the
+// compensation paths (PaymentFailedHandler / TTL sweep) can match
+// each StockReleaseRequested to the saga's own stock reservation
+// (SAGA-3). UnitPriceCents is preserved for downstream consumers
+// of the saga row who want the price breakdown.
+type PersistedItem struct {
+	SKU            string `json:"sku"`
+	Quantity       int    `json:"quantity"`
+	UnitPriceCents int64  `json:"unit_price_cents"`
+	ReservationID  string `json:"reservation_id"`
+}
+
+// PaymentRefundRequestedPayload is emitted by the saga when a
+// PaymentCompleted event arrives for an already-compensated saga
+// (SAGA-4). The payment service consumes this and issues a refund
+// against the captured payment_id. Without this event, the
+// customer's card was charged and the order was cancelled with no
+// money returned — silent money loss.
+//
+// PaymentID is the payment_id returned by the provider on Charge();
+// the saga doesn't persist it today (the saga row only stores the
+// order-level totals), so the payload falls back to the order_id
+// for the refund recipient. A future iteration should plumb
+// payment_id from the PaymentCompleted payload through the saga
+// row so the refund hits the exact transaction.
+//
+// AmountCents is the saga's total_cents (what was charged). The
+// payment service is the source of truth on the actual captured
+// amount and may issue a partial refund if the saga's stored
+// amount diverges from the provider's record.
+type PaymentRefundRequestedPayload struct {
+	OrderID     string `json:"order_id"`
+	PaymentID   string `json:"payment_id,omitempty"`
+	AmountCents int64  `json:"amount_cents"`
+	Reason      string `json:"reason,omitempty"`
+}

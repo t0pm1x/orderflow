@@ -239,6 +239,73 @@ func TestPGRepo_Get_MissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
+// TestPGRepo_InsertTx_IdempotentOnDuplicate is the SAGA-6 repo
+// contract: a second InsertTx with the same order_id is a silent
+// no-op (returns (false, nil)) so the OrderCreatedHandler can
+// detect replays without raising 23505. Pre-fix the duplicate
+// raised a unique-violation error that bubbled up through the
+// consumer retry loop until DLQ.
+func TestPGRepo_InsertTx_IdempotentOnDuplicate(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+	ctx := context.Background()
+
+	s := &Saga{
+		OrderID:       "66666666-6666-6666-6666-666666666666",
+		State:         "initiated",
+		Items:         []byte(`[]`),
+		ReservationID: "res-first",
+	}
+
+	// First insert: must report inserted=true.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	inserted, err := repo.InsertTx(ctx, tx, s)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("first InsertTx: %v", err)
+	}
+	if !inserted {
+		_ = tx.Rollback(ctx)
+		t.Fatal("first InsertTx must report inserted=true")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Second insert (same order_id): must report inserted=false
+	// without error. Caller is expected to skip the downstream
+	// outbox emission in this branch.
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin (replay): %v", err)
+	}
+	inserted, err = repo.InsertTx(ctx, tx, s)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("replay InsertTx: %v", err)
+	}
+	if inserted {
+		_ = tx.Rollback(ctx)
+		t.Error("replay InsertTx must report inserted=false (SAGA-6 idempotency)")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	// Row contents are unchanged from the first insert (the
+	// ON CONFLICT clause didn't overwrite the original values).
+	got, err := repo.Get(ctx, s.OrderID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ReservationID != "res-first" {
+		t.Errorf("ReservationID after replay: got %q want %q (ON CONFLICT must not overwrite)", got.ReservationID, "res-first")
+	}
+}
+
 // TestPGRepo_InsertTx_RollbackUndoesInsert: when a caller wraps
 // InsertTx in pgx.BeginFunc and the surrounding tx is rolled back,
 // the row must NOT persist. This is the contract the saga consumer
@@ -261,9 +328,14 @@ func TestPGRepo_InsertTx_RollbackUndoesInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	if err := repo.InsertTx(ctx, tx, s); err != nil {
+	inserted, err := repo.InsertTx(ctx, tx, s)
+	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("InsertTx: %v", err)
+	}
+	if !inserted {
+		_ = tx.Rollback(ctx)
+		t.Fatal("first InsertTx must report inserted=true")
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("Rollback: %v", err)
