@@ -11,8 +11,9 @@ import (
 
 // PrometheusMetrics is the production Metrics implementation. It
 // records poll duration + row counts, publish success/failure, DLQ
-// transitions, and outbox lag. All collectors carry a "table" label
-// so a single Prometheus scrape covers all services.
+// transitions, and outbox lag (PENDING + FAILED row counts). All
+// collectors carry a "table" label so a single Prometheus scrape
+// covers all services.
 //
 // Register the returned collectors with your service's *prometheus.Registry
 // (or use the default registry via prometheus.MustRegister).
@@ -23,6 +24,8 @@ type PrometheusMetrics struct {
 	pollRows     *prometheus.CounterVec
 	publish      *prometheus.CounterVec
 	dlq          *prometheus.CounterVec
+	pendingGauge *prometheus.GaugeVec
+	failedGauge  *prometheus.GaugeVec
 }
 
 // NewPrometheusMetrics constructs and registers the collectors with
@@ -51,8 +54,16 @@ func NewPrometheusMetrics(table string, reg prometheus.Registerer) *PrometheusMe
 			Name: "outbox_dlq_total",
 			Help: "Total outbox records routed to DLQ.",
 		}, []string{"table"}),
+		pendingGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "outbox_pending_events",
+			Help: "Current count of PENDING outbox rows waiting to publish (the outbox-lag gauge OBS-9 adds).",
+		}, []string{"table"}),
+		failedGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "outbox_failed_events",
+			Help: "Current count of FAILED outbox rows (terminal state; reads as data-loss indicator alongside outbox_dlq_total).",
+		}, []string{"table"}),
 	}
-	reg.MustRegister(m.pollDuration, m.pollRows, m.publish, m.dlq)
+	reg.MustRegister(m.pollDuration, m.pollRows, m.publish, m.dlq, m.pendingGauge, m.failedGauge)
 	return m
 }
 
@@ -80,6 +91,18 @@ func (m *PrometheusMetrics) ObservePublish(_ context.Context, count int, err err
 // ObserveDLQ records one DLQ transition.
 func (m *PrometheusMetrics) ObserveDLQ(_ context.Context, _ outbox.Record, _ string) {
 	m.dlq.WithLabelValues(m.Table).Inc()
+}
+
+// ObserveLag sets the outbox_pending_events and outbox_failed_events
+// gauges to the supplied counts (a point-in-time snapshot, not an
+// increment). Callers should refresh these on every fetchPending
+// cycle — typical cadence is 100ms in production but the OBS-9
+// wiring is expected to be a single SQL COUNT per cycle so the cost
+// is negligible. failed==0 is a valid input (no rows are
+// terminal-FAILED yet).
+func (m *PrometheusMetrics) ObserveLag(_ context.Context, pending, failed int64) {
+	m.pendingGauge.WithLabelValues(m.Table).Set(float64(pending))
+	m.failedGauge.WithLabelValues(m.Table).Set(float64(failed))
 }
 
 // Compile-time interface check.

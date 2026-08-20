@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -135,6 +134,17 @@ func New(cfg Config, registry HandlerRegistry) (*Consumer, error) {
 		kgo.ConsumerGroup(cfg.GroupID),
 		kgo.ConsumeTopics(cfg.Topics...),
 		kgo.DisableAutoCommit(),
+		// Start from the beginning of every topic on first join.
+		// Without this, a consumer that joins a fresh broker (or
+		// a topic that was recreated while the consumer was
+		// offline) starts at the END and misses every event that
+		// was published in the gap. This was masked by E2E tests
+		// in CI (where service startup and Kafka publish were
+		// sequenced) and only surfaced when chaos tests restarted
+		// the broker mid-chain. The cost is at-least-once
+		// redelivery on a brand-new consumer group; the deduper
+		// makes that safe.
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kafka client: %w", err)
@@ -214,8 +224,22 @@ func (c *Consumer) Stop() {
 // attempt (up to MaxAttempts) and ultimately DLQ'd like any other
 // failure.
 func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
+	// OBS-5: extract W3C traceparent from the Kafka record
+	// headers before unmarshalling the body. This is the
+	// cross-process trace propagation ADR-0004 mandates; without
+	// it, every consuming service starts a fresh trace root and
+	// the Tempo service map breaks across Kafka topic boundaries.
+	// The legacy envelope-based path (env.TraceID/env.SpanID)
+	// stays as a fallback for older producers that haven't been
+	// recompiled with the new wire format — SpanFromEnvelope
+	// below prefers the envelope IDs when the header is absent.
+	carrier := kafkaprop.RecordHeaderCarrier{}
+	for _, h := range rec.Headers {
+		carrier[h.Key] = string(h.Value)
+	}
+	ctx = kafkaprop.Extract(ctx, carrier)
+
 	var env events.Envelope
-	fmt.Fprintf(os.Stderr, "[consumer dispatch] topic=%s partition=%d offset=%d bytes=%d\n", rec.Topic, rec.Partition, rec.Offset, len(rec.Value))
 	if err := json.Unmarshal(rec.Value, &env); err != nil {
 		// Decode failure: ship to DLQ for triage AND mark the
 		// record so the unparseable bytes don't loop on every
@@ -230,6 +254,10 @@ func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	// inside the handler chain still cleans up the span. The
 	// recover catches panics from the handler dispatch path
 	// (registry lookup, deduper, markRecord, retry loop).
+	// SpanFromEnvelope picks up the (already extracted) ctx and
+	// re-derives a remote span context from the envelope IDs —
+	// the two paths converge on the same trace because the header
+	// extract above populated ctx with the same SpanContext.
 	ctx, span := kafkaprop.SpanFromEnvelope(ctx, env.TraceID, env.SpanID, "consumer."+env.EventType)
 	defer func() {
 		span.End()
@@ -258,7 +286,15 @@ func (c *Consumer) dispatch(ctx context.Context, rec *kgo.Record) {
 	if c.deduper != nil {
 		seen, err := c.deduper.Seen(ctx, env.EventID)
 		if err == nil && seen {
-			return // already processed — idempotent skip
+			// Already processed — idempotent skip. MUST mark the
+			// record for commit because franz-go disables auto-commit;
+			// otherwise the same duplicate event loops forever on the
+			// next poll, holding the partition hostage (audit NEW-P0-1,
+			// originally SAGA-7). The deduper's Mark call will be a no-op
+			// for the event_id we already saw, so re-delivery from this
+			// record's offset is safe.
+			c.markRecord(rec)
+			return
 		}
 	}
 

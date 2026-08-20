@@ -10,6 +10,7 @@ package outbox
 import (
 	"context"
 	_ "embed"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,11 +34,27 @@ var markSentSQL string
 //go:embed markFailed.sql
 var markFailedSQL string
 
+//
+//go:embed bumpAttempts.sql
+var bumpAttemptsSQL string
+
 // attemptsOfSQL reads the current attempts counter for each given
 // event_id inside the supplied tx. The poller uses this to read
 // the DB-authoritative retry budget instead of trusting its
 // per-Pod in-memory sync.Map (which is wiped on pod restart).
 const attemptsOfSQL = `SELECT event_id, attempts FROM order_outbox WHERE event_id = ANY($1)`
+
+// lagSQL returns the current PENDING and FAILED row counts in a
+// single read. OBS-9 wires the poller to refresh the
+// outbox_pending_events / outbox_failed_events gauges once per
+// cycle from this query. FILTER (WHERE …) on COUNT(*) lets the
+// index-only scan on idx_order_outbox_pending satisfy the
+// PENDING side; FAILED is computed against the whole table
+// (cheap on a typically-SENT-majority outbox).
+const lagSQL = `SELECT
+    COUNT(*) FILTER (WHERE status = 'PENDING') AS pending,
+    COUNT(*) FILTER (WHERE status = 'FAILED') AS failed
+FROM order_outbox`
 
 // PGSource reads/marks rows in the order_outbox table.
 type PGSource struct {
@@ -127,4 +144,38 @@ func (s *PGSource) AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []strin
 		out[id] = n
 	}
 	return out, rows.Err()
+}
+
+// BumpAttempts increments the `attempts` counter for each given
+// PENDING event_id via an autonomous (non-tx) UPDATE. This makes
+// the per-row retry budget durable across pod restarts for rows
+// still under MaxAttempts (OBX-001 — pre-fix, MarkFailedTx was the
+// only writer of `attempts` and it was only called at the terminal
+// FAILED transition, so every PENDING row had attempts=0).
+//
+// The `AND status = 'PENDING'` guard mirrors the one in
+// markFailed.sql: a concurrent replica may have already
+// transitioned the row to SENT or FAILED; double-counting would
+// understate or overstate the budget.
+func (s *PGSource) BumpAttempts(ctx context.Context, eventIDs []string, reason string) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, bumpAttemptsSQL, reason, eventIDs)
+	return err
+}
+
+// Lag returns the current count of PENDING and FAILED rows. Used
+// by the poller to refresh the OBS-9 outbox_pending_events and
+// outbox_failed_events gauges on every fetchPending cycle. The
+// query is a single COUNT(*) FILTER read — a full-table scan, but
+// the outbox is bounded by retention (OBX-006 is the parked
+// follow-up to add pruning) so the cost stays negligible in
+// practice.
+func (s *PGSource) Lag(ctx context.Context) (pending, failed int64, err error) {
+	row := s.pool.QueryRow(ctx, lagSQL)
+	if err := row.Scan(&pending, &failed); err != nil {
+		return 0, 0, fmt.Errorf("lag query: %w", err)
+	}
+	return pending, failed, nil
 }

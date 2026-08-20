@@ -91,7 +91,7 @@ func seedPendingOutboxRow(t *testing.T, pool *pgxpool.Pool, eventID string, atte
 		   (event_id, aggregate_id, aggregate_type, event_type,
 		    payload, headers, status, attempts)
 		 VALUES
-		   ($1, $1, 'Order', 'OrderCreated', '{}'::jsonb,
+		   ($1::uuid, $1::text, 'Order', 'OrderCreated', '{}'::jsonb,
 		    '{}'::jsonb, 'PENDING', $2)`,
 		eventID, attempts); err != nil {
 		t.Fatalf("seed saga_outbox: %v", err)
@@ -151,8 +151,15 @@ func TestPoller_RoutesToDLQAfterMaxAttempts_PG(t *testing.T) {
 		t.Errorf("dlq: got %v want [00000000-0000-0000-0000-000000000001]", dlq.sent)
 	}
 
-	// Row should now be FAILED with attempts=3 (incremented by
-	// MarkFailedTx from 2 → 3 = MaxAttempts).
+	// Row should now be FAILED. attempts stays at 2: BumpAttempts
+	// (OBX-001) runs as an autonomous UPDATE AFTER RunInTx returns,
+	// so by the time it sees the row it has already been transitioned
+	// to FAILED by MarkFailedTx inside the locked tx — the
+	// `AND status='PENDING'` guard skips the bump. The terminal
+	// transition is the last attempt for the row, so the missing
+	// bump is correct. Under-cap failures (rows stay PENDING) DO
+	// increment — see services/order/internal/outbox/poller_pg_test.go
+	// for the under-cap integration regression net.
 	var status string
 	var attempts int
 	err := pool.QueryRow(context.Background(),
@@ -164,7 +171,7 @@ func TestPoller_RoutesToDLQAfterMaxAttempts_PG(t *testing.T) {
 	if status != "FAILED" {
 		t.Errorf("status: got %q want FAILED", status)
 	}
-	if attempts != 3 {
-		t.Errorf("attempts: got %d want 3", attempts)
+	if attempts != 2 {
+		t.Errorf("attempts: got %d want 2 (terminal row, bump skipped by WHERE status='PENDING' guard — correct)", attempts)
 	}
 }

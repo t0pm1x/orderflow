@@ -11,6 +11,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
@@ -368,6 +369,105 @@ func TestDispatch_RestoresSpanFromEnvelope(t *testing.T) {
 	c.dispatch(ctx, rec)
 	if seenParent.TraceID() != origSpan.SpanContext().TraceID() {
 		t.Fatalf("trace_id lost across consumer boundary")
+	}
+}
+
+// TestDispatch_ExtractsTraceparentFromHeaders is the OBS-5 consumer
+// regression net: a Kafka record with a W3C traceparent header must
+// restore the parent span context from the header (ADR-0004), not
+// from the envelope body's TraceID/SpanID fields. Pre-fix the
+// consumer only read the envelope IDs, so a producer that built the
+// trace header via events.Client.PublishRaw would lose the trace
+// across topic boundaries. The test asserts the handler sees the
+// traceparent's trace_id (not the envelope's) when both are set.
+func TestDispatch_ExtractsTraceparentFromHeaders(t *testing.T) {
+	prevProp := otel.GetTextMapPropagator()
+	prevTP := otel.GetTracerProvider()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(prevProp)
+		otel.SetTracerProvider(prevTP)
+		_ = tp.Shutdown(context.Background())
+	})
+
+	// Build a header-carried traceparent that points at a
+	// different trace than the envelope body claims. The handler
+	// must see the header's trace, not the body's — the OBS-5
+	// fix reads headers BEFORE reading the envelope.
+	headerTraceID := "0af7651916cd43dd8448eb211c80319c"
+	headerSpanID := "b7ad6b7169203331"
+	traceparent := "00-" + headerTraceID + "-" + headerSpanID + "-01"
+
+	envelopeTraceID := "11111111111111111111111111111111"
+	envelopeSpanID := "2222222222222222"
+
+	env := events.Envelope{
+		EventID: "id-1", EventType: "OrderCreated",
+		AggregateID: "agg-1", AggregateType: "Order",
+		TraceID:       envelopeTraceID,
+		SpanID:        envelopeSpanID,
+		SchemaVersion: "1.0", Payload: json.RawMessage(`{}`),
+	}
+
+	var seenParent trace.SpanContext
+	reg := HandlerRegistry{"OrderCreated": func(ctx context.Context, _ *events.Envelope) error {
+		seenParent = trace.SpanFromContext(ctx).SpanContext()
+		return nil
+	}}
+	c := &Consumer{registry: reg, maxAttempts: 1}
+	rec := &kgo.Record{
+		Value:   mustEncode(env),
+		Key:     []byte("agg-1"),
+		Headers: []kgo.RecordHeader{{Key: "traceparent", Value: []byte(traceparent)}},
+	}
+	c.dispatch(context.Background(), rec)
+
+	if !seenParent.IsValid() {
+		t.Fatal("expected valid SpanContext after dispatch")
+	}
+	if got, want := seenParent.TraceID().String(), headerTraceID; got != want {
+		t.Errorf("TraceID: got %s want %s (the OBS-5 header-based trace, not the envelope body)", got, want)
+	}
+	// The handler's seenParent.SpanID is the consumer-span's own ID
+	// (a new child span under the header's parent). The header's
+	// SpanID is the producer's span and lives on the parent; we
+	// verify it indirectly via the TraceID match above. A stricter
+	// check (SeenParentIsRemote parent of the handler's span) is
+	// possible but requires walking the recording SDK's span tree.
+}
+
+// TestDispatch_EnvelopeFallbackWhenHeaderAbsent pins the fallback
+// path: a record with no traceparent header still gets a span
+// context from the envelope body (the pre-OBS-5 behavior). Without
+// this fallback a legacy producer that hasn't been recompiled with
+// the new wire format would silently lose all traces.
+func TestDispatch_EnvelopeFallbackWhenHeaderAbsent(t *testing.T) {
+	withTestTracer(t)
+
+	_, origSpan := otel.Tracer("test").Start(context.Background(), "producer.op")
+	defer origSpan.End()
+
+	env := events.Envelope{
+		EventID: "id-1", EventType: "OrderCreated",
+		AggregateID: "agg-1", AggregateType: "Order",
+		TraceID:       origSpan.SpanContext().TraceID().String(),
+		SpanID:        origSpan.SpanContext().SpanID().String(),
+		SchemaVersion: "1.0", Payload: json.RawMessage(`{}`),
+	}
+	var seenParent trace.SpanContext
+	reg := HandlerRegistry{"OrderCreated": func(ctx context.Context, _ *events.Envelope) error {
+		seenParent = trace.SpanFromContext(ctx).SpanContext()
+		return nil
+	}}
+	c := &Consumer{registry: reg, maxAttempts: 1}
+	rec := &kgo.Record{Value: mustEncode(env), Key: []byte("agg-1")}
+	c.dispatch(context.Background(), rec)
+
+	if seenParent.TraceID() != origSpan.SpanContext().TraceID() {
+		t.Fatalf("envelope-fallback trace_id lost; got %s want %s",
+			seenParent.TraceID(), origSpan.SpanContext().TraceID())
 	}
 }
 

@@ -40,11 +40,29 @@ import (
 // had already been moved past the retry budget. Reading attempts
 // from the DB row inside the locked tx makes the budget durable
 // across restarts and consistent across replicas.
+//
+// BumpAttempts (OBX-001) is the v1.1.5 fix for v1.1.4's inert
+// "DB attempts survives restarts" claim. MarkFailedTx was the only
+// writer of the `attempts` column, and MarkFailedTx was only called
+// at the terminal FAILED transition (which excluded the row from
+// future fetches), so the column was always 0 for any PENDING row.
+// BumpAttempts is the autonomous (non-tx) UPDATE that increments
+// `attempts` for PENDING rows on every publish failure, making the
+// per-row budget durable across restarts even before the row
+// crosses MaxAttempts.
 type Source interface {
 	RunInTx(ctx context.Context, limit int, fn func(tx pgx.Tx, recs []outbox.Record) error) error
 	MarkSentTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error
 	MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []string) error
 	AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []string) (map[string]int, error)
+	BumpAttempts(ctx context.Context, eventIDs []string, reason string) error
+	// Lag returns the current PENDING and FAILED row counts as a
+	// single SQL read, used to refresh the OBS-9 outbox_pending_events
+	// and outbox_failed_events gauges once per poll cycle.
+	// Implementations must use a single COUNT(*) … FILTER query (or
+	// equivalent) so the per-cycle cost is constant regardless of
+	// outbox size.
+	Lag(ctx context.Context) (pending, failed int64, err error)
 }
 
 // Publisher ships a batch of outbox records to Kafka. Returns nil
@@ -67,6 +85,11 @@ type Metrics interface {
 	ObservePoll(ctx context.Context, rows int, dur time.Duration, err error)
 	ObservePublish(ctx context.Context, count int, err error)
 	ObserveDLQ(ctx context.Context, rec outbox.Record, reason string)
+	// ObserveLag is the OBS-9 hook. pending is the current count of
+	// PENDING rows; failed is the current count of FAILED rows. The
+	// gauges are point-in-time snapshots — callers are expected to
+	// invoke ObserveLag once per poll cycle.
+	ObserveLag(ctx context.Context, pending, failed int64)
 }
 
 // NoopMetrics is the default Metrics impl when none is configured.
@@ -80,3 +103,6 @@ func (NoopMetrics) ObservePublish(context.Context, int, error) {}
 
 // ObserveDLQ is a no-op; satisfies the Metrics interface without emitting anything.
 func (NoopMetrics) ObserveDLQ(context.Context, outbox.Record, string) {}
+
+// ObserveLag is a no-op; satisfies the Metrics interface without emitting anything.
+func (NoopMetrics) ObserveLag(context.Context, int64, int64) {}

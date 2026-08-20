@@ -6,6 +6,7 @@ package outbox
 import (
 	"context"
 	_ "embed"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,10 +24,23 @@ var markSentSQL string
 //go:embed markFailed.sql
 var markFailedSQL string
 
+//go:embed bumpAttempts.sql
+var bumpAttemptsSQL string
+
 // attemptsOfSQL mirrors the saga source pattern: the poller's
 // per-Pod in-memory retry counter is volatile across restarts, so
 // we read attempts from the DB row itself inside the locked tx.
 const attemptsOfSQL = `SELECT event_id, attempts FROM inventory_outbox WHERE event_id = ANY($1)`
+
+// lagSQL returns the current PENDING and FAILED row counts. OBS-9
+// uses this to refresh the outbox_pending_events and
+// outbox_failed_events gauges on every poll cycle. Single
+// COUNT(*) FILTER read; see services/order/internal/outbox for
+// the rationale.
+const lagSQL = `SELECT
+    COUNT(*) FILTER (WHERE status = 'PENDING') AS pending,
+    COUNT(*) FILTER (WHERE status = 'FAILED') AS failed
+FROM inventory_outbox`
 
 // PGSource reads/marks rows in the inventory_outbox table.
 type PGSource struct {
@@ -114,4 +128,27 @@ func (s *PGSource) AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []strin
 		out[id] = n
 	}
 	return out, rows.Err()
+}
+
+// BumpAttempts increments the `attempts` counter for each given
+// PENDING event_id via an autonomous (non-tx) UPDATE. See
+// services/order/internal/outbox/source.go for the full rationale
+// (OBX-001).
+func (s *PGSource) BumpAttempts(ctx context.Context, eventIDs []string, reason string) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, bumpAttemptsSQL, reason, eventIDs)
+	return err
+}
+
+// Lag returns the current count of PENDING and FAILED rows for
+// the OBS-9 outbox_pending_events / outbox_failed_events gauges.
+// See services/order/internal/outbox/source.go for the rationale.
+func (s *PGSource) Lag(ctx context.Context) (pending, failed int64, err error) {
+	row := s.pool.QueryRow(ctx, lagSQL)
+	if err := row.Scan(&pending, &failed); err != nil {
+		return 0, 0, fmt.Errorf("lag query: %w", err)
+	}
+	return pending, failed, nil
 }

@@ -11,6 +11,7 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,10 +39,28 @@ const markSentSQL = `UPDATE saga_outbox
 
 const markFailedSQL = `UPDATE saga_outbox
                           SET status = 'FAILED',
-                              attempts = attempts + 1,
                               last_error = COALESCE($1, last_error)
                         WHERE event_id = ANY($2)
                           AND status = 'PENDING'`
+
+// bumpAttemptsSQL is the autonomous (non-tx) UPDATE the poller
+// runs to increment `attempts` on every publish failure. Pairs
+// with Source.BumpAttempts (OBX-001).
+const bumpAttemptsSQL = `UPDATE saga_outbox
+                            SET attempts   = attempts + 1,
+                                last_error = COALESCE($1, last_error)
+                          WHERE event_id = ANY($2)
+                            AND status = 'PENDING'`
+
+// lagSQL returns the current PENDING and FAILED row counts in a
+// single read. OBS-9 wires the poller to refresh the
+// outbox_pending_events / outbox_failed_events gauges once per
+// cycle. Single COUNT(*) FILTER read; see
+// services/order/internal/outbox for the rationale.
+const lagSQL = `SELECT
+    COUNT(*) FILTER (WHERE status = 'PENDING') AS pending,
+    COUNT(*) FILTER (WHERE status = 'FAILED') AS failed
+FROM saga_outbox`
 
 // PGSource reads/marks rows in the saga_outbox table.
 type PGSource struct {
@@ -117,6 +136,23 @@ func (s *PGSource) MarkFailedTx(ctx context.Context, tx pgx.Tx, eventIDs []strin
 	return err
 }
 
+// BumpAttempts is the OBX-001 fix from pkg/outbox/types.go:Source:
+// the v1.1.4 claim that DB `attempts` survives restarts was inert
+// because MarkFailedTx was the only writer and only fired at the
+// terminal FAILED transition. The new autonomous (non-tx) UPDATE
+// increments `attempts` for PENDING rows on every publish failure so
+// the per-row retry budget is durable across pod restarts.
+//
+// Required by the pkg/outbox.Source interface; the saga PGSource
+// implements the same shape as the order/payment/inventory mirrors.
+func (s *PGSource) BumpAttempts(ctx context.Context, eventIDs []string, reason string) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, bumpAttemptsSQL, reason, eventIDs)
+	return err
+}
+
 // AttemptsOfTx returns the current attempts counter for each given
 // event_id, read inside the supplied tx. Used by the poller after
 // MarkFailedTx to decide whether to DLQ a row. Reading from the DB
@@ -143,4 +179,15 @@ func (s *PGSource) AttemptsOfTx(ctx context.Context, tx pgx.Tx, eventIDs []strin
 		out[id] = n
 	}
 	return out, rows.Err()
+}
+
+// Lag returns the current count of PENDING and FAILED rows for
+// the OBS-9 outbox_pending_events / outbox_failed_events gauges.
+// See services/order/internal/outbox/source.go for the rationale.
+func (s *PGSource) Lag(ctx context.Context) (pending, failed int64, err error) {
+	row := s.pool.QueryRow(ctx, lagSQL)
+	if err := row.Scan(&pending, &failed); err != nil {
+		return 0, 0, fmt.Errorf("lag query: %w", err)
+	}
+	return pending, failed, nil
 }

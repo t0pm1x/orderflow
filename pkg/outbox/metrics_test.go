@@ -92,6 +92,7 @@ func TestPrometheusMetrics_GatherContainsAllNames(t *testing.T) {
 	m.ObservePoll(context.Background(), 1, time.Millisecond, nil)
 	m.ObservePublish(context.Background(), 1, nil)
 	m.ObserveDLQ(context.Background(), outbox.Record{}, "x")
+	m.ObserveLag(context.Background(), 7, 2)
 	got, err := reg.Gather()
 	if err != nil {
 		t.Fatal(err)
@@ -105,10 +106,57 @@ func TestPrometheusMetrics_GatherContainsAllNames(t *testing.T) {
 		"outbox_poll_rows_total",
 		"outbox_publish_total",
 		"outbox_dlq_total",
+		"outbox_pending_events",
+		"outbox_failed_events",
 	} {
 		if !names[want] {
 			t.Errorf("metric %q missing; have %v", want, strings.Join(metricNames(names), ","))
 		}
+	}
+}
+
+// TestPrometheusMetrics_ObserveLagPending is the OBS-9 happy-path
+// regression net: after ObserveLag(5, 0) the outbox_pending_events
+// gauge carries value 5 labelled by the table. Pre-fix the gauge
+// was never declared (metrics.go:12-15 said "and outbox lag" but
+// no collector existed), so Grafana panel for outbox lag was
+// always empty.
+func TestPrometheusMetrics_ObserveLagPending(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewPrometheusMetrics("order_outbox", reg)
+	m.ObserveLag(context.Background(), 5, 0)
+	if got := testutil.ToFloat64(m.pendingGauge.WithLabelValues("order_outbox")); got != 5 {
+		t.Errorf("outbox_pending_events: got %v want 5", got)
+	}
+}
+
+// TestPrometheusMetrics_ObserveLagFailed pins the failed gauge:
+// after ObserveLag(_, 3) the outbox_failed_events gauge carries
+// value 3. The failed gauge is the data-loss indicator that
+// complements outbox_dlq_total (which increments even when the
+// DLQ write itself errors per OBX-002).
+func TestPrometheusMetrics_ObserveLagFailed(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewPrometheusMetrics("payment_outbox", reg)
+	m.ObserveLag(context.Background(), 0, 3)
+	if got := testutil.ToFloat64(m.failedGauge.WithLabelValues("payment_outbox")); got != 3 {
+		t.Errorf("outbox_failed_events: got %v want 3", got)
+	}
+}
+
+// TestPrometheusMetrics_ObserveLagOverwrites pins that the gauges
+// are point-in-time snapshots (gauges, not counters). A second
+// ObserveLag must replace the first value, not add to it.
+func TestPrometheusMetrics_ObserveLagOverwrites(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewPrometheusMetrics("t", reg)
+	m.ObserveLag(context.Background(), 10, 5)
+	m.ObserveLag(context.Background(), 2, 1)
+	if got := testutil.ToFloat64(m.pendingGauge.WithLabelValues("t")); got != 2 {
+		t.Errorf("pending after overwrite: got %v want 2", got)
+	}
+	if got := testutil.ToFloat64(m.failedGauge.WithLabelValues("t")); got != 1 {
+		t.Errorf("failed after overwrite: got %v want 1", got)
 	}
 }
 
