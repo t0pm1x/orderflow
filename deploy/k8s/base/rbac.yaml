@@ -1,7 +1,34 @@
+# Per-chart ServiceAccounts are created by each Helm chart with names
+# orderflow-{order,payment,inventory,saga}. The previous version of
+# this file bound a different SA name (`orderflow`) so the per-chart
+# SAs had no effective permissions. v1.2 fix: bind the correct SAs.
+#
+# The Role grants read-only access to configmaps, secrets, and pods
+# in the orderflow namespace. The services do not need write access;
+# they read connection strings from the Secret and observe pod status
+# via the pod list (used by the OBS-9 lag gauges' pool ping fallback).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: orderflow
+  name: orderflow-order
+  namespace: orderflow
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orderflow-payment
+  namespace: orderflow
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orderflow-inventory
+  namespace: orderflow
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orderflow-saga
   namespace: orderflow
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -17,11 +44,53 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: orderflow
+  name: orderflow-order
   namespace: orderflow
 subjects:
 - kind: ServiceAccount
+  name: orderflow-order
+  namespace: orderflow
+roleRef:
+  kind: Role
   name: orderflow
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orderflow-payment
+  namespace: orderflow
+subjects:
+- kind: ServiceAccount
+  name: orderflow-payment
+  namespace: orderflow
+roleRef:
+  kind: Role
+  name: orderflow
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orderflow-inventory
+  namespace: orderflow
+subjects:
+- kind: ServiceAccount
+  name: orderflow-inventory
+  namespace: orderflow
+roleRef:
+  kind: Role
+  name: orderflow
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orderflow-saga
+  namespace: orderflow
+subjects:
+- kind: ServiceAccount
+  name: orderflow-saga
   namespace: orderflow
 roleRef:
   kind: Role

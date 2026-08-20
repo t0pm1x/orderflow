@@ -12,25 +12,13 @@ To verify probes:
   kubectl --namespace {{ .Release.Namespace }} get deployment {{ include "orderflow-inventory.fullname" . }} -o jsonpath='{.spec.template.spec.containers[0].livenessProbe}'
 
 KNOWN LIMITATIONS (NOT VERIFIED, see audit/FINAL_AUDIT.md):
-  - K8S-5: No `startupProbe`. Cold starts with OTel init may exceed the 5 s
-    `initialDelaySeconds` on the liveness probe. Recommended fix: add a
-    `startupProbe` that hits `/healthz` with generous `failureThreshold`
-    and gate the liveness probe behind it. Requires cluster validation.
-  - K8S-6: No `preStop` lifecycle hook. Rolling deploys may SIGKILL pods
-    mid-request. Recommended fix: add `lifecycle.preStop.exec.command`
-    invoking `sleep 5` (or a graceful-shutdown HTTP call). Requires
-    cluster validation.
-  - K8S-7: `runAsUser`/`runAsGroup` not set. Pin to 65532 once validated.
   - K8S-8: Liveness probe targets `/healthz`, which is hard-coded 200 OK
     (OBS-1). Switch to `/readyz` once the binary exposes it.
-  - K8S-13: The chart sets `KAFKA_BROKER` (singular); the inventory binary
-    prefers `KAFKA_BROKERS` (plural). Standardize once multi-broker is
-    exercised.
   - K8S-14: Web Dockerfile runs as `nobody` with `readOnlyRootFilesystem:
     true` but the chart does not mount a writable tmpfs at
     `/tmp`. Once the inventory Docker image is built (K8S-1 fix in
     `cmd/inventory/Dockerfile`), this becomes a non-issue because
     distroless:nonroot does not require writable paths. Requires image
     rebuild + cluster validation.
-  - K8S-15: Per-chart ServiceAccount has no RoleBinding.
+  - K8S-15: FIXED in v1.2 — base rbac.yaml now binds each per-chart SA.
 

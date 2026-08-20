@@ -21,6 +21,17 @@ spec:
         runAsNonRoot: true
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false
+        {{- with .Values.securityContext }}
+        {{- if .runAsUser }}
+        runAsUser: {{ .runAsUser }}
+        {{- end }}
+        {{- if .runAsGroup }}
+        runAsGroup: {{ .runAsGroup }}
+        {{- end }}
+        {{- if .fsGroup }}
+        fsGroup: {{ .fsGroup }}
+        {{- end }}
+        {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -29,6 +40,22 @@ spec:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+            {{- with .Values.securityContext }}
+            {{- if .runAsUser }}
+            runAsUser: {{ .runAsUser }}
+            {{- end }}
+            {{- if .runAsGroup }}
+            runAsGroup: {{ .runAsGroup }}
+            {{- end }}
+            {{- end }}
+          {{- with .Values.lifecycle }}
+          {{- with .preStop }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .sleepSeconds }}"]
+          {{- end }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
@@ -43,7 +70,7 @@ spec:
                   name: {{ include "orderflow-saga.fullname" . }}
                   {{- end }}
                   key: DATABASE_URL
-            - name: KAFKA_BROKER
+            - name: KAFKA_BROKERS
               valueFrom:
                 secretKeyRef:
                   {{- if .Values.secret.existingSecret }}
@@ -51,7 +78,7 @@ spec:
                   {{- else }}
                   name: {{ include "orderflow-saga.fullname" . }}
                   {{- end }}
-                  key: KAFKA_BROKER
+                  key: KAFKA_BROKERS
             - name: HTTP_ADDR
               value: {{ .Values.env.HTTP_ADDR | quote }}
             - name: OTEL_EXPORTER
@@ -75,5 +102,13 @@ spec:
               port: http
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          {{- with .Values.probes.startup }}
+          startupProbe:
+            httpGet:
+              path: {{ .path }}
+              port: http
+            failureThreshold: {{ .failureThreshold }}
+            periodSeconds: {{ .periodSeconds }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

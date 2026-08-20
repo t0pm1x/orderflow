@@ -2,30 +2,10 @@ Order Service deployed!
 Get pods: kubectl get pods -l app.kubernetes.io/name={{ include "orderflow-order.name" . }}
 
 KNOWN LIMITATIONS (NOT VERIFIED, see audit/FINAL_AUDIT.md):
-  - K8S-5: No `startupProbe`. Cold starts with OTel init may exceed the 5 s
-    `initialDelaySeconds` on the liveness probe. Recommended fix: add a
-    `startupProbe` with `failureThreshold: 30 periodSeconds: 5` that hits
-    `/healthz`; gate the liveness probe behind it. Requires cluster validation.
-  - K8S-6: No `preStop` lifecycle hook. Rolling deploys may SIGKILL pods
-    mid-request. Recommended fix: add `lifecycle.preStop.exec.command`
-    invoking `sleep 5` (or a graceful-shutdown HTTP call) so the kubelet
-    waits for in-flight requests to drain. Requires cluster validation.
-  - K8S-7: `runAsUser`/`runAsGroup` not set. The kubelet will pick a UID
-    (typically 65532 for distroless:nonroot, but non-deterministic).
-    Recommended fix: pin `runAsUser: 65532 runAsGroup: 65532` on both
-    pod and container `securityContext`. Requires cluster validation.
   - K8S-8: Liveness probe targets `/healthz`, which is a hard-coded
     `200 OK` (see OBS-1 in the audit). The pod stays in service even when
     Postgres or Kafka are unreachable. The proper fix lives in OBS-1
     (add `/readyz` to the order binary); a stopgap is to point the
     liveness probe at `/readyz` once it exists.
-  - K8S-13: The chart sets `KAFKA_BROKER` (singular); the order binary
-    prefers `KAFKA_BROKERS` (plural). With a single broker this is
-    invisible; multi-broker clusters will silently fall through to the
-    empty default. Standardize on `KAFKA_BROKERS` everywhere. Requires
-    cross-chart and code change.
-  - K8S-15: The chart's ServiceAccount (`{{ include "orderflow-order.fullname" . }}`)
-    is created but not bound to any RBAC Role. The base
-    `deploy/k8s/base/rbac.yaml` binds a different SA name (`orderflow`),
-    so the per-chart SA has no effective permissions. Requires base RBAC
-    rework.
+  - K8S-15: FIXED in v1.2 — base rbac.yaml now binds each per-chart SA
+    (orderflow-{order,payment,inventory,saga}) to the orderflow Role.

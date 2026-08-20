@@ -13,7 +13,7 @@
 #   create: true
 #   data:
 #     DATABASE_URL: "postgres://orderflow:CHANGEME@postgres:5432/order_order?sslmode=disable"
-#     KAFKA_BROKER: "redpanda:9092"
+#     KAFKA_BROKERS: "redpanda:9092"
 #
 # (b) Externally-managed Secret. Set `secret.create: false` and
 #     `secret.existingSecret` to the Secret name you provisioned:
@@ -23,4 +23,4 @@
 #   existingSecret: "orderflow-saga-secrets"
 # # Required keys in the Secret:
 # #   - DATABASE_URL
-# #   - KAFKA_BROKER
+# #   - KAFKA_BROKERS

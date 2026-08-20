@@ -34,6 +34,17 @@ probes:
     path: /readyz
     initialDelaySeconds: 2
     periodSeconds: 5
+  startup:
+    path: /healthz
+    failureThreshold: 30
+    periodSeconds: 5
+lifecycle:
+  preStop:
+    sleepSeconds: 5
+securityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
 serviceAccount:
   create: true
   name: ""

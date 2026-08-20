@@ -13,7 +13,7 @@
 #   create: true
 #   data:
 #     DATABASE_URL: "postgres://orderflow:CHANGEME@postgres:5432/inventory_inventory?sslmode=disable"
-#     KAFKA_BROKER: "redpanda:9092"
+#     KAFKA_BROKERS: "redpanda:9092"
 #     REDIS_URL: "redis://redis:6379/0"
 #
 # (b) Externally-managed Secret. Set `secret.create: false` and
@@ -24,5 +24,5 @@
 #   existingSecret: "orderflow-inventory-secrets"
 # # Required keys in the Secret:
 # #   - DATABASE_URL
-# #   - KAFKA_BROKER
+# #   - KAFKA_BROKERS
 # #   - REDIS_URL

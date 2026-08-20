@@ -34,6 +34,26 @@ probes:
     path: /readyz
     initialDelaySeconds: 2
     periodSeconds: 5
+  # startupProbe gives OTel init + DB pool warmup up to 150s
+  # (failureThreshold * periodSeconds) before kubelet starts the
+  # liveness probe countdown. Without this, cold starts can fail
+  # liveness at the 5s initialDelaySeconds and SIGKILL pods that
+  # are still warming up.
+  startup:
+    path: /healthz
+    failureThreshold: 30
+    periodSeconds: 5
+# preStop hook gives the kubelet 5s to drain in-flight requests
+# and commit outbox offsets before the SIGTERM is delivered.
+lifecycle:
+  preStop:
+    sleepSeconds: 5
+# Distroless:nonroot image ships UID/GID 65532. Pin both so the
+# kubelet doesn't pick a different value across schedulers.
+securityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
 serviceAccount:
   create: true
   name: ""
