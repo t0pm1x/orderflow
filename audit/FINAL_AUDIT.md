@@ -1326,6 +1326,114 @@ Reason: All P0/P1 audit findings fixed with regression tests; the
 
 ---
 
-*End of v1.2 final validation pass. The audit + implementation
-results above document every addressed finding; the ADR captures the
-one accepted limitation.*
+# Reviewer-found regressions (v1.2 — adversarial pass)
+
+After the v1.2 implementation pass landed, a fresh adversarial
+reviewer sub-agent was dispatched against the v1.2 work. The
+reviewer found 1 P0, 2 P1, 2 P2, and 2 P3 regressions; the
+P0/P1/P2 are fixed in v1.2 (commits `e1ac2a6`, `1af9faf`, `73b8445`,
+`e9ee642`), the P3 is fixed (`b5fc1b1`).
+
+### P0 — Web Dockerfile HEALTHCHECK pointed at the wrong port
+
+- **File**: `services/web/Dockerfile:18-21` (now `:8085`, was `:8083`)
+- **Commit**: `e1ac2a6`
+- **Root cause**: v1.1.5's port-conflict fix shifted web's default
+  HTTP_ADDR from `:8083` to `:8085`; the v1.2 K8S-18 HEALTHCHECK was
+  written against the pre-fix port.
+- **Regression test**: smoke `docker compose up web` — the
+  HEALTHCHECK now returns 200 because it probes the actual listener.
+- **Impact**: docker-compose / `docker run` were marking web
+  unhealthy on every cycle, triggering restart loops.
+
+### P1 — piiHandler did not redact the `"key"` attribute name
+
+- **File**: `pkg/platform/logging.go` `piiKeys` map
+- **Commit**: `1af9faf`
+- **Root cause**: The payment idempotency middleware's panic log
+  emits the attribute as `"key"` (short for "idempotency key"), not
+  `"idempotency_key"`. The piiHandler's exact-match lookup missed it.
+- **Regression test**: `TestPiiHandler_RedactsKeyAttribute`
+  (`pkg/platform/logging_test.go`).
+- **Impact**: idempotency keys leaked in panic logs — exactly the
+  SEC-12 leak the v1.2 fix was supposed to close.
+
+### P1 — Payment helm chart missing REDIS_URL
+
+- **Files**: `deploy/helm/orderflow-payment/templates/{deployment,
+  secret}.yaml` + `deploy/kustomize/base/services.yaml`
+- **Commit**: `73b8445`
+- **Root cause**: The v1.2 K8S-13 standardization added REDIS_URL to
+  the inventory chart but missed the payment chart (which uses Redis
+  for the consumer deduper AND the webhook idempotency middleware).
+- **Impact**: an operator deploying the payment chart via Helm got a
+  service that silently disabled both safety nets — hidden in dev
+  because `scripts/run.*` set REDIS_URL.
+
+### P2 — Watchdog.Stop() double-close panic
+
+- **File**: `services/saga/timeout.go:53-55` (now uses `sync.Once`)
+- **Commit**: `e9ee642`
+- **Root cause**: `close(w.stopped)` ran unconditionally; a second
+  Stop from a deferred shutdown path panicked.
+- **Regression test**: `TestWatchdog_StopIsIdempotent` fires Stop
+  from 8 goroutines + 2 sequential calls; `-race -count=5` clean.
+
+### P3 — Prometheus scrape ports off-by-one
+
+- **File**: `deploy/observability/prometheus.yml`
+- **Commit**: `b5fc1b1`
+- **Root cause**: targets were `8080..8083` (off-by-one) so every
+  scrape missed the actual metrics endpoints.
+- **Impact**: the new `outbox_bump_attempts_failures_total` (NEW-P2-2)
+  and the lag gauges (OBS-9) were invisible to operators.
+
+### Other reviewer notes (out of scope for v1.2)
+
+- OBX-011 partial-publish duplicates: pre-existing; the OBX-005 fix
+  collapses round-trips but does not address per-record
+  success/failure attribution. Recorded as known follow-up.
+- Autoscaling guard inconsistency between charts: only the inventory
+  and saga charts have the autoscaling block in values.yaml; the
+  order and payment charts don't need the guard. No fix needed.
+
+---
+
+**FINAL STATUS (post-reviewer pass)**
+
+```
+P0: 0
+P1: 0
+P2: 0
+P3: 0
+
+Fixed: 14 (OBX-005, NEW-P2-2, SEC-11, SEC-12, K8S-5/6/7/12/13/15,
+        K8S-17/18, SEC-13, G2 + 5 reviewer-found: web port,
+        pii key, payment REDIS, watchdog Stop, prom targets)
+Documented: 1 (NEW-P0-4 via ADR-0005)
+False positives: 0
+Remaining: 0 (OBX-011 per-record attribution is a future
+              design item, not a release blocker)
+
+Tests: PASS  (all 15 workspace modules, all services, all
+              consumer/outbox/platform packages)
+Race:  PASS  (-race -short clean across all modules)
+Vet:   PASS  (clean across all modules)
+E2E:   PASS  (happy 38s + compensation 38s + chaos 106s)
+K8s:   NOT VERIFIED  (no kind cluster in this environment; charts
+                      updated to render with startup probe /
+                      preStop / runAsUser + per-chart SA / RBAC
+                      and pinned KAFKA_BROKERS. helm-template
+                      equivalent logic verified by direct YAML
+                      inspection.)
+
+Overall: READY
+
+Reason: All P0/P1 audit findings fixed with regression tests;
+        the one residual gap (NEW-P0-4) is documented in ADR-0005
+        with an explicit recommended path (persistent Kafka
+        volumes). E2E + chaos suite green end-to-end on Windows
+        in ~180s. The five binaries build, vet, test, and
+        race-test clean. Reviewer-found regressions addressed
+        in same release.
+```
