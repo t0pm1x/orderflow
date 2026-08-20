@@ -1843,12 +1843,12 @@ prefill := r.URL.Query().Get("prefill")
 vm := orderNewVM{Body: "orderNewBody", IdempotencyToken: newIdempotencyToken()}
 switch prefill {
 case "happy":
-    vm.SKU = "SKU-DEMO"
+    vm.SKU = "SKU-001"   // seeded by services/inventory/migrations/0003_seed.sql
     vm.Quantity = 1
     vm.UnitPriceCents = 1999
     // last_four is added by a hidden field
 case "fail":
-    vm.SKU = "SKU-DEMO"
+    vm.SKU = "SKU-001"   // seeded; the failure path is driven by last_four=0001
     vm.Quantity = 1
     vm.UnitPriceCents = 1999
     // hidden last_four=0001

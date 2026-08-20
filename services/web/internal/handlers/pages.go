@@ -44,10 +44,12 @@ type orderNewVM struct {
 // Generates a fresh idempotency token on every render so the
 // resulting POST is unique; the BFF replay cache catches replays
 // within the replay window. When ?prefill=happy|fail is present
-// the form is pre-populated with demo defaults (SKU=SKU-DEMO,
-// quantity=1, unit_price_cents=1999) and a hidden last_four
-// input (4242 or 0001) is rendered so the operator can
-// one-click the happy/compensation demo flow.
+// the form is pre-populated with demo defaults (SKU=SKU-001 —
+// seeded by services/inventory/migrations/0003_seed.sql so the
+// saga can actually reach the payment step; quantity=1,
+// unit_price_cents=1999) and a hidden last_four input (4242 or
+// 0001) is rendered so the operator can one-click the
+// happy/compensation demo flow.
 func (s *Set) PageOrderNew(w http.ResponseWriter, r *http.Request) {
 	vm := orderNewVM{
 		Body:             "orderNewBody",
@@ -57,13 +59,13 @@ func (s *Set) PageOrderNew(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Query().Get("prefill") {
 	case "happy":
 		vm.Prefill = "happy"
-		vm.SKU = "SKU-DEMO"
+		vm.SKU = "SKU-001"
 		vm.Quantity = 1
 		vm.UnitPriceCents = 1999
 		vm.LastFour = "4242"
 	case "fail":
 		vm.Prefill = "fail"
-		vm.SKU = "SKU-DEMO"
+		vm.SKU = "SKU-001"
 		vm.Quantity = 1
 		vm.UnitPriceCents = 1999
 		vm.LastFour = "0001"
@@ -83,6 +85,8 @@ func (s *Set) PageOrderNew(w http.ResponseWriter, r *http.Request) {
 // validation-failure round-trip preserves the prefill state.
 func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
+		s.Logger.Info("orderflow-web validation reject",
+			"path", r.URL.Path, "reason", "bad_form", "err", err.Error())
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
@@ -110,60 +114,41 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	if up := r.FormValue("unit_price_cents"); up != "" {
 		n, err := strconv.ParseInt(up, 10, 64)
 		if err != nil {
-			vm.Error = "unit_price_cents must be an integer"
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+			s.rejectValidation(w, r, &vm, "unit_price_cents must be an integer")
 			return
 		}
 		vm.UnitPriceCents = n
 	}
 	if vm.SKU == "" || vm.Quantity <= 0 {
-		vm.Error = "SKU and quantity (>0) are required"
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		s.rejectValidation(w, r, &vm, "SKU and quantity (>0) are required")
 		return
 	}
 	if len(vm.SKU) > 64 {
-		vm.Error = "SKU must be 64 characters or fewer"
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		s.rejectValidation(w, r, &vm, "SKU must be 64 characters or fewer")
 		return
 	}
 	if vm.Quantity > 10000 {
-		vm.Error = "quantity must be 10000 or fewer"
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		s.rejectValidation(w, r, &vm, "quantity must be 10000 or fewer")
 		return
 	}
 	if vm.UnitPriceCents < 0 {
-		vm.Error = "unit_price_cents must be 0 or greater"
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		s.rejectValidation(w, r, &vm, "unit_price_cents must be 0 or greater")
 		return
 	}
 	if vm.UnitPriceCents > 100_000_000 {
-		vm.Error = "unit_price_cents must be 100000000 or fewer"
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+		s.rejectValidation(w, r, &vm, "unit_price_cents must be 100000000 or fewer")
 		return
 	}
 	if vm.CustomerID != "" {
 		if _, ok := parseUUID(vm.CustomerID); !ok {
-			vm.Error = "customer_id must be a UUID (or leave blank for auto-generation)"
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = s.Templates.ExecuteTemplate(w, "layout", vm)
+			s.rejectValidation(w, r, &vm, "customer_id must be a UUID (or leave blank for auto-generation)")
 			return
 		}
 	}
 	token := r.FormValue("idempotency_token")
 	if token == "" {
+		s.Logger.Info("orderflow-web validation reject",
+			"path", r.URL.Path, "reason", "missing_idempotency_token")
 		http.Error(w, "missing idempotency token", http.StatusBadRequest)
 		return
 	}
@@ -208,6 +193,31 @@ func (s *Set) ActionOrderSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("HX-Redirect", "/orders/"+out.ID)
 	w.WriteHeader(http.StatusOK)
+}
+
+// rejectValidation is the single 400-render path for
+// ActionOrderSubmit. It logs the structured reason to slog and
+// re-renders the order form with the error banner so the
+// operator can see what failed without opening DevTools.
+// Centralising the path keeps ActionOrderSubmit readable and
+// guarantees no future validation will be added without a
+// corresponding structured log line.
+//
+// The two non-render early-return paths (bad form,
+// missing idempotency token) log inline at their http.Error
+// call site because there is no vm to pass.
+func (s *Set) rejectValidation(w http.ResponseWriter, r *http.Request, vm *orderNewVM, reason string) {
+	s.Logger.Info("orderflow-web validation reject",
+		"path", r.URL.Path,
+		"reason", reason,
+		"sku_present", vm.SKU != "",
+		"qty", vm.Quantity,
+		"upc", vm.UnitPriceCents,
+		"customer_id_set", vm.CustomerID != "")
+	vm.Error = reason
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = s.Templates.ExecuteTemplate(w, "layout", vm)
 }
 
 func atoi(s string) int {

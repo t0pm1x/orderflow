@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	kafkaconsumer "github.com/t0pm1x/orderflow/consumer"
 	pkgEvents "github.com/t0pm1x/orderflow/platform/events"
@@ -87,6 +88,17 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 
 func forwardToBus(bus *events.Bus) kafkaconsumer.Handler {
 	return func(_ context.Context, env *pkgEvents.Envelope) error {
+		// Defensive default: producers across the orderflow stack
+		// do not currently populate Envelope.OccurredAt when
+		// emitting events, so the field arrives at the bus as the
+		// Go zero-time. Without this fallback the per-order
+		// timeline page renders every entry as 00:00:00 (the
+		// v1.1.3 saga-timeline regression). Producers should set
+		// the field at emission time; the consumer-side default
+		// keeps the UI usable until each producer is fixed.
+		if env.OccurredAt.IsZero() {
+			env.OccurredAt = time.Now().UTC()
+		}
 		bus.Publish(events.BusEvent{Envelope: *env})
 		return nil
 	}

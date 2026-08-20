@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,10 +341,13 @@ func TestOrderNew_PrefillHappy_RendersHidden4242(t *testing.T) {
 }
 
 // TestOrderNew_PrefillHappy_PrepopulatesFields covers P2.1: the
-// prefill path also pre-populates the visible fields (SKU=SKU-DEMO,
+// prefill path also pre-populates the visible fields (SKU=SKU-001,
 // quantity=1, unit_price_cents=1999) so the form is one-click
 // submit. The "happy" path is a demo button — the operator
-// should not have to type anything.
+// should not have to type anything. SKU-001 is the inventory
+// seed SKU (services/inventory/migrations/0003_seed.sql) so the
+// saga can actually reach the payment step instead of being
+// short-circuited by an unknown-SKU stock failure.
 func TestOrderNew_PrefillHappy_PrepopulatesFields(t *testing.T) {
 	srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
 	defer srv.Close()
@@ -359,7 +363,7 @@ func TestOrderNew_PrefillHappy_PrepopulatesFields(t *testing.T) {
 	_, _ = io.Copy(b, resp.Body)
 	body := b.String()
 	for _, want := range []string{
-		`id="sku" name="sku" required minlength="1" maxlength="64" value="SKU-DEMO"`,
+		`id="sku" name="sku" required minlength="1" maxlength="64" value="SKU-001"`,
 		`id="quantity" name="quantity" type="number" required min="1" max="10000" value="1"`,
 		`id="unit_price_cents" name="unit_price_cents" type="number" min="0" value="1999"`,
 	} {
@@ -439,12 +443,12 @@ func TestOrderSubmit_PrefillHappy_PassesLastFourToBackend(t *testing.T) {
 		submitResp: &backend.Order{
 			ID:    "happy-payload",
 			State: backend.OrderStatePending,
-			Items: []backend.OrderItem{{SKU: "SKU-DEMO", Quantity: 1}},
+			Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}},
 		},
 	}
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	form := strings.NewReader("sku=SKU-DEMO&quantity=1&unit_price_cents=1999&last_four=4242&idempotency_token=submit-prefill-4242-tok")
+	form := strings.NewReader("sku=SKU-001&quantity=1&unit_price_cents=1999&last_four=4242&idempotency_token=submit-prefill-4242-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -482,12 +486,12 @@ func TestOrderSubmit_PrefillFail_PassesLastFourToBackend(t *testing.T) {
 		submitResp: &backend.Order{
 			ID:    "fail-payload",
 			State: backend.OrderStatePending,
-			Items: []backend.OrderItem{{SKU: "SKU-DEMO", Quantity: 1}},
+			Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}},
 		},
 	}
 	srv := httptest.NewServer(newTestSet(t, oc))
 	defer srv.Close()
-	form := strings.NewReader("sku=SKU-DEMO&quantity=1&unit_price_cents=1999&last_four=0001&idempotency_token=submit-prefill-0001-tok")
+	form := strings.NewReader("sku=SKU-001&quantity=1&unit_price_cents=1999&last_four=0001&idempotency_token=submit-prefill-0001-tok")
 	req, _ := http.NewRequest("POST", srv.URL+"/v1/orders", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
@@ -509,6 +513,50 @@ func TestOrderSubmit_PrefillFail_PassesLastFourToBackend(t *testing.T) {
 	}
 	if got := oc.lastSubmit.Payment.LastFour; got != "0001" {
 		t.Errorf("Payment.LastFour: got %q want %q (compensation CTA must carry decline suffix)", got, "0001")
+	}
+}
+
+// TestOrderNew_PrefillUsesSeededSKU guards the v1.1.3 regression
+// (orders auto-cancelled because the web prefill submitted an
+// unseeded SKU and inventory rejected the StockReserveRequested
+// before the saga reached the payment step). The expected list
+// mirrors services/inventory/migrations/0003_seed.sql. A drift
+// here or there must be intentional — update this test in the
+// same change.
+func TestOrderNew_PrefillUsesSeededSKU(t *testing.T) {
+	seeded := map[string]bool{
+		"SKU-001": true,
+		"SKU-002": true,
+	}
+	for _, mode := range []string{"happy", "fail"} {
+		t.Run("prefill="+mode, func(t *testing.T) {
+			srv := httptest.NewServer(newTestSet(t, &fakeOrderClient{}))
+			defer srv.Close()
+			resp, err := http.Get(srv.URL + "/orders/new?prefill=" + mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != 200 {
+				t.Fatalf("status: got %d want 200", resp.StatusCode)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			re := regexp.MustCompile(`name="sku"[^>]*value="([^"]+)"`)
+			m := re.FindSubmatch(body)
+			if len(m) < 2 {
+				t.Fatalf("could not find sku field in /orders/new?prefill=%s body: %s", mode, body)
+			}
+			sku := string(m[1])
+			if !seeded[sku] {
+				t.Errorf("prefill=%s submits SKU %q which is not in inventory seed; "+
+					"inventory will reject the StockReserveRequested and the saga will "+
+					"compensate before the payment step ever runs",
+					mode, sku)
+			}
+		})
 	}
 }
 

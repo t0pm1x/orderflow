@@ -182,7 +182,10 @@ func (r *PGRepo) Cancel(ctx context.Context, id types.OrderID) error {
 
 // List returns up to limit orders whose state matches the filter,
 // ordered by created_at DESC. A non-positive or excessive limit
-// is clamped to 50 to keep the call cheap.
+// is clamped to 50 to keep the call cheap. An empty state is
+// treated as "no filter" so callers (notably the web inventory
+// page) that want all states get all states; pre-fix this
+// matched `WHERE state = ”` which returned zero rows.
 func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) ([]*domain.Order, error) {
 	// Clamp limit to match the handler's allowed range (1..500).
 	// Non-positive or excessive values fall back to the default 50.
@@ -191,12 +194,24 @@ func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) (
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	rows, err := r.pool.Query(ctx,
-		`SELECT id, customer_id, items, state, total_cents
-		   FROM orders
-		  WHERE state = $1
-		  ORDER BY created_at DESC
-		  LIMIT $2`, string(state), limit)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if state == "" {
+		rows, err = r.pool.Query(ctx,
+			`SELECT id, customer_id, items, state, total_cents, created_at, updated_at
+			   FROM orders
+			  ORDER BY created_at DESC
+			  LIMIT $1`, limit)
+	} else {
+		rows, err = r.pool.Query(ctx,
+			`SELECT id, customer_id, items, state, total_cents, created_at, updated_at
+			   FROM orders
+			  WHERE state = $1
+			  ORDER BY created_at DESC
+			  LIMIT $2`, string(state), limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +224,7 @@ func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) (
 			itemsJSON []byte
 			st        string
 		)
-		if err := rows.Scan(&o.ID, &o.CustomerID, &itemsJSON, &st, &o.TotalCents); err != nil {
+		if err := rows.Scan(&o.ID, &o.CustomerID, &itemsJSON, &st, &o.TotalCents, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		o.State = domain.OrderState(st)

@@ -405,6 +405,75 @@ func TestPGRepo_ListFiltersByState(t *testing.T) {
 	}
 }
 
+// TestPGRepo_ListEmptyStateReturnsAll guards the v1.1.3 inventory-
+// page regression: when the web service calls
+// PageInventory → Order.List(ctx, "", 50) to derive the SKU list,
+// the empty state must be treated as "no filter" rather than
+// "WHERE state = ”" (which matches zero rows). Prior to the fix
+// the inventory page rendered "No stock items yet" even when
+// confirmed orders existed in stock_items, because the list call
+// returned {"items":null}. Also asserts that CreatedAt /
+// UpdatedAt come back populated so /v1/orders timestamps are
+// not the Go zero-time.
+func TestPGRepo_ListEmptyStateReturnsAll(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	a := &domain.Order{
+		ID:         types.NewOrderID(),
+		CustomerID: types.NewCustomerID(),
+		Items:      []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 10}},
+		State:      domain.StatePending,
+		TotalCents: types.NewMoneyFromCents(10),
+	}
+	b := &domain.Order{
+		ID:         types.NewOrderID(),
+		CustomerID: types.NewCustomerID(),
+		Items:      []domain.OrderItem{{SKU: "B", Quantity: 1, UnitPriceCents: 20}},
+		State:      domain.StateConfirmed,
+		TotalCents: types.NewMoneyFromCents(20),
+	}
+	if err := repo.Insert(context.Background(), a); err != nil {
+		t.Fatalf("Insert a: %v", err)
+	}
+	if err := repo.Insert(context.Background(), b); err != nil {
+		t.Fatalf("Insert b: %v", err)
+	}
+
+	got, err := repo.List(context.Background(), "", 50)
+	if err != nil {
+		t.Fatalf("List(\"\", 50): %v", err)
+	}
+	// Both orders must be present (a, b). Other orders from the
+	// pool may also exist (test isolation is by tagless skip on
+	// no DB), so check at-least-2 and that both IDs are in the
+	// result set.
+	ids := map[types.OrderID]bool{}
+	for _, o := range got {
+		ids[o.ID] = true
+	}
+	if !ids[a.ID] || !ids[b.ID] {
+		t.Errorf("empty-state List missing seeds: got %d orders, missing at least one of a=%v b=%v",
+			len(got), a.ID, b.ID)
+	}
+
+	// Spot-check that CreatedAt/UpdatedAt are populated for at
+	// least the seeded orders (regression on the timeline "all
+	// zeros" symptom: prior to fix, List scanned no time columns
+	// and the JSON returned "0001-01-01T00:00:00Z").
+	for _, o := range got {
+		if _, ok := ids[a.ID]; !ok && o.ID != a.ID && o.ID != b.ID {
+			continue
+		}
+		if o.CreatedAt.IsZero() {
+			t.Errorf("order %v: CreatedAt is zero (regression on timeline-display bug)", o.ID)
+		}
+		if o.UpdatedAt.IsZero() {
+			t.Errorf("order %v: UpdatedAt is zero", o.ID)
+		}
+	}
+}
+
 // seedOrderForCancel is a small helper used by the cancel tests to
 // insert an order directly via the pool (bypassing Insert so the
 // test can control state/columns Insert doesn't set, like completed_at).

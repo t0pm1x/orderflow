@@ -20,8 +20,8 @@
       <input id="unit_price_cents" name="unit_price_cents" type="number" min="0" value="{{if .UnitPriceCents}}{{.UnitPriceCents}}{{end}}">
     </div>
     <div>
-      <label for="customer_id">Customer ID (UUID, optional)</label>
-      <input id="customer_id" name="customer_id" placeholder="auto-generate if blank" value="{{.CustomerID}}">
+      <label for="customer_id">Customer ID (optional — leave blank for auto-generated UUID)</label>
+      <input id="customer_id" name="customer_id" placeholder="leave blank for auto-generated UUID" autocomplete="off" value="{{.CustomerID}}">
     </div>
     <div class="row">
       <button type="submit" hx-disabled-elt="this" aria-busy="false">Submit order</button>
