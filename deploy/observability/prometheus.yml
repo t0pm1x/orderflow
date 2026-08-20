@@ -22,9 +22,12 @@ scrape_configs:
   - job_name: saga-service
     static_configs:
       - targets: ['host.docker.internal:8084']
-  - job_name: web-service
-    static_configs:
-      - targets: ['host.docker.internal:8085']
+  # Web service (port 8085) is intentionally not scraped: it does
+  # not expose a /metrics endpoint. Grep for promhttp in
+  # services/web/ returns zero hits. Adding a scrape job here would
+  # permanently report up{} = 0 with every 15s scrape returning
+  # 404. When web gains request-level metrics the job can come
+  # back.
   - job_name: otel-collector
     static_configs:
       - targets: ['otel-collector:8889']
