@@ -13,8 +13,10 @@ ARG VERSION=0.0.0-dev
 RUN go build -ldflags="-s -w -X github.com/t0pm1x/orderflow/services/web/internal/web.Version=${VERSION}" -o /out/web .
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl
 COPY --from=build /out/web /usr/local/bin/web
 EXPOSE 8083
 USER nobody:nobody
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://localhost:8083/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/web"]
