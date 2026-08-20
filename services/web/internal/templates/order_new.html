@@ -24,7 +24,10 @@
       <input id="customer_id" name="customer_id" placeholder="leave blank for auto-generated UUID" autocomplete="off" value="{{.CustomerID}}">
     </div>
     <div class="row">
-      <button type="submit" hx-disabled-elt="this" aria-busy="false">Submit order</button>
+      <button type="submit" hx-disabled-elt="this" aria-busy="false">
+        <span class="htmx-indicator" aria-hidden="true"></span>
+        Submit order
+      </button>
       <a class="btn secondary" href="/">Cancel</a>
     </div>
   </form>

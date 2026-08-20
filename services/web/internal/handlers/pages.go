@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -257,6 +258,15 @@ type orderDetailVM struct {
 // PageOrderDetail serves GET /orders/{id} — renders the order
 // detail page. While the order is non-terminal the page polls
 // itself every 1s via htmx; otherwise it renders once.
+//
+// DETAIL-NOTFOUND-MISCLASSIFIED fix: upstream 404 ("order doesn't
+// exist") no longer flips BackendDown=true. The pre-fix code
+// conflated "bad URL" with "transport failure" — the user saw
+// "Backend unavailable: Not found." which is the wrong diagnosis
+// (their URL is wrong, the backend is fine). Now 404 keeps
+// BackendDown=false and renders a distinct banner so the user
+// knows to fix the URL. 5xx + transport errors still set
+// BackendDown.
 func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if _, ok := parseUUID(id); !ok {
@@ -267,8 +277,17 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 	o, err := s.Order.Get(r.Context(), id)
 	if err != nil {
 		msg, status := mapUpstreamError(s.Logger, "GET /v1/orders/{id}", err)
-		vm.BackendDown = true
-		vm.Error = msg
+		if status == http.StatusNotFound {
+			// Order doesn't exist: distinct message; do NOT
+			// claim the backend is unavailable. The user typed
+			// a wrong URL or followed a stale link — fix the
+			// link, don't ping the backend.
+			vm.BackendDown = false
+			vm.Error = msg
+		} else {
+			vm.BackendDown = true
+			vm.Error = msg
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(status)
 		if r.URL.Query().Get("frag") == "1" {
@@ -319,10 +338,11 @@ func (s *Set) PageOrderEvents(w http.ResponseWriter, r *http.Request) {
 
 // ActionOrderCancel serves POST /v1/orders/{id} — form submission
 // for the Cancel button on the order detail page. On success
-// returns HX-Redirect to /orders/{id}; upstream 401/404 surface
-// as 404 BFF (cancel can't proceed if the order doesn't exist),
-// 5xx + transport errors stay 502. The handler requires an
-// `idempotency_token` form field and rejects repeat submissions
+// returns HX-Redirect to /orders/{id}; upstream 404 (order not
+// found) and 409 (order already terminal — audit WEB-3-CANCEL-409)
+// surface as BFF 404 and 409 respectively with distinct banner
+// messages; 5xx + transport errors stay 502. The handler requires
+// an `idempotency_token` form field and rejects repeat submissions
 // within the replay window with 409, and rejects non-UUID {id}
 // path params with 400.
 func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
@@ -342,13 +362,12 @@ func (s *Set) ActionOrderCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Order.Cancel(r.Context(), id); err != nil {
 		msg, status := mapUpstreamError(s.Logger, "DELETE /v1/orders/{id}", err)
-		if status == http.StatusNotFound {
-			// Cancel can't proceed if the order doesn't exist; fold
-			// 404 upstream into BFF 404 regardless of the helper's
-			// status (which keeps 404 as 404 in the map).
-			http.Error(w, msg, http.StatusNotFound)
-			return
-		}
+		// WEB-3-CANCEL-409 fix: surface both 404 (order doesn't
+		// exist) and 409 (order is already terminal) with their
+		// own banner messages via mapUpstreamError. Pre-fix the
+		// code folded both into a plain-text 404, so operators
+		// who retried a cancel on a previously-cancelled order
+		// saw the same error as a typo'd id.
 		http.Error(w, msg, status)
 		return
 	}
@@ -450,9 +469,16 @@ type paymentsSimVM struct {
 // a double-click on force ✓ cannot trigger a duplicate force ✗
 // (and vice-versa) — the form-render contract is "one token per
 // submit button, valid for the lifetime of this page render".
+//
+// LastFour is the order's stored card last-four (if any) so the
+// simulator can pass it on the webhook and let the upstream's
+// errorCode() fallback pick a card-derived failure reason
+// (audit Payment-missing-last_four fix). When empty the upstream
+// falls back to "network_error".
 type paymentsRow struct {
 	ID             string
 	State          backend.OrderState
+	LastFour       string
 	TokenForceOK   string
 	TokenForceFail string
 }
@@ -479,6 +505,7 @@ func (s *Set) PagePaymentsSim(w http.ResponseWriter, r *http.Request) {
 			vm.InFlight = append(vm.InFlight, paymentsRow{
 				ID:             o.ID,
 				State:          o.State,
+				LastFour:       o.LastFour,
 				TokenForceOK:   newIdempotencyToken(),
 				TokenForceFail: newIdempotencyToken(),
 			})
@@ -552,6 +579,11 @@ func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 		PaymentID: orderID, // deterministic on order_id (idempotent in mock)
 		Status:    status,
 		ErrorCode: errorCode,
+		// Payment-missing-last_four fix: forward the stored
+		// card last-four so the upstream's errorCode() fallback
+		// can pick a card-derived reason when no explicit
+		// error_code is set.
+		LastFour: r.FormValue("last_four"),
 	}
 	if err := s.Payment.FireWebhook(r.Context(), wh); err != nil {
 		msg, status := mapUpstreamError(s.Logger, "POST /payments/sim/fire", err)
@@ -562,14 +594,28 @@ func (s *Set) ActionPaymentsFire(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// PageEventsStream serves GET /events/stream as Server-Sent Events.
-// It subscribes to s.Bus and emits one `event: <type>\ndata: <json>\n\n`
-// line per envelope. A 15s heartbeat keeps proxies from idling the
-// connection; ctx.Done() is honored for client disconnect.
 // PageEventsStream serves GET /events/stream — Server-Sent Events
 // subscribed to the in-process event bus. The Kafka tail goroutine
 // publishes each Kafka envelope onto the bus; this handler
 // relays them to the browser with a 15s heartbeat.
+//
+// WEB-1-LAST-EVENT-ID fix: the handler now reads the
+// `Last-Event-ID` header (sent by the browser's EventSource on
+// reconnect) and replays the in-memory ring buffer's events with
+// id > Last-Event-ID before subscribing. Pre-fix the handler
+// emitted `id:` lines on every event but never honored the
+// `Last-Event-ID` header, so a brief network blip permanently
+// dropped any events the browser missed. Now the browser's
+// standard EventSource reconnect + htmx-sse retry combine with
+// the ring-buffer replay to close the reconnect gap.
+//
+// Replay semantics: the ring buffer is bounded at 200 entries
+// (bus.RingCap). If the disconnect window exceeds the ring's
+// reach, the browser starts from "now" — no events lost from the
+// outbox/Kafka, but the UI may miss events that left the bus
+// before reconnect. For the orderflow-web playground that's an
+// acceptable trade-off (the polling timeline page fills in any
+// server-side events the UI missed).
 func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
 	if !s.EventsEnabled {
 		// No Kafka tail is running (KAFKA_BROKERS unset or tail
@@ -590,6 +636,22 @@ func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+
+	// Replay ring-buffer events newer than the client's
+	// Last-Event-ID before subscribing. The replay runs first
+	// (synchronously, before the subscribe) so the browser sees
+	// any events that fired while it was disconnected before
+	// any events that fire from this point on.
+	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
+		for _, env := range s.Bus.HistoryAll() {
+			if env.EventID <= lastID {
+				continue
+			}
+			if !writeSSE(w, flusher, &env, s.Logger) {
+				return
+			}
+		}
+	}
 
 	ch, unsub := s.Bus.Subscribe()
 	defer unsub()
@@ -615,19 +677,29 @@ func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(ev.Envelope)
-			if err != nil {
-				s.Logger.Warn("SSE marshal envelope failed",
-					"event_id", ev.Envelope.EventID,
-					"event_type", ev.Envelope.EventType,
-					"err", err,
-				)
-				continue
-			}
-			if _, err := fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", ev.Envelope.EventID, ev.Envelope.EventType, data); err != nil {
+			if !writeSSE(w, flusher, &ev.Envelope, s.Logger) {
 				return
 			}
-			flusher.Flush()
 		}
 	}
+}
+
+// writeSSE serializes one envelope as `id:` + `event:` + `data:`
+// lines and flushes. Returns false if the write or flush failed
+// (client disconnected); the caller should return immediately.
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, env *pkgEvents.Envelope, logger *slog.Logger) bool {
+	data, err := json.Marshal(env)
+	if err != nil {
+		logger.Warn("SSE marshal envelope failed",
+			"event_id", env.EventID,
+			"event_type", env.EventType,
+			"err", err,
+		)
+		return true // marshal failure on one event shouldn't kill the stream
+	}
+	if _, err := fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", env.EventID, env.EventType, data); err != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
 }

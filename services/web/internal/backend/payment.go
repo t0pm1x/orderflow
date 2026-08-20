@@ -18,6 +18,13 @@ const idempotencyPrefix = "orderflow-web:"
 // force-fail simulator (see /payments/sim). Sets a deterministic
 // Idempotency-Key so the upstream's idempotency middleware can
 // dedupe replays.
+//
+// last_four is forwarded when set so the upstream's errorCode()
+// fallback can pick a card-derived reason ("0001" → "card_declined",
+// "0002" → "insufficient_funds") instead of always defaulting to
+// "network_error" (audit Payment-missing-last_four fix). The web
+// simulator passes the last_four it remembers from the order
+// submission; a real client would pass the card's stored last four.
 func (c *HTTPClient) FireWebhook(ctx context.Context, w PaymentWebhook) error {
 	body, _ := json.Marshal(w)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

@@ -41,7 +41,7 @@ func (m *mockRepo) Insert(_ context.Context, o *domain.Order, events ...outbox.R
 func (m *mockRepo) Get(_ context.Context, id types.OrderID) (*domain.Order, error) {
 	o, ok := m.orders[id]
 	if !ok {
-		return nil, errNotFound
+		return nil, errOrderNotFound
 	}
 	return o, nil
 }
@@ -152,7 +152,7 @@ func TestSubmit_EmitsOrderCreatedEvent(t *testing.T) {
 
 func TestGet_OK(t *testing.T) {
 	repo := newMockRepo()
-	o := domain.NewOrder(types.NewCustomerID(), []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 100}})
+	o := domain.NewOrder(types.NewCustomerID(), []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: ptr(100)}})
 	if err := repo.Insert(context.Background(), o); err != nil {
 		t.Fatalf("mockRepo.Insert: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestList_OK(t *testing.T) {
 // the web's pagination UI and fail this test.
 func TestList_NextCursor_SetWhenPageFull(t *testing.T) {
 	repo := newMockRepo()
-	o := domain.NewOrder(types.NewCustomerID(), []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 100}})
+	o := domain.NewOrder(types.NewCustomerID(), []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: ptr(100)}})
 	if err := repo.Insert(context.Background(), o); err != nil {
 		t.Fatalf("mockRepo.Insert: %v", err)
 	}
@@ -274,11 +274,11 @@ func TestCancel_OK(t *testing.T) {
 }
 
 // TestCancel_NotFound asserts that a missing id returns 404 (not 204).
-// Repository surfaces ErrNotFound for unknown ids and for terminal
-// states that cannot be cancelled; the handler maps that to a 404.
+// Repository surfaces ErrOrderNotFound for unknown ids; the handler
+// maps that to a 404.
 func TestCancel_NotFound(t *testing.T) {
 	repo := newMockRepo()
-	repo.cancelErr = errNotFound
+	repo.cancelErr = errOrderNotFound
 	h := NewHandler(repo)
 	id := types.NewOrderID()
 	req := httptest.NewRequest("DELETE", "/v1/orders/"+id.String(), nil)
@@ -286,6 +286,24 @@ func TestCancel_NotFound(t *testing.T) {
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status: got %d want 404", w.Code)
+	}
+}
+
+// TestCancel_AlreadyTerminal asserts that a Cancel against an order
+// in a terminal state returns 409 Conflict (not 404) — audit
+// WEB-3-CANCEL-409 fix. The previous code folded both cases into
+// 404 "Not found", which made terminal-state cancels look the
+// same as never-existed ids to the operator.
+func TestCancel_AlreadyTerminal(t *testing.T) {
+	repo := newMockRepo()
+	repo.cancelErr = errAlreadyTerminal
+	h := NewHandler(repo)
+	id := types.NewOrderID()
+	req := httptest.NewRequest("DELETE", "/v1/orders/"+id.String(), nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Errorf("status: got %d want 409", w.Code)
 	}
 }
 

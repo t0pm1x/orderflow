@@ -38,10 +38,15 @@ import (
 // is referenced in services/order/migrations/0001_init.sql.
 const Table = "orders"
 
-// ErrNotFound is returned by Get/Cancel when the order does not
-// exist or cannot be cancelled (already terminal). api.Repository
-// callers translate this into a 404.
-var ErrNotFound = errors.New("order not found")
+// ErrNotFound is an alias for domain.ErrOrderNotFound so callers
+// who import only repository (and not domain) keep working. Lives
+// here for backwards compatibility — new code should use
+// domain.ErrOrderNotFound.
+var ErrNotFound = domain.ErrOrderNotFound
+
+// ErrAlreadyTerminal is an alias for domain.ErrOrderAlreadyTerminal.
+// The api handler maps it to 409 Conflict (audit WEB-3-CANCEL-409).
+var ErrAlreadyTerminal = domain.ErrOrderAlreadyTerminal
 
 // PGRepo is the PostgreSQL-backed implementation of api.Repository.
 type PGRepo struct {
@@ -132,7 +137,15 @@ func (r *PGRepo) Get(ctx context.Context, id types.OrderID) (*domain.Order, erro
 // `state NOT IN ('confirmed','cancelled','failed')` matches the
 // P1-#2 consumer-side SQL (services/order/internal/consumer/handlers.go:126)
 // so a Cancel request against an already-terminal or unknown id is
-// a no-op and returns ErrNotFound (no outbox row emitted).
+// a no-op.
+//
+// WEB-3-CANCEL-409 fix: RowsAffected==0 is split into ErrNotFound
+// (row doesn't exist) and ErrAlreadyTerminal (row exists but is
+// already terminal). The pre-fix code collapsed both into
+// ErrNotFound which the handler mapped to 404 — so a previously
+// cancelled order looked the same to the operator as a typo'd id.
+// Now the handler maps each to a distinct status code (404 vs
+// 409) and the BFF surfaces a distinct banner message.
 //
 // Atomicity is critical: if the UPDATE rolled back but the outbox
 // row committed, inventory would release stock against an order
@@ -168,10 +181,28 @@ func (r *PGRepo) Cancel(ctx context.Context, id types.OrderID) error {
 			  WHERE id = $1
 			    AND state NOT IN ('confirmed', 'cancelled', 'failed')`, id)
 		if err != nil {
-			return fmt.Errorf("update order: %w", err)
+			return fmt.Errorf("update order: %v", err)
 		}
 		if tag.RowsAffected() == 0 {
-			return ErrNotFound
+			// Distinguish "row doesn't exist" (404) from "row is
+			// already terminal" (409). The lookup uses a SELECT
+			// rather than an EXISTS-with-state so we report
+			// terminal-state transitions to the operator instead
+			// of folding them into a silent "no-op".
+			var state string
+			err := tx.QueryRow(ctx, `SELECT state FROM orders WHERE id = $1`, id).Scan(&state)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrOrderNotFound
+			}
+			if err != nil {
+				return fmt.Errorf("lookup order state: %w", err)
+			}
+			// state is one of confirmed/cancelled/failed by
+			// construction (the UPDATE's WHERE clause filtered
+			// these out, and we only get RowsAffected=0 if all
+			// other states also matched zero rows). The error
+			// string carries the state for the operator.
+			return fmt.Errorf("%w: state=%s", domain.ErrOrderAlreadyTerminal, state)
 		}
 		if err := r.writer.Append(ctx, tx, rec); err != nil {
 			return fmt.Errorf("insert outbox: %w", err)

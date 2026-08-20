@@ -15,8 +15,12 @@
           <form method="post" action="/payments/sim/fire" hx-post="/payments/sim/fire" hx-swap="none">
             <input type="hidden" name="order_id" value="{{.ID}}">
             <input type="hidden" name="status" value="succeeded">
+            <input type="hidden" name="last_four" value="{{.LastFour}}">
             <input type="hidden" name="idempotency_token" value="{{.TokenForceOK}}">
-            <button type="submit" hx-disabled-elt="this" aria-label="Fire a succeeded webhook for this order">Force succeed (&check;)</button>
+            <button type="submit" hx-disabled-elt="this" aria-busy="false" aria-label="Fire a succeeded webhook for this order">
+              <span class="htmx-indicator" aria-hidden="true"></span>
+              Force succeed (&check;)
+            </button>
           </form>
         </td>
         <td>
@@ -24,8 +28,12 @@
             <input type="hidden" name="order_id" value="{{.ID}}">
             <input type="hidden" name="status" value="failed">
             <input type="hidden" name="error_code" value="card_declined">
+            <input type="hidden" name="last_four" value="{{.LastFour}}">
             <input type="hidden" name="idempotency_token" value="{{.TokenForceFail}}">
-            <button type="submit" class="danger" hx-disabled-elt="this" aria-label="Fire a failed webhook with error code card_declined">Force fail (&cross; card_declined)</button>
+            <button type="submit" class="danger" hx-disabled-elt="this" aria-busy="false" aria-label="Fire a failed webhook with error code card_declined">
+              <span class="htmx-indicator" aria-hidden="true"></span>
+              Force fail (&cross; card_declined)
+            </button>
           </form>
         </td>
       </tr>

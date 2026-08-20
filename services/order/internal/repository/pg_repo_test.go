@@ -27,6 +27,11 @@ import (
 	"github.com/t0pm1x/orderflow/services/order/internal/domain"
 )
 
+// ptr helper for tests: wrap an int64 literal as *int64 (matches
+// domain.OrderItem.UnitPriceCents which became a pointer in the
+// UnitPriceCents pointer-vs-value fix).
+func ptr(v int64) *int64 { return &v }
+
 // testDB returns a connected pgxpool against the database referenced
 // by DATABASE_URL, with the Order Service's migrations applied first.
 // If DATABASE_URL is empty, the test is skipped (the package is
@@ -152,8 +157,8 @@ func TestPGRepo_InsertGetRoundTrip(t *testing.T) {
 		ID:         orderID,
 		CustomerID: custID,
 		Items: []domain.OrderItem{
-			{SKU: "SKU-1", Quantity: 2, UnitPriceCents: 250},
-			{SKU: "SKU-2", Quantity: 1, UnitPriceCents: 999},
+			{SKU: "SKU-1", Quantity: 2, UnitPriceCents: ptr(250)},
+			{SKU: "SKU-2", Quantity: 1, UnitPriceCents: ptr(999)},
 		},
 		State:      domain.StatePending,
 		TotalCents: types.NewMoneyFromCents(2*250 + 999),
@@ -183,7 +188,7 @@ func TestPGRepo_InsertGetRoundTrip(t *testing.T) {
 	if len(got.Items) != 2 {
 		t.Fatalf("Items: got %d want 2", len(got.Items))
 	}
-	if got.Items[0].SKU != "SKU-1" || got.Items[1].UnitPriceCents != 999 {
+	if got.Items[0].SKU != "SKU-1" || got.Items[1].UnitPriceCents == nil || *got.Items[1].UnitPriceCents != 999 {
 		t.Errorf("Items mismatch: %+v", got.Items)
 	}
 	if got.LastFour != "4242" {
@@ -279,7 +284,7 @@ func TestPGRepo_Insert_LastFourEmptyPersistsAsNull(t *testing.T) {
 	o := &domain.Order{
 		ID:         id,
 		CustomerID: types.NewCustomerID(),
-		Items:      []domain.OrderItem{{SKU: "X", Quantity: 1, UnitPriceCents: 100}},
+		Items:      []domain.OrderItem{{SKU: "X", Quantity: 1, UnitPriceCents: ptr(100)}},
 		State:      domain.StatePending,
 		TotalCents: types.NewMoneyFromCents(100),
 		// LastFour deliberately left empty.
@@ -319,7 +324,7 @@ func TestPGRepo_InsertWithOutboxEvent(t *testing.T) {
 	o := &domain.Order{
 		ID:         orderID,
 		CustomerID: types.NewCustomerID(),
-		Items:      []domain.OrderItem{{SKU: "S", Quantity: 1, UnitPriceCents: 100}},
+		Items:      []domain.OrderItem{{SKU: "S", Quantity: 1, UnitPriceCents: ptr(100)}},
 		State:      domain.StatePending,
 		TotalCents: types.NewMoneyFromCents(100),
 	}
@@ -372,14 +377,14 @@ func TestPGRepo_ListFiltersByState(t *testing.T) {
 	pending := &domain.Order{
 		ID:         types.NewOrderID(),
 		CustomerID: types.NewCustomerID(),
-		Items:      []domain.OrderItem{{SKU: "P", Quantity: 1, UnitPriceCents: 10}},
+		Items:      []domain.OrderItem{{SKU: "P", Quantity: 1, UnitPriceCents: ptr(10)}},
 		State:      domain.StatePending,
 		TotalCents: types.NewMoneyFromCents(10),
 	}
 	confirmed := &domain.Order{
 		ID:         types.NewOrderID(),
 		CustomerID: types.NewCustomerID(),
-		Items:      []domain.OrderItem{{SKU: "C", Quantity: 1, UnitPriceCents: 20}},
+		Items:      []domain.OrderItem{{SKU: "C", Quantity: 1, UnitPriceCents: ptr(20)}},
 		State:      domain.StateConfirmed,
 		TotalCents: types.NewMoneyFromCents(20),
 	}
@@ -422,14 +427,14 @@ func TestPGRepo_ListEmptyStateReturnsAll(t *testing.T) {
 	a := &domain.Order{
 		ID:         types.NewOrderID(),
 		CustomerID: types.NewCustomerID(),
-		Items:      []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 10}},
+		Items:      []domain.OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: ptr(10)}},
 		State:      domain.StatePending,
 		TotalCents: types.NewMoneyFromCents(10),
 	}
 	b := &domain.Order{
 		ID:         types.NewOrderID(),
 		CustomerID: types.NewCustomerID(),
-		Items:      []domain.OrderItem{{SKU: "B", Quantity: 1, UnitPriceCents: 20}},
+		Items:      []domain.OrderItem{{SKU: "B", Quantity: 1, UnitPriceCents: ptr(20)}},
 		State:      domain.StateConfirmed,
 		TotalCents: types.NewMoneyFromCents(20),
 	}

@@ -34,7 +34,10 @@
     {{if not (or (eq .Order.State "cancelled") (eq .Order.State "failed") (eq .Order.State "confirmed"))}}
     <form method="post" action="/v1/orders/{{.Order.ID}}" hx-post="/v1/orders/{{.Order.ID}}" hx-swap="none" style="margin-top:16px">
       <input type="hidden" name="idempotency_token" value="{{.IdempotencyToken}}">
-      <button type="submit" class="danger" hx-disabled-elt="this">Cancel order</button>
+      <button type="submit" class="danger" hx-disabled-elt="this" aria-busy="false">
+        <span class="htmx-indicator" aria-hidden="true"></span>
+        Cancel order
+      </button>
     </form>
     {{end}}
     <h3>Saga timeline</h3>

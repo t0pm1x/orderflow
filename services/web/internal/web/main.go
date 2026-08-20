@@ -12,7 +12,9 @@ import (
 	"os/signal"
 	"sync/atomic"
 	"syscall"
+	"time"
 
+	"github.com/t0pm1x/orderflow/platform"
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 	"github.com/t0pm1x/orderflow/services/web/internal/events"
 	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
@@ -58,27 +60,56 @@ func redact(s string) string {
 
 // Run blocks until ctx is cancelled (SIGTERM/SIGINT). Returns nil on
 // clean shutdown. The order of work:
-//  1. Init tracing (no-op in this stage; Task 3 wires the actual
-//     HTTP server start).
-//  2. Block on ctx.
-//  3. Return nil.
+//  1. Seed OTLP defaults, set JSON slog default, init OTel tracing.
+//  2. Build the event bus, BFF backend client, handler set.
+//  3. Start the Kafka tail (with reconnect loop; KAFKA-NO-RECONNECT).
+//  4. Start the HTTP server.
+//  5. Block on ctx, then shut everything down.
 //
-// Future tasks extend this with: HTTP server goroutine (Task 3),
-// Kafka tail goroutine (Task 10). Both will use a *sync.WaitGroup
-// to wait for shutdown before Run returns, matching the saga
-// shutdown pattern.
+// NO-TRACING / NO-JSON-LOGGER / NO-OTLP-DEFAULTS fix: web now
+// matches the four backend services — JSON slog, OTLP exporter
+// defaults, OTel tracer provider with service.name="web" +
+// service.version=Version, and a defer that flushes spans on
+// shutdown. Pre-fix, web spans had no resource attributes so the
+// Tempo service map couldn't identify them, and the default
+// text-format slog made Loki log parsing impossible.
 func Run(ctx context.Context) error {
+	// OTLP defaults: only set when not already present so an
+	// operator's explicit OTEL_EXPORTER=stdout still wins.
+	if os.Getenv("OTEL_EXPORTER") == "" {
+		_ = os.Setenv("OTEL_EXPORTER", "otlp")
+	}
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
+		_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
+	}
+	// JSON default logger so structured-log pipelines (Loki,
+	// Datadog, etc.) can ingest web's stdout.
+	slog.SetDefault(platform.NewLogger())
 	logger := slog.Default()
 
 	logger.Info("orderflow-web starting",
 		"version", Version,
-		"http_addr", envOrDefault("HTTP_ADDR", ":8083"),
+		"http_addr", envOrDefault("HTTP_ADDR", ":8085"),
 		"order_url", redact(envOrDefault("ORDER_URL", "http://localhost:8081")),
 		"payment_url", redact(envOrDefault("PAYMENT_URL", "http://localhost:8082")),
 		"inventory_url", redact(envOrDefault("INVENTORY_URL", "http://localhost:8083")),
 		"kafka_brokers", redact(envOrDefault("KAFKA_BROKERS", "")))
 
-	httpAddr := envOrDefault("HTTP_ADDR", ":8083")
+	// Init tracing — sets service.name="web" + service.version=Version
+	// on every span emitted from this process. Returns a shutdown
+	// func that flushes pending spans; we defer it so SIGTERM
+	// doesn't drop telemetry.
+	shutdownTracing, err := platform.InitTracing(ctx, "web", Version)
+	if err != nil {
+		return fmt.Errorf("init tracing: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(shutdownCtx)
+	}()
+
+	httpAddr := envOrDefault("HTTP_ADDR", ":8085")
 	orderURL := envOrDefault("ORDER_URL", "http://localhost:8081")
 	paymentURL := envOrDefault("PAYMENT_URL", "http://localhost:8082")
 	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8083")
@@ -88,7 +119,17 @@ func Run(ctx context.Context) error {
 	bc := backend.New(nil, orderURL, paymentURL, inventoryURL)
 	hSet := handlers.NewSet(bc, bc, bc, bus, logger)
 
-	stopTail, err := kafkatail.Start(ctx, logger, envOrDefault("KAFKA_BROKERS", ""), bus)
+	// KAFKA-BROKER-NAME-MISMATCH fix: accept either KAFKA_BROKER
+	// (singular, the legacy convention used by the tests/chaos
+	// harness and the v1.1.x Helm charts) or KAFKA_BROKERS
+	// (plural, the new convention). Prefer the singular if set
+	// (the plural would be empty in any of the test paths that
+	// still set only the singular).
+	kafkaBrokers := envOrDefault("KAFKA_BROKERS", "")
+	if singular := os.Getenv("KAFKA_BROKER"); singular != "" && kafkaBrokers == "" {
+		kafkaBrokers = singular
+	}
+	stopTail, err := kafkatail.Start(ctx, logger, kafkaBrokers, bus)
 	if err != nil {
 		return fmt.Errorf("kafka tail: %w", err)
 	}

@@ -163,6 +163,22 @@ func (b *Bus) History(aggregateID string) []pkgEvents.Envelope {
 	return out
 }
 
+// HistoryAll returns every event in the ring buffer, oldest first,
+// across all aggregate ids. Used by the SSE handler to replay
+// events newer than a Last-Event-ID header on reconnect
+// (WEB-1-LAST-EVENT-ID fix). The returned slice is bounded by
+// ringCap; events that overflowed the ring were already dropped
+// at Publish time.
+func (b *Bus) HistoryAll() []pkgEvents.Envelope {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]pkgEvents.Envelope, 0, len(b.ring))
+	for _, e := range b.ring {
+		out = append(out, e.env)
+	}
+	return out
+}
+
 // Close marks the bus as closed. Subsequent Publish is a no-op;
 // all subscriber channels are closed.
 func (b *Bus) Close() {

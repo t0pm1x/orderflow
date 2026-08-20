@@ -40,9 +40,12 @@ func mapUpstreamError(logger *slog.Logger, route string, err error) (userMsg str
 			case http.StatusBadRequest:
 				return "The order service rejected the request. Please check your input.", http.StatusBadRequest
 			case http.StatusNotFound:
-				return "Not found.", http.StatusNotFound
+				return "Order not found.", http.StatusNotFound
 			case http.StatusConflict:
-				return "Conflict \u2014 the order may already be in this state.", http.StatusConflict
+				// WEB-3-CANCEL-409 fix: terminal-state cancel
+				// surfaces as a distinct banner message instead
+				// of being folded into a silent 404 "Not found".
+				return "This order is already in a terminal state and cannot be modified.", http.StatusConflict
 			case http.StatusUnprocessableEntity:
 				return "The request was understood but rejected. Please check your input.", http.StatusBadRequest
 			default:

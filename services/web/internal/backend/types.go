@@ -61,13 +61,21 @@ const (
 	OrderStateFailed OrderState = "failed"
 )
 
-// Order matches `Order` in api/openapi.yaml:257-288.
+// Order matches `Order` in api/openapi.yaml:257-288. LastFour is
+// the operator-supplied card last-four the order service stores
+// on the orders row at submit time and forwards into the
+// OrderCreated event so the saga's PaymentRequested event carries
+// it. The payments simulator reads it to populate the webhook
+// body's last_four so the upstream's errorCode() fallback picks
+// the correct card-derived failure reason (audit
+// Payment-missing-last_four fix).
 type Order struct {
 	ID          string      `json:"id"`
 	CustomerID  *string     `json:"customer_id,omitempty"`
 	Items       []OrderItem `json:"items"`
 	State       OrderState  `json:"state"`
 	TotalCents  *int64      `json:"total_cents,omitempty"`
+	LastFour    string      `json:"last_four,omitempty"`
 	CreatedAt   time.Time   `json:"created_at"`
 	UpdatedAt   time.Time   `json:"updated_at"`
 	CompletedAt *time.Time  `json:"completed_at,omitempty"`
@@ -93,8 +101,16 @@ type StockItem struct {
 }
 
 // PaymentWebhook matches `PaymentWebhook` in api/openapi.yaml:302-316.
+// LastFour is the operator-supplied card last-four; the payment
+// service's errorCode() fallback uses it to derive a default
+// failure reason when no explicit error_code is set
+// (audit Payment-missing-last_four fix). Without it, the fallback
+// always picks "network_error" — meaning every force-fail without
+// an explicit error_code (e.g. a future caller that wires up a new
+// sim button) gets the wrong failure reason.
 type PaymentWebhook struct {
 	PaymentID string `json:"payment_id"`
 	Status    string `json:"status"` // "succeeded" | "failed"
 	ErrorCode string `json:"error_code,omitempty"`
+	LastFour  string `json:"last_four,omitempty"`
 }

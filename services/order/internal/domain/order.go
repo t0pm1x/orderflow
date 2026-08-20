@@ -9,10 +9,20 @@ import (
 // OrderItem is a single line item on an Order: SKU, quantity, and
 // unit price in cents. Total cost is derived from these fields when
 // the order is constructed.
+//
+// UnitPriceCents is a *int64 (pointer with omitempty) so a server-
+// side price lookup (future enhancement) can emit JSON with no
+// `unit_price_cents` field at all, and the web UI's
+// `{{if .UnitPriceCents}}` template branch correctly renders the
+// "auto" placeholder (audit UnitPriceCents pointer-vs-value fix).
+// Pre-fix the field was a plain int64 always emitted; the web
+// decoded it into *int64 and the pointer was always non-nil even
+// when the value was 0, so the "auto" branch was unreachable and
+// orders without an explicit price rendered as "0¢".
 type OrderItem struct {
 	SKU            string `json:"sku"`
 	Quantity       int    `json:"quantity"`
-	UnitPriceCents int64  `json:"unit_price_cents"`
+	UnitPriceCents *int64 `json:"unit_price_cents,omitempty"`
 }
 
 // Order is the Order aggregate root. Its lifecycle is driven by
@@ -42,7 +52,11 @@ type Order struct {
 func NewOrder(customerID types.CustomerID, items []OrderItem) *Order {
 	var total int64
 	for _, it := range items {
-		total += int64(it.Quantity) * it.UnitPriceCents
+		price := int64(0)
+		if it.UnitPriceCents != nil {
+			price = *it.UnitPriceCents
+		}
+		total += int64(it.Quantity) * price
 	}
 	now := time.Now().UTC()
 	return &Order{

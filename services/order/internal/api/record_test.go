@@ -7,13 +7,17 @@ import (
 	"github.com/t0pm1x/orderflow/services/order/internal/domain"
 )
 
+// ptr is a tiny helper for test code: turn an int64 literal into
+// the *int64 domain.OrderItem.UnitPriceCents shape.
+func ptr(v int64) *int64 { return &v }
+
 func TestBuildOrderCreatedRecord_HappyPath(t *testing.T) {
 	custID, _ := parseCustomerID("550e8400-e29b-41d4-a716-446655440000")
 	o := domain.NewOrder(
 		custID,
 		[]domain.OrderItem{
-			{SKU: "A", Quantity: 2, UnitPriceCents: 150},
-			{SKU: "B", Quantity: 1, UnitPriceCents: 500},
+			{SKU: "A", Quantity: 2, UnitPriceCents: ptr(150)},
+			{SKU: "B", Quantity: 1, UnitPriceCents: ptr(500)},
 		},
 	)
 	rec, err := buildOrderCreatedRecord(o)

@@ -160,7 +160,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 
 	o, err := h.repo.Get(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, errNotFound) {
+		if errors.Is(err, errOrderNotFound) {
 			apierrors.WriteError(w, apierrors.ErrNotFound)
 			return
 		}
@@ -201,6 +201,12 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 // returns 204. The Repository writes the state transition and the
 // OrderCancelled outbox row in a single transaction so a downstream
 // consumer (inventory) is guaranteed to see the same event.
+//
+// WEB-3-CANCEL-409: terminal-state cancels return 409 Conflict
+// (not 404) so the BFF can render a distinct "already in this
+// state" message instead of folding it into a silent "Not found".
+// Pre-fix, every operator retrying a cancel on a previously-
+// cancelled order saw the same error as a typo'd id.
 func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, parseErr := parseOrderID(idStr)
@@ -209,8 +215,16 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.Cancel(r.Context(), id); err != nil {
-		if errors.Is(err, errNotFound) {
+		if errors.Is(err, errOrderNotFound) {
 			apierrors.WriteError(w, apierrors.ErrNotFound)
+			return
+		}
+		if errors.Is(err, errAlreadyTerminal) {
+			apierrors.WriteError(w, &apierrors.APIError{
+				Status:  http.StatusConflict,
+				Code:    "ORDER_ALREADY_TERMINAL",
+				Message: "order is already in a terminal state (confirmed/cancelled/failed)",
+			})
 			return
 		}
 		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "CANCEL_FAILED", err.Error(), err))
@@ -246,7 +260,20 @@ func buildOrderCreatedRecord(o *domain.Order) (outbox.Record, error) {
 	}, nil
 }
 
-var errNotFound = errors.New("not found")
+// errAlreadyTerminal aliases domain.ErrOrderAlreadyTerminal so the
+// errors.Is check works in both the mock-based unit tests (which
+// return this local symbol) and the real PGRepo path (which returns
+// the same symbol via repository.ErrAlreadyTerminal -> domain.
+// ErrOrderAlreadyTerminal). See WEB-3-CANCEL-409 fix.
+var errAlreadyTerminal = domain.ErrOrderAlreadyTerminal
+
+// errOrderNotFound aliases domain.ErrOrderNotFound so the handler's
+// errors.Is check also matches the real PG repo's return value
+// (which is the same symbol via repository.ErrNotFound). Pre-fix
+// only the mock repo returned a local errNotFound, so the real PG
+// path returned 500 Internal Server Error on every cancel-404
+// and every get-404 instead of the documented 404.
+var errOrderNotFound = domain.ErrOrderNotFound
 
 func parseOrderID(s string) (types.OrderID, *apierrors.APIError) {
 	u, err := uuid.Parse(s)

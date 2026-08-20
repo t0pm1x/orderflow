@@ -10,10 +10,14 @@ import (
 	"github.com/t0pm1x/orderflow/platform/types"
 )
 
+// ptr is a tiny helper for tests: turn an int64 literal into the
+// *int64 OrderItem.UnitPriceCents shape.
+func ptr(v int64) *int64 { return &v }
+
 func TestNewOrder(t *testing.T) {
 	items := []OrderItem{
-		{SKU: "A", Quantity: 2, UnitPriceCents: 1000},
-		{SKU: "B", Quantity: 1, UnitPriceCents: 500},
+		{SKU: "A", Quantity: 2, UnitPriceCents: ptr(1000)},
+		{SKU: "B", Quantity: 1, UnitPriceCents: ptr(500)},
 	}
 	o := NewOrder(types.NewCustomerID(), items)
 	if o.State != StatePending {
@@ -27,8 +31,28 @@ func TestNewOrder(t *testing.T) {
 	}
 }
 
+// TestNewOrder_NilPrice covers the UnitPriceCents pointer-vs-value
+// fix: an order item without an explicit price must produce 0 total
+// cents (not a panic), and the JSON wire shape must omit the
+// unit_price_cents field so the web UI can render "auto".
+func TestNewOrder_NilPrice(t *testing.T) {
+	o := NewOrder(types.NewCustomerID(), []OrderItem{
+		{SKU: "A", Quantity: 2, UnitPriceCents: nil},
+	})
+	if int64(o.TotalCents) != 0 {
+		t.Errorf("nil price: total = %d, want 0", int64(o.TotalCents))
+	}
+	data, err := json.Marshal(o)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "unit_price_cents") {
+		t.Errorf("nil price should be omitted from JSON: %s", string(data))
+	}
+}
+
 func TestTransition_HappyPath(t *testing.T) {
-	o := NewOrder(types.NewCustomerID(), []OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 100}})
+	o := NewOrder(types.NewCustomerID(), []OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: ptr(100)}})
 	if err := o.Transition(StateReserved); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +89,7 @@ func TestCanTransition_TerminalStates(t *testing.T) {
 // `{"id": [16 byte array]}`. Verify Order.ID and Order.CustomerID
 // marshal as JSON strings.
 func TestOrder_MarshalJSON_IDsAreStrings(t *testing.T) {
-	o := NewOrder(types.NewCustomerID(), []OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: 100}})
+	o := NewOrder(types.NewCustomerID(), []OrderItem{{SKU: "A", Quantity: 1, UnitPriceCents: ptr(100)}})
 	data, err := json.Marshal(o)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

@@ -60,6 +60,47 @@ form.sheet input, form.sheet select { width: 100%; padding: 8px 10px; background
 .mono { font-family: ui-monospace, "Cascadia Code", monospace; }
 button.copy-id { background: transparent; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
 button.copy-id:hover { color: var(--accent); }
+
+/* BTN-NO-VISUAL-DISABLE fix: visually disable in-flight buttons
+ * so a double-click on Submit / Cancel / Force ✓ / Force ✗ /
+ * Refresh doesn't fire two parallel requests. htmx 1.x adds the
+ * `htmx-request` class to the triggering element while the
+ * request is in flight; we dim + disable pointer events for both
+ * that class and the aria-busy="true" attribute the layout.html
+ * script toggles. */
+button.htmx-request,
+button[aria-busy="true"],
+button:disabled,
+.btn.htmx-request,
+.btn[aria-busy="true"],
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* NO-LOADING-INDICATOR fix: an inline spinner next to in-flight
+ * buttons. htmx swaps `.htmx-indicator` from display:none to
+ * inline-block while the request is in flight. The spinner is a
+ * 14px circle with a quarter-arc that spins. Animations are
+ * disabled on prefers-reduced-motion. */
+.htmx-indicator {
+  display: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: of-spin 0.7s linear infinite;
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+.htmx-request .htmx-indicator { display: inline-block; }
+@keyframes of-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .htmx-indicator { animation: none; }
+}
+
 .row-between { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .row         { display: flex; gap: 8px; align-items: center; }
 .timeline { list-style: none; padding: 0; margin: 16px 0 0; border-left: 2px solid var(--border); }

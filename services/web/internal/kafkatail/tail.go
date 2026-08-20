@@ -67,10 +67,10 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 		"PaymentFailed":    forwardToBus(bus),
 	}
 	var (
-		wg       sync.WaitGroup
-		closed   atomic.Bool
-		backoff  = 1 * time.Second
-		maxBack  = 15 * time.Second
+		wg      sync.WaitGroup
+		closed  atomic.Bool
+		backoff = 1 * time.Second
+		maxBack = 15 * time.Second
 	)
 	wg.Add(1)
 	go func() {
@@ -136,11 +136,11 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// nextBackoff returns min(d*2, max) for the retry loop.
-func nextBackoff(d, max time.Duration) time.Duration {
+// nextBackoff returns min(d*2, maxSleep) for the retry loop.
+func nextBackoff(d, maxSleep time.Duration) time.Duration {
 	next := d * 2
-	if next > max {
-		return max
+	if next > maxSleep {
+		return maxSleep
 	}
 	return next
 }
