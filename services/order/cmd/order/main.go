@@ -122,13 +122,13 @@ func Run(ctx context.Context) error {
 // the API uses.
 func startOutbox(ctx context.Context, logger *slog.Logger, dbURL string, brokers []string, httpAddr string) (func(context.Context) error, *pgxpool.Pool, error) {
 	var (
-		wg           sync.WaitGroup
-		httpSrv      *http.Server
-		ln           net.Listener
-		pool         *pgxpool.Pool
-		kafkaClient  *events.Client
-		poller       *pkgoutbox.Poller
-		outboxOn     = dbURL != "" && len(brokers) > 0
+		wg          sync.WaitGroup
+		httpSrv     *http.Server
+		ln          net.Listener
+		pool        *pgxpool.Pool
+		kafkaClient *events.Client
+		poller      *pkgoutbox.Poller
+		outboxOn    = dbURL != "" && len(brokers) > 0
 	)
 
 	if outboxOn {

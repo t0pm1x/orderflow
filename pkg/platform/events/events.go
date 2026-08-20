@@ -116,9 +116,8 @@ func (c *Client) PublishRaw(ctx context.Context, topic, key string, body []byte,
 // carrierToKgo flattens a kafkaprop.RecordHeaderCarrier (a
 // map[string]string populated by kafkaprop.Inject on the publish
 // path) back to the []kgo.RecordHeader slice franz-go expects on
-// a Produce call. OBS-5: previously headersToRecord handled only
-// the producer's business headers; the carrier now carries the
-// W3C trace headers too.
+// a Produce call. The carrier carries both the producer's
+// business headers and the W3C trace headers.
 func carrierToKgo(carrier kafkaprop.RecordHeaderCarrier) []kgo.RecordHeader {
 	if len(carrier) == 0 {
 		return nil
@@ -128,16 +127,6 @@ func carrierToKgo(carrier kafkaprop.RecordHeaderCarrier) []kgo.RecordHeader {
 		out = append(out, kgo.RecordHeader{Key: k, Value: []byte(v)})
 	}
 	return out
-}
-
-// headersToRecord is retained as an alias for backwards-compatible
-// callers (the OBS-9 instrumentation paths still pass a map directly
-// in some places). It is a thin wrapper over carrierToKgo.
-func headersToRecord(headers map[string]string) []kgo.RecordHeader {
-	if len(headers) == 0 {
-		return nil
-	}
-	return carrierToKgo(kafkaprop.RecordHeaderCarrier(headers))
 }
 
 // Close shuts down the client.

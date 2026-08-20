@@ -73,7 +73,7 @@ func Registry(logger *slog.Logger) pkgconsumer.HandlerRegistry {
 	}
 	if h := globalHandler.Load(); h != nil {
 		return pkgconsumer.HandlerRegistry{
-			"PaymentRequested":      h.PaymentRequested,
+			"PaymentRequested":       h.PaymentRequested,
 			"PaymentRefundRequested": h.PaymentRefundRequested,
 		}
 	}
@@ -248,10 +248,10 @@ func (h *Handler) PaymentRefundRequested(ctx context.Context, env *events.Envelo
 	// playground). Terminal-state guard on the UPDATE: only the
 	// succeeded → refunded transition is allowed.
 	refundedPayload, err := json.Marshal(map[string]any{
-		"order_id":   p.OrderID,
-		"payment_id": paymentID,
+		"order_id":     p.OrderID,
+		"payment_id":   paymentID,
 		"amount_cents": p.AmountCents,
-		"reason":     p.Reason,
+		"reason":       p.Reason,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal refund outbox payload: %w", err)

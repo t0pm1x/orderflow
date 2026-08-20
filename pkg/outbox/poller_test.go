@@ -377,7 +377,7 @@ type recordingPublisher struct {
 	alwaysErr  error
 }
 
-func (p *recordingPublisher) Publish(_ context.Context, recs []outbox.Record) error {
+func (p *recordingPublisher) Publish(_ context.Context, _ []outbox.Record) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	idx := len(p.timestamps)

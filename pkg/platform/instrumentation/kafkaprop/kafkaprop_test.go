@@ -96,7 +96,7 @@ func TestSpanFromEnvelope_InvalidTraceID(t *testing.T) {
 // pkg/platform/events PublishRaw and pkg/consumer dispatch; without
 // the carrier, the production header round-trip would not exist.
 func TestRecordHeaderCarrier_GetSet(t *testing.T) {
-	var c RecordHeaderCarrier = make(RecordHeaderCarrier)
+	c := make(RecordHeaderCarrier)
 	c.Set("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
 	if got := c.Get("traceparent"); got != "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" {
 		t.Errorf("Get after Set: got %q want traceparent header value", got)

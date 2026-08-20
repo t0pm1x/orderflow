@@ -178,23 +178,6 @@ func paymentFailedEnvelope(orderID string) *events.Envelope {
 	}
 }
 
-func orderCreatedEnvelope(orderID string) *events.Envelope {
-	itemsJSON, _ := json.Marshal([]map[string]any{
-		{"sku": "SKU-A", "quantity": 1, "unit_price_cents": 1000},
-	})
-	body := []byte(fmt.Sprintf(
-		`{"order_id":"%s","customer_id":"00000000-0000-0000-0000-000000000000","items":%s,"total_cents":1000}`,
-		orderID, string(itemsJSON)))
-	return &events.Envelope{
-		EventID:       "test-event-" + orderID,
-		EventType:     "OrderCreated",
-		AggregateID:   orderID,
-		AggregateType: "Order",
-		SchemaVersion: "1.0",
-		Payload:       body,
-	}
-}
-
 // TestStockReservedHandler_Idempotent_OnReplay is the regression
 // guard for P0-#2 from the v1.1.1 audit: a redelivered
 // StockReserved event must NOT emit a second PaymentRequested
