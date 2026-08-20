@@ -144,10 +144,19 @@ func New(t *testing.T, opts ...Option) *Harness {
 	// can be DLQ'd before Kafka finishes auto-creating the topic,
 	// and the chain stalls because the saga never receives the
 	// OrderCreated event.
+	//
+	// Per-topic DLQ topics (audit CONSUMER-2) are pre-created for
+	// the same reason: pkg/consumer/kafka_dlq.go ships failed
+	// records to <topic>.DLQ; without these the consumer's DLQ
+	// send blocks forever on an auto-create race or fails
+	// outright when auto-create is disabled.
 	preCreateKafkaTopics(ctx, t, kf.brokers, []string{
 		"order-events",
 		"payment-events",
 		"inventory-events",
+		"order-events.DLQ",
+		"payment-events.DLQ",
+		"inventory-events.DLQ",
 	})
 
 	h := &Harness{

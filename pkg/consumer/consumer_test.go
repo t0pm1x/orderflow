@@ -43,19 +43,22 @@ func (f *fakeClient) PollFetches(_ context.Context) kgo.Fetches { return kgo.Fet
 
 // fakeDLQ is a minimal DLQ impl for tests.
 type fakeDLQ struct {
-	mu   sync.Mutex
-	sent []string
+	mu     sync.Mutex
+	sent   []string
+	topics []string
 }
 
-func (d *fakeDLQ) Send(_ context.Context, _ *events.Envelope, reason string) error {
+func (d *fakeDLQ) Send(_ context.Context, _ *events.Envelope, sourceTopic, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.sent = append(d.sent, reason)
+	d.topics = append(d.topics, sourceTopic)
 	return nil
 }
 
 func orderCreatedRecord() *kgo.Record {
 	return &kgo.Record{
+		Topic: "order-events",
 		Key:   []byte("o1"),
 		Value: []byte(`{"event_id":"e1","event_type":"OrderCreated","aggregate_id":"o1","aggregate_type":"Order","schema_version":"1.0","payload":{}}`),
 	}
@@ -314,10 +317,40 @@ func TestDispatch_DecodeErrorDLQs(t *testing.T) {
 		registry: HandlerRegistry{},
 		dlq:      dlq,
 	}
-	rec := &kgo.Record{Key: []byte("o1"), Value: []byte(`not-json`)}
+	rec := &kgo.Record{Topic: "payment-events", Key: []byte("o1"), Value: []byte(`not-json`)}
 	c.dispatch(context.Background(), rec)
 	if len(dlq.sent) != 1 {
 		t.Errorf("decode errors must DLQ; got %d", len(dlq.sent))
+	}
+	if got := dlq.topics[0]; got != "payment-events" {
+		t.Errorf("dlq source topic: got %q want %q (audit CONSUMER-1 regression net)", got, "payment-events")
+	}
+}
+
+// TestDispatch_HandlerErrorPassesSourceTopicToDLQ pins the
+// CONSUMER-1 fix: the DLQ must receive the record's source topic
+// (not a misrouted "events" fallback). Pre-fix the consumer derived
+// source from envelope.AggregateID (a UUID), which has no slash and
+// always fell back to the literal "events" topic — every DLQ event
+// landed on events.DLQ regardless of its true source.
+func TestDispatch_HandlerErrorPassesSourceTopicToDLQ(t *testing.T) {
+	dlq := &fakeDLQ{}
+	c := &Consumer{
+		registry: HandlerRegistry{
+			"OrderCreated": func(_ context.Context, _ *events.Envelope) error {
+				return errors.New("boom")
+			},
+		},
+		dlq:          dlq,
+		maxAttempts:  1,
+		retryBackoff: time.Millisecond,
+	}
+	c.dispatch(context.Background(), orderCreatedRecord())
+	if len(dlq.topics) != 1 {
+		t.Fatalf("dlq sends: got %d want 1", len(dlq.topics))
+	}
+	if got := dlq.topics[0]; got != "order-events" {
+		t.Errorf("dlq source topic: got %q want %q (audit CONSUMER-1 regression net)", got, "order-events")
 	}
 }
 

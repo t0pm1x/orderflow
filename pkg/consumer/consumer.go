@@ -78,8 +78,16 @@ type Consumer struct {
 // DLQ is the contract for shipping poison-pill events to a DLQ
 // topic after MaxAttempts retries. The default impl lives in
 // kafka_dlq.go (this package).
+//
+// sourceTopic is the Kafka topic the consumer received the record
+// from (NOT the aggregate_id or any other envelope field). The DLQ
+// must write to <sourceTopic>.DLQ so downstream tooling can route
+// by source. Pre-fix the consumer derived source from envelope
+// fields (e.g. splitting aggregate_id on "/"), which misrouted every
+// event to a single `events.DLQ` because real aggregate_ids are
+// UUIDs with no slash (audit CONSUMER-1).
 type DLQ interface {
-	Send(ctx context.Context, env *events.Envelope, reason string) error
+	Send(ctx context.Context, env *events.Envelope, sourceTopic, reason string) error
 }
 
 // Deduper records which event_ids have already been processed so
@@ -375,7 +383,11 @@ func (c *Consumer) toDLQ(ctx context.Context, env *events.Envelope, reason strin
 			AggregateType: "Unknown",
 		}
 	}
-	if err := c.dlq.Send(ctx, env, reason); err != nil {
+	// rec.Topic is the canonical source topic. Passing it through
+	// to DLQ.Send ensures the DLQ event lands on <source>.DLQ
+	// instead of the misrouted `events.DLQ` that pre-fix code
+	// produced (audit CONSUMER-1).
+	if err := c.dlq.Send(ctx, env, rec.Topic, reason); err != nil {
 		// DLQ failure means the poison pill stays in the topic.
 		// We've marked the record for commit so we won't loop on
 		// it; operators can replay from the DLQ topic manually.

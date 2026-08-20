@@ -43,7 +43,10 @@ test:
 	done
 
 lint:
-	golangci-lint run
+	@for m in $(WORKSPACE_MODULES); do \
+		echo "==> linting $$m"; \
+		(cd "$$m" && golangci-lint run) || exit 1; \
+	done
 
 run:
 	@echo "Pick a service: make run-order / run-payment / run-inventory / run-saga"
@@ -67,7 +70,10 @@ clean:
 	rm -rf bin/
 
 tidy:
-	go mod tidy
+	@for m in $(WORKSPACE_MODULES); do \
+		echo "==> tidying $$m"; \
+		(cd "$$m" && go mod tidy) || exit 1; \
+	done
 
 # --- kind cluster (local k8s dev) ---
 KIND         := kind
@@ -132,8 +138,5 @@ record:
 # --- pre-push verification (runs what CI runs, locally) ---
 .PHONY: verify
 
-verify: build test
-	@for m in $(WORKSPACE_MODULES); do \
-		echo "==> tidying $$m"; \
-		(cd "$$m" && go mod tidy) || exit 1; \
-	done
+verify: tidy build test lint
+	@echo "==> verify complete"

@@ -137,14 +137,43 @@ services:
     ports:
       - "3200:3200"
 
+  grafana-secret-init:
+    # audit K8S-4 / SEC-2: generates the Grafana admin password
+    # on first `docker compose up` and stores it in a shared
+    # named volume. The init container exits 0 once the file
+    # exists; subsequent boots are no-ops (the file is already
+    # there). Operators can read it once via
+    # `docker compose run --rm grafana-secret-init cat /shared/grafana_admin_password`
+    # and rotate it by deleting the `grafana_secret` volume.
+    image: alpine:3.19
+    command:
+      - sh
+      - -c
+      - |
+        if [ ! -s /shared/grafana_admin_password ]; then
+          apk add --no-cache openssl >/dev/null 2>&1 || true
+          openssl rand -hex 24 > /shared/grafana_admin_password
+          echo "Grafana admin password generated at /shared/grafana_admin_password"
+        else
+          echo "Grafana admin password already exists; not regenerating"
+        fi
+        cat /shared/grafana_admin_password
+    volumes:
+      - grafana_secret:/shared
+    restart: "no"
+
   grafana:
     image: grafana/grafana:latest
+    depends_on:
+      grafana-secret-init:
+        condition: service_completed_successfully
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /shared/grafana_admin_password
     ports:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+      - grafana_secret:/shared:ro
       - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
       - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
 
@@ -174,3 +203,4 @@ volumes:
   pg_inventory_data:
   redis_data:
   grafana_data:
+  grafana_secret:
