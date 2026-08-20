@@ -179,10 +179,11 @@ func rec(id string) outbox.Record {
 // metrics behavior (in particular, that ObserveDLQ only fires on
 // successful DLQ writes per OBX-002).
 type recordingMetrics struct {
-	mu        sync.Mutex
-	polls     []pollEvent
-	publishes []publishEvent
-	dlqEvents []dlqEvent
+	mu           sync.Mutex
+	polls        []pollEvent
+	publishes    []publishEvent
+	dlqEvents    []dlqEvent
+	bumpFailures int
 }
 
 type pollEvent struct {
@@ -228,6 +229,15 @@ func (m *recordingMetrics) ObserveLag(_ context.Context, pending, failed int64) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.polls = append(m.polls, pollEvent{rows: int(pending), err: nil, lagPending: pending, lagFailed: failed})
+}
+
+// ObserveBumpFailure (NEW-P2-2) records the number of bump
+// failures observed in this test run so the regression test can
+// assert the dedicated metric was emitted at least once.
+func (m *recordingMetrics) ObserveBumpFailure(_ context.Context, _ int, _ error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.bumpFailures++
 }
 
 func TestPoller_PollsAndPublishesOnce(t *testing.T) {
@@ -713,4 +723,55 @@ func TestPoller_ObserveLagCalledEachCycle(t *testing.T) {
 	// refreshed; the requirement is that the call happened.
 	_ = lastPending
 	_ = lastFailed
+}
+
+// TestPoller_NEW_P2_2_BumpAttemptsFailureEmitsMetricAndPreservesState is
+// the NEW-P2-2 regression net: when Source.BumpAttempts fails (pool
+// saturated, ctx timeout), the poller must (a) emit a dedicated
+// bump-attempts-failure metric so the operator sees the DB-side
+// counter is now stale, and (b) NOT corrupt the in-memory counter
+// or DLQ eligibility for this iteration. Pre-fix the bump error
+// was logged via ObservePublish, which doubles as the publish error
+// metric — operators couldn't distinguish "publish failed" from
+// "publish OK but DB counter not bumped".
+func TestPoller_NEW_P2_2_BumpAttemptsFailureEmitsMetricAndPreservesState(t *testing.T) {
+	src := &fakeSource{
+		pending: []outbox.Record{rec("e1")},
+		bumpErr: errors.New("pg pool exhausted"),
+	}
+	pub := &fakePublisher{alwaysErr: errors.New("kafka down")}
+	dlq := &fakeDLQ{}
+	rm := &recordingMetrics{}
+	// MaxAttempts=2 so a single failure crosses the budget, but
+	// the bump itself fails; assert the row STILL gets DLQ'd.
+	p := New(PollerConfig{
+		Table: "t", BatchSize: 10, Interval: 5 * time.Millisecond,
+		MaxAttempts: 2, MaxRetryAge: 0,
+	}, src, pub, dlq, rm)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	_ = p.Run(ctx)
+
+	if src.bumpCalls == 0 {
+		t.Fatal("expected BumpAttempts to be invoked on a publish failure")
+	}
+	// DLQ must still fire on a cross-cap failure even when the bump
+	// itself errored. The bump is best-effort; the DLQ transition
+	// uses the in-memory counter (which is correct in-process).
+	if len(dlq.sent) != 1 || dlq.sent[0] != "e1" {
+		t.Errorf("dlq: got %v want [e1] (cross-cap DLQ must fire even when BumpAttempts errors)", dlq.sent)
+	}
+	if len(src.failed) != 1 {
+		t.Errorf("MarkFailedTx: got %d want 1", len(src.failed))
+	}
+	// The bump failure must surface on its own metric line, not
+	// silently fold into the publish metric. We assert at least one
+	// ObserveBumpFailure call exists on the recording metrics.
+	rm.mu.Lock()
+	bumpFailures := rm.bumpFailures
+	rm.mu.Unlock()
+	if bumpFailures == 0 {
+		t.Errorf("expected at least 1 bump-failure metric; got 0 (NEW-P2-2 regression: bump errors must be visible)")
+	}
 }

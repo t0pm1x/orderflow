@@ -90,6 +90,15 @@ type Metrics interface {
 	// gauges are point-in-time snapshots — callers are expected to
 	// invoke ObserveLag once per poll cycle.
 	ObserveLag(ctx context.Context, pending, failed int64)
+	// ObserveBumpFailure is the NEW-P2-2 hook. The poller emits one
+	// event per failed BumpAttempts call so operators can distinguish
+	// "publish failed" from "publish OK but DB counter not bumped"
+	// (the latter leaves the retry budget stale after a pod restart).
+	// count is the number of event_ids the bump was supposed to
+	// increment; the metric MUST fire even when BumpAttempts returns
+	// nil because in the all-success case the bump call is observable
+	// only via the DB-side attempts column (not here).
+	ObserveBumpFailure(ctx context.Context, count int, err error)
 }
 
 // NoopMetrics is the default Metrics impl when none is configured.
@@ -106,3 +115,6 @@ func (NoopMetrics) ObserveDLQ(context.Context, outbox.Record, string) {}
 
 // ObserveLag is a no-op; satisfies the Metrics interface without emitting anything.
 func (NoopMetrics) ObserveLag(context.Context, int64, int64) {}
+
+// ObserveBumpFailure is a no-op; satisfies the Metrics interface without emitting anything.
+func (NoopMetrics) ObserveBumpFailure(context.Context, int, error) {}

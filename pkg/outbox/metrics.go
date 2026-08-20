@@ -20,12 +20,13 @@ import (
 type PrometheusMetrics struct {
 	Table string
 
-	pollDuration *prometheus.HistogramVec
-	pollRows     *prometheus.CounterVec
-	publish      *prometheus.CounterVec
-	dlq          *prometheus.CounterVec
-	pendingGauge *prometheus.GaugeVec
-	failedGauge  *prometheus.GaugeVec
+	pollDuration    *prometheus.HistogramVec
+	pollRows        *prometheus.CounterVec
+	publish         *prometheus.CounterVec
+	dlq             *prometheus.CounterVec
+	bumpFailures    *prometheus.CounterVec
+	pendingGauge    *prometheus.GaugeVec
+	failedGauge     *prometheus.GaugeVec
 }
 
 // NewPrometheusMetrics constructs and registers the collectors with
@@ -54,6 +55,10 @@ func NewPrometheusMetrics(table string, reg prometheus.Registerer) *PrometheusMe
 			Name: "outbox_dlq_total",
 			Help: "Total outbox records routed to DLQ.",
 		}, []string{"table"}),
+		bumpFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "outbox_bump_attempts_failures_total",
+			Help: "Total BumpAttempts UPDATE failures (DB-side retry counter is now stale; counts records that were supposed to be bumped).",
+		}, []string{"table"}),
 		pendingGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "outbox_pending_events",
 			Help: "Current count of PENDING outbox rows waiting to publish (the outbox-lag gauge OBS-9 adds).",
@@ -63,7 +68,7 @@ func NewPrometheusMetrics(table string, reg prometheus.Registerer) *PrometheusMe
 			Help: "Current count of FAILED outbox rows (terminal state; reads as data-loss indicator alongside outbox_dlq_total).",
 		}, []string{"table"}),
 	}
-	reg.MustRegister(m.pollDuration, m.pollRows, m.publish, m.dlq, m.pendingGauge, m.failedGauge)
+	reg.MustRegister(m.pollDuration, m.pollRows, m.publish, m.dlq, m.bumpFailures, m.pendingGauge, m.failedGauge)
 	return m
 }
 
@@ -103,6 +108,17 @@ func (m *PrometheusMetrics) ObserveDLQ(_ context.Context, _ outbox.Record, _ str
 func (m *PrometheusMetrics) ObserveLag(_ context.Context, pending, failed int64) {
 	m.pendingGauge.WithLabelValues(m.Table).Set(float64(pending))
 	m.failedGauge.WithLabelValues(m.Table).Set(float64(failed))
+}
+
+// ObserveBumpFailure records one BumpAttempts UPDATE failure. The
+// poller emits this whenever the autonomous (non-tx) UPDATE that
+// increments the DB-side `attempts` column errors out (pool
+// saturated, ctx timeout, schema drift). The in-memory counter
+// remains correct in-process so DLQ eligibility is unaffected, but
+// a subsequent pod restart may see a stale DB counter. This metric
+// surfaces that drift so operators can alarm on it.
+func (m *PrometheusMetrics) ObserveBumpFailure(_ context.Context, count int, _ error) {
+	m.bumpFailures.WithLabelValues(m.Table).Add(float64(count))
 }
 
 // Compile-time interface check.

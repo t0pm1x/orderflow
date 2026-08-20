@@ -280,9 +280,20 @@ func (p *Poller) Run(ctx context.Context) error {
 		if len(failedIDs) > 0 {
 			bumpCtx, bumpCancel := context.WithTimeout(ctx, bumpBudget)
 			if bumpErr := p.src.BumpAttempts(bumpCtx, failedIDs, ""); bumpErr != nil {
-				p.metrics.ObservePublish(ctx, len(failedIDs), bumpErr)
+				// NEW-P2-2: bump failure must surface on its own
+				// metric so operators can distinguish "publish
+				// failed" from "publish OK but DB counter not
+				// bumped". The publish metric stays clean — the
+				// publish itself succeeded in the sense that
+				// MarkSent/MarkFailed ran in their own tx; the
+				// bump is a separate autonomous UPDATE.
+				p.metrics.ObserveBumpFailure(ctx, len(failedIDs), bumpErr)
 				// Continue — the budget-bump failure must not
-				// mask the DLQ eligibility decision.
+				// mask the DLQ eligibility decision. The
+				// in-memory counter (set by handlePublishFailure)
+				// is still correct in-process; the next pod
+				// restart may see a stale DB counter, but that
+				// window is bounded by MaxRetryAge.
 			}
 			bumpCancel()
 		}
