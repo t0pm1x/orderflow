@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.25.13'
           cache: true
           cache-dependency-path: |
             pkg/consumer/go.sum
@@ -54,7 +54,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.25.13'
           cache: true
           cache-dependency-path: |
             pkg/consumer/go.sum
@@ -96,7 +96,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.25.13'
           cache: true
           cache-dependency-path: |
             pkg/consumer/go.sum
@@ -129,7 +129,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.25.13'
           cache: true
           cache-dependency-path: |
             pkg/consumer/go.sum
@@ -181,3 +181,47 @@ jobs:
           path: tests/logs/
           if-no-files-found: ignore
           retention-days: 14
+
+  vuln-scan:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.13'
+          cache: true
+          cache-dependency-path: |
+            pkg/consumer/go.sum
+            pkg/outbox/go.sum
+            pkg/platform/go.sum
+            pkg/platform/instrumentation/kafkaprop/go.sum
+            services/order/go.sum
+            services/payment/go.sum
+            services/inventory/go.sum
+            services/saga/go.sum
+            services/web/go.sum
+            cmd/order/go.sum
+            cmd/payment/go.sum
+            cmd/inventory/go.sum
+            cmd/saga/go.sum
+            cmd/web/go.sum
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # govulncheck scans every workspace module for known CVEs in
+      # the dependency graph. The check is non-blocking by design
+      # (continue-on-error: true) so an upstream CVE doesn't break
+      # CI; the workflow still surfaces the finding for triage.
+      - name: Run govulncheck against all modules
+        continue-on-error: true
+        run: |
+          for m in pkg/consumer pkg/outbox pkg/platform pkg/platform/instrumentation/kafkaprop \
+                   services/order services/payment services/inventory services/saga services/web \
+                   cmd/order cmd/payment cmd/inventory cmd/saga cmd/web; do
+            echo "==> scanning $m"
+            (cd "$m" && govulncheck ./...) || echo "::warning::govulncheck found issues in $m"
+          done
