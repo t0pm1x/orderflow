@@ -73,17 +73,17 @@ services:
       - redpanda
       - start
       - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      # v1.1.5: advertise the host-reachable address (127.0.0.1:9092
-      # via the published port 9092:9092) rather than the in-network
-      # hostname `redpanda:9092`. Pre-v1.1.5 the advertised addr was
-      # `redpanda:9092`; the host's franz-go clients bootstrap to
-      # 127.0.0.1:9092, get metadata saying "the broker is actually
-      # at redpanda:9092", then fail with
-      # `dial tcp: lookup redpanda: no such host`. The
-      # kafka-init container still bootstraps via
-      # `rpk ... -X brokers=redpanda:9092` (it never goes through
-      # metadata), so the in-network hostname is unused at runtime.
-      - --advertise-kafka-addr=PLAINTEXT://127.0.0.1:9092
+      # Advertise the in-network DNS name so other services in the
+      # docker compose network reach the broker by hostname. The
+      # kafka-init container (and the other services in this compose
+      # file) bootstrap via `KAFKA_BROKERS=redpanda:9092`. Host-side
+      # franz-go clients (scripts/run.ps1) bootstrap via the
+      # `127.0.0.1:9092` published-port path; for a single-broker
+      # setup franz-go's bootstrap connection succeeds even when the
+      # metadata-fetched broker address is the in-network name, because
+      # all reads/writes go through the original bootstrap broker
+      # connection.
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
       - --smp=1
       - --memory=512M
       - --overprovisioned
@@ -108,7 +108,7 @@ services:
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy -X brokers=redpanda:9092"]
+      test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy -X brokers=127.0.0.1:9092"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -198,6 +198,16 @@ services:
   # in-network DNS names. HTTP_ADDRs are bound to the in-container
   # addresses; host ports are mapped below for local curl / smoke
   # scripts. Each binary is distroless and runs as nonroot.
+  #
+  # Kafka broker reachability: redpanda advertises 127.0.0.1:9092
+  # (host-reachable) but container-side clients can't dial 127.0.0.1
+  # (their own loopback). Docker Desktop provides
+  # `host.docker.internal` as a host-reachable alias inside every
+  # container; the broker also accepts connections on this alias
+  # because the host publishes 9092:9092 to the host's 0.0.0.0.
+  # We set KAFKA_BROKERS=host.docker.internal:9092 so the in-network
+  # franz-go client reaches the broker via the host's loopback,
+  # where the broker is actually listening and advertising.
   order:
     build:
       context: ..
@@ -211,7 +221,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://orderflow:orderflow@postgres-order:5432/order_order?sslmode=disable
-      KAFKA_BROKERS: redpanda:9092
+      KAFKA_BROKERS: host.docker.internal:9092
       HTTP_ADDR: ":8081"
       OTEL_EXPORTER: stdout
     ports:
@@ -231,7 +241,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://orderflow:orderflow@postgres-payment:5432/payment_payment?sslmode=disable
-      KAFKA_BROKERS: redpanda:9092
+      KAFKA_BROKERS: host.docker.internal:9092
       REDIS_URL: redis://redis:6379
       HTTP_ADDR: ":8082"
       OTEL_EXPORTER: stdout
@@ -252,7 +262,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://orderflow:orderflow@postgres-inventory:5432/inventory_inventory?sslmode=disable
-      KAFKA_BROKERS: redpanda:9092
+      KAFKA_BROKERS: host.docker.internal:9092
       REDIS_URL: redis://redis:6379
       HTTP_ADDR: ":8083"
       OTEL_EXPORTER: stdout
@@ -274,7 +284,7 @@ services:
     environment:
       # saga shares the order DB (matches scripts/run.ps1 + tests/harness)
       DATABASE_URL: postgres://orderflow:orderflow@postgres-order:5432/order_order?sslmode=disable
-      KAFKA_BROKERS: redpanda:9092
+      KAFKA_BROKERS: host.docker.internal:9092
       HTTP_ADDR: ":8084"
       OTEL_EXPORTER: stdout
     ports:
@@ -298,7 +308,7 @@ services:
       ORDER_URL: http://order:8081
       PAYMENT_URL: http://payment:8082
       INVENTORY_URL: http://inventory:8083
-      KAFKA_BROKERS: redpanda:9092
+      KAFKA_BROKERS: host.docker.internal:9092
       # PORT-CONFLICT fix: web's in-container port is now :8085 by
       # default so it doesn't collide with inventory's :8083. The
       # host-side mapping is also :8085:8085 (was :8085:8083 which
