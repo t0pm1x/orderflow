@@ -133,10 +133,10 @@ spec:
               value: ""
             - name: KAFKA_BROKERS
               value: ""
-            - name: HTTP_ADDR
-              value: ":8082"
             - name: REDIS_URL
               value: ""
+            - name: HTTP_ADDR
+              value: ":8082"
             - name: OTEL_EXPORTER
               value: "otlp"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
