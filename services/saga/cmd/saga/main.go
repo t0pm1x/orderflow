@@ -282,13 +282,7 @@ func wgWait(shutdownCtx context.Context, wg *sync.WaitGroup, pool *pgxpool.Pool,
 }
 
 func redact(s string) string {
-	if s == "" {
-		return "<unset>"
-	}
-	if len(s) > 12 {
-		return s[:6] + "…" + s[len(s)-4:]
-	}
-	return "***"
+	return platform.Redact(s)
 }
 
 // Main is the function called by cmd/saga/main.go; it owns the

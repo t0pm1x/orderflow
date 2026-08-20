@@ -292,11 +292,5 @@ func kafkaBrokers() []string {
 }
 
 func redact(s string) string {
-	if s == "" {
-		return "<unset>"
-	}
-	if len(s) > 12 {
-		return s[:6] + "…" + s[len(s)-4:]
-	}
-	return "***"
+	return platform.Redact(s)
 }

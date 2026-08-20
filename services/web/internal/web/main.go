@@ -47,15 +47,12 @@ func envOrDefault(key, fallback string) string {
 }
 
 // redact returns a redacted view of a secret string for logging.
-// Returns "<unset>" when empty, otherwise truncates.
+// Delegates to platform.Redact so every service uses the same
+// SHA-256-first-8-hex algorithm. See pkg/platform/logging.go for
+// the rationale (the pre-v1.2 truncation leaked scheme/host/port
+// for URLs).
 func redact(s string) string {
-	if s == "" {
-		return "<unset>"
-	}
-	if len(s) > 12 {
-		return s[:6] + "…" + s[len(s)-4:]
-	}
-	return "***"
+	return platform.Redact(s)
 }
 
 // Run blocks until ctx is cancelled (SIGTERM/SIGINT). Returns nil on

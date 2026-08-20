@@ -124,3 +124,115 @@ func TestSetDefault_EmitsJSON(t *testing.T) {
 		t.Errorf("msg field: got %v want smoke", entry["msg"])
 	}
 }
+
+// TestRedact_SEC11 verifies the v1.2 fix for SEC-11: pre-v1.2
+// returned the first-6+last-4 chars of the raw input, leaking
+// scheme/host/port for URLs (e.g. "postgres://orderflow:secret@db:
+// 5432/..." → "postgr…:5432"). The SHA-256 first-8-hex algorithm
+// is opaque and stable: same input → same fingerprint; different
+// inputs → different fingerprints.
+func TestRedact_SEC11(t *testing.T) {
+	cases := []struct {
+		name, in, wantEmpty, wantFilled string
+	}{
+		{"empty", "", "<unset>", ""},
+		{"short", "abc", "", "sha256:"},
+		{"long url", "postgres://user:secret@host:5432/db", "", "sha256:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Redact(tc.in)
+			if tc.in == "" {
+				if got != "<unset>" {
+					t.Errorf("empty input: got %q want <unset>", got)
+				}
+				return
+			}
+			if len(got) < len("sha256:") || got[:len("sha256:")] != "sha256:" {
+				t.Errorf("non-empty input: got %q want sha256: prefix", got)
+			}
+			// Fingerprint must not contain any substring of the raw
+			// input longer than 4 chars (audit SEC-11 acceptance).
+			for _, frag := range []string{"secret", "host:5432", "user", "postgres://"} {
+				if len(frag) > 4 && contains(got, frag) {
+					t.Errorf("fingerprint %q leaks substring %q of input %q", got, frag, tc.in)
+				}
+			}
+		})
+	}
+	// Stable: same input → same fingerprint.
+	if Redact("hello") != Redact("hello") {
+		t.Error("Redact must be deterministic")
+	}
+	// Distinct: different inputs → different fingerprints.
+	if Redact("hello") == Redact("world") {
+		t.Error("Redact produced the same fingerprint for distinct inputs")
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPiiHandler_MasksConfiguredKeys is the SEC-12 regression net.
+// A slog.Logger built via NewRedactingLogger must replace any value
+// of a configured PII key (last_four, card_number, customer_id,
+// idempotency_key, password) with "[REDACTED]" while leaving other
+// keys untouched. Pre-v1.2 the bare JSON handler passed these
+// values through verbatim into log shipping.
+func TestPiiHandler_MasksConfiguredKeys(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	masked := slog.New(piiHandler{inner: handler})
+	masked.Info("payment processed",
+		"last_four", "4242",
+		"card_number", "4242424242424242",
+		"customer_id", "cust-abc123",
+		"idempotency_key", "idem-xyz",
+		"order_id", "ord-1",
+		"amount_cents", 12345,
+	)
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, buf.String())
+	}
+	if entry["last_four"] != "[REDACTED]" {
+		t.Errorf("last_four: got %v want [REDACTED]", entry["last_four"])
+	}
+	if entry["card_number"] != "[REDACTED]" {
+		t.Errorf("card_number: got %v want [REDACTED]", entry["card_number"])
+	}
+	if entry["customer_id"] != "[REDACTED]" {
+		t.Errorf("customer_id: got %v want [REDACTED]", entry["customer_id"])
+	}
+	if entry["idempotency_key"] != "[REDACTED]" {
+		t.Errorf("idempotency_key: got %v want [REDACTED]", entry["idempotency_key"])
+	}
+	if entry["order_id"] != "ord-1" {
+		t.Errorf("order_id must NOT be redacted: got %v", entry["order_id"])
+	}
+	if entry["amount_cents"] != float64(12345) {
+		t.Errorf("amount_cents must NOT be redacted: got %v", entry["amount_cents"])
+	}
+}
+
+// TestPiiHandler_WithAttrsRedacts verifies the wrapper handles the
+// WithAttrs path (slog's standard group/attr composition).
+func TestPiiHandler_WithAttrsRedacts(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	masked := slog.New(piiHandler{inner: handler}).With("last_four", "0000")
+	masked.Info("redact me")
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if entry["last_four"] != "[REDACTED]" {
+		t.Errorf("last_four (WithAttrs): got %v want [REDACTED]", entry["last_four"])
+	}
+}
