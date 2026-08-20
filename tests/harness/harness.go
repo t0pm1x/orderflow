@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,31 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
+
+// pinIPv4Broker rewrites "localhost" and "[::1]" to "127.0.0.1" so the
+// orderflow service binaries can reach the testcontainer kafka from any
+// host OS. Without this, franz-go's resolver on Windows tries IPv6
+// first ("localhost" → "[::1]") and the consumer-group JoinGroup
+// fails with "unable to dial: dial tcp [::1]:NNNN". On Linux/macOS
+// the rewrite is a no-op ("localhost" already resolves to 127.0.0.1).
+//
+// Mirrors the demo-script fix in commit f67cbe5 ("fix(scripts): pin
+// KAFKA_BROKERS to 127.0.0.1 (skip IPv6 fallback in franz-go)") —
+// that fix only touched the compose/demo scripts; this brings the
+// same protection to the E2E harness.
+func pinIPv4Broker(s string) string {
+	if s == "" {
+		return s
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return s
+	}
+	if host == "localhost" || host == "::1" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
 
 // Harness exposes connection details for every testcontainer started
 // by New. Tests read these URLs to point the orderflow service binaries
@@ -55,6 +81,27 @@ type Harness struct {
 	kafkaContainer testcontainers.Container
 
 	t *testing.T
+
+	// services tracks every service binary started via
+	// StartService, so RestartServices can stop the existing
+	// processes and start fresh copies against the new Kafka
+	// broker address (the service binaries capture KAFKA_BROKER
+	// at startup; after a Kafka restart they cannot reach the
+	// new broker until they are themselves restarted).
+	services []*serviceSpec
+}
+
+// serviceSpec is the persistent handle for a running service
+// binary. It outlives the per-call stop callback so
+// RestartServices can stop the current process and start a new
+// one against the same env (HTTP_ADDR, etc.) without forcing the
+// caller to thread every startup argument back through.
+type serviceSpec struct {
+	name    string
+	binName string
+	env     map[string]string
+	cmd     *exec.Cmd
+	stop    func()
 }
 
 // Option mutates the harness configuration.
@@ -144,6 +191,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 // KAFKA_BROKER, REDIS_URL where applicable, HTTP_ADDR). Returns a
 // stop function that gracefully terminates the process.
 //
+// The handle is also recorded in h.services so RestartServices can
+// stop the running process and start a fresh one against the
+// current Kafka broker — used by the chaos test to assert
+// end-to-end recovery after a Kafka restart (audit TEST-3).
+//
 // binName is the binary base name without `.exe` — the function picks
 // the correct extension for the current OS via runtime.GOOS.
 func (h *Harness) StartService(t *testing.T, name, binName string, env map[string]string) (stop func()) {
@@ -179,11 +231,116 @@ func (h *Harness) StartService(t *testing.T, name, binName string, env map[strin
 		_ = logFile.Close()
 		t.Fatalf("harness: start %s (%s): %v", name, binPath, err)
 	}
-	return func() {
+
+	stopFn := func() {
+		if cmd.Process == nil {
+			return
+		}
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		_, _ = cmd.Process.Wait()
+		// Bound the wait so a service that hangs in its
+		// shutdown path (e.g., a blocking outboxClose on an
+		// unreachable Kafka) cannot keep the test goroutine
+		// alive past the test timeout. After the deadline we
+		// hard-kill the process and still wait so the OS
+		// releases the PID/handle before StartService's
+		// t.Cleanup hooks try to terminate the harness.
+		done := make(chan struct{})
+		go func() {
+			_, _ = cmd.Process.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
 		_ = logFile.Close()
 	}
+
+	spec := &serviceSpec{
+		name:    name,
+		binName: binName,
+		env:     env,
+		cmd:     cmd,
+		stop:    stopFn,
+	}
+	h.services = append(h.services, spec)
+	return stopFn
+}
+
+// RestartServices stops every service currently tracked in
+// h.services and starts fresh copies against the current
+// h.KafkaBrokers (typically called after RestartKafka). Each
+// service preserves its original env, but KAFKA_BROKER is
+// updated to the current h.KafkaBrokers[0] since the
+// already-running processes captured the old address at
+// startup and cannot reach the new broker without a restart.
+//
+// Returns a single stop callback that stops every newly-started
+// service. Per-service stop() callbacks captured BEFORE this
+// call remain valid but signal the (now-terminated) original
+// processes — SIGTERM on a dead process is a no-op error that
+// the harness already swallows, so existing test bodies do not
+// need to swap their per-service defers.
+//
+// Tests that want a single clean shutdown for both the old and
+// new service processes should defer the returned callback in
+// place of the per-service defers (LIFO order means the new
+// processes are stopped first).
+func (h *Harness) RestartServices(t *testing.T) (stopAll func()) {
+	t.Helper()
+	type spec struct {
+		name    string
+		binName string
+		env     map[string]string
+	}
+	var specs []spec
+	for _, svc := range h.services {
+		if svc.stop != nil {
+			svc.stop()
+			svc.stop = nil
+		}
+		newEnv := make(map[string]string, len(svc.env)+1)
+		for k, v := range svc.env {
+			newEnv[k] = v
+		}
+		newEnv["KAFKA_BROKER"] = h.KafkaBrokers[0]
+		specs = append(specs, spec{
+			name:    svc.name,
+			binName: svc.binName,
+			env:     newEnv,
+		})
+	}
+	h.services = nil
+
+	var stops []func()
+	for _, s := range specs {
+		stops = append(stops, h.StartService(t, s.name, s.binName, s.env))
+	}
+	return func() {
+		for _, stop := range stops {
+			stop()
+		}
+	}
+}
+
+// StopServices stops every service currently tracked in
+// h.services. Idempotent — safe to call multiple times; a
+// service whose stop callback already fired is skipped. Useful
+// as a single defer that catches every service started via
+// StartService, including those started by RestartServices
+// (the original per-service stop callbacks reference the
+// pre-restart processes which are already dead and harmlessly
+// no-op on SIGTERM).
+func (h *Harness) StopServices() {
+	for _, svc := range h.services {
+		if svc.stop != nil {
+			svc.stop()
+			svc.stop = nil
+		}
+	}
+	h.services = nil
 }
 
 // WaitForOrderState polls the order service until the order reaches
@@ -314,6 +471,11 @@ func mustKafka(ctx context.Context, t *testing.T) *kafkaHandle {
 	}
 	if len(brokers) == 0 {
 		t.Fatal("harness: kafka returned no brokers")
+	}
+	// Pin every broker to an IPv4 literal so franz-go doesn't try
+	// IPv6 first on Windows hosts (see pinIPv4Broker comment).
+	for i := range brokers {
+		brokers[i] = pinIPv4Broker(brokers[i])
 	}
 	return &kafkaHandle{container: c, brokers: brokers}
 }

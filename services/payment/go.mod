@@ -31,6 +31,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
+	github.com/t0pm1x/orderflow/kafkaprop v0.0.0-00010101000000-000000000000 // indirect
 	github.com/twmb/franz-go v1.21.6 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.13.1 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
@@ -55,8 +56,9 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/t0pm1x/orderflow/platform => ../../pkg/platform
-
-replace github.com/t0pm1x/orderflow/outbox => ../../pkg/outbox
-
-replace github.com/t0pm1x/orderflow/consumer => ../../pkg/consumer
+replace (
+	github.com/t0pm1x/orderflow/consumer => ../../pkg/consumer
+	github.com/t0pm1x/orderflow/kafkaprop => ../../pkg/platform/instrumentation/kafkaprop
+	github.com/t0pm1x/orderflow/outbox => ../../pkg/outbox
+	github.com/t0pm1x/orderflow/platform => ../../pkg/platform
+)

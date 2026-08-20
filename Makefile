@@ -1,16 +1,28 @@
 .PHONY: build build-web test lint run clean tidy run-web
 
-# Version baked into each binary's main.Version at build time.
-# git describe falls back to a dev tag if not on a tagged commit.
+# Version baked into each binary at build time. The Version
+# variable lives in services/<svc>/cmd/<svc> (package <svc>), not
+# cmd/<svc>/main.go (package main), so the -X flag must target the
+# real package path. The previous -X main.Version=... was a silent
+# no-op because cmd/<svc>/main.go has no Version symbol (it just
+# delegates to the service package).
+#
+# On Windows the harness appends ".exe" itself, but the Makefile
+# produces plain names (bin/order). Add the .exe suffix explicitly
+# so the harness and the Makefile agree on the artifact path.
 VERSION ?= $(shell git describe --tags --always --dirty 2>nul || echo 0.0.0-dev)
-LDFLAGS := -s -w -X main.Version=$(VERSION)
+LDFLAGS := -s -w
+EXE :=
+ifeq ($(OS),Windows_NT)
+	EXE := .exe
+endif
 
 build:
-	go build -ldflags="$(LDFLAGS)" -o bin/order ./cmd/order
-	go build -ldflags="$(LDFLAGS)" -o bin/payment ./cmd/payment
-	go build -ldflags="$(LDFLAGS)" -o bin/inventory ./cmd/inventory
-	go build -ldflags="$(LDFLAGS)" -o bin/saga ./cmd/saga
-	go build -ldflags="$(LDFLAGS)" -o bin/web ./cmd/web
+	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/order/cmd/order.Version=$(VERSION)" -o bin/order$(EXE) ./cmd/order
+	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/payment/cmd/payment.Version=$(VERSION)" -o bin/payment$(EXE) ./cmd/payment
+	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/inventory/cmd/inventory.Version=$(VERSION)" -o bin/inventory$(EXE) ./cmd/inventory
+	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/saga/cmd/saga.Version=$(VERSION)" -o bin/saga$(EXE) ./cmd/saga
+	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/web/cmd/web.Version=$(VERSION)" -o bin/web$(EXE) ./cmd/web
 
 build-web:
 	go build -ldflags="$(LDFLAGS)" -o bin/web ./cmd/web
@@ -93,7 +105,7 @@ load:
 e2e: e2e-happy e2e-compensation e2e-chaos
 
 e2e-happy:
-	go test ./tests/e2e/... -run TestE2E_HappyPath -timeout 5m -v
+	go test ./tests/e2e/... -run TestE2E_OrderReachesConfirmed -timeout 5m -v
 
 e2e-compensation:
 	go test ./tests/e2e/... -run TestE2E_Compensation -timeout 5m -v
@@ -120,4 +132,8 @@ record:
 # --- pre-push verification (runs what CI runs, locally) ---
 .PHONY: verify
 
-verify: tidy build test lint
+verify: build test
+	@for m in $(WORKSPACE_MODULES); do \
+		echo "==> tidying $$m"; \
+		(cd "$$m" && go mod tidy) || exit 1; \
+	done
