@@ -260,3 +260,185 @@ func TestStockReserveRequested_NotFoundEmitsStockReservationFailed(t *testing.T)
 		t.Errorf("sku: got %q want SKU-999", p.SKU)
 	}
 }
+
+// TestStockReserved_AggregateIDIsOrderID is the TIMELINE-FIX
+// regression guard: inventory's StockReserved event must use the
+// order_id as AggregateID (not the reservation_id), so the
+// orderflow-web UI's per-order timeline page can filter the bus
+// by aggregate_id and see this event.
+//
+// Pre-fix the handler emitted AggregateID=reservationID and the
+// web's bus.History(orderID) filter dropped it from the timeline
+// even though it was the canonical "stock reserved for this
+// order" event.
+//
+// Requires DATABASE_URL (real PG) — skips otherwise. The unit-level
+// TestStockReleasedPayload_IncludesOrderID already locks the
+// payload wire shape; this test pins the AggregateID field which
+// lives only on the outbox row, not the JSON payload.
+func TestStockReserved_AggregateIDIsOrderID(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set; skipping consumer integration test")
+	}
+
+	applyMigrations(t, url)
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	if _, err := pool.Exec(ctx,
+		`TRUNCATE TABLE stock_items, inventory_outbox RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	// Seed stock_items with enough available for the reserve
+	// (SKU-001 is the seeded SKU per migrations/0003_seed.sql).
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO stock_items (sku, available, reserved, version)
+		 VALUES ('SKU-001', 10, 0, 1)
+		 ON CONFLICT (sku) DO UPDATE SET available = 10, reserved = 0, version = stock_items.version + 1`); err != nil {
+		t.Fatalf("seed stock_items: %v", err)
+	}
+
+	withGlobalDeps(t, pool)
+
+	const (
+		orderID = "44444444-4444-4444-4444-444444444444"
+		resID   = "55555555-5555-5555-5555-555555555555"
+	)
+	payload, _ := json.Marshal(map[string]any{
+		"order_id":       orderID,
+		"sku":            "SKU-001",
+		"quantity":       1,
+		"reservation_id": resID,
+	})
+	env := &events.Envelope{
+		EventID:       "66666666-6666-6666-6666-666666666666",
+		EventType:     "StockReserveRequested",
+		AggregateID:   orderID,
+		AggregateType: "Order",
+		SchemaVersion: "1.0",
+		Payload:       payload,
+	}
+	h := stockReserveRequested(slog.Default())
+	if err := h(ctx, env); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	// Look up the StockReserved row by order_id — pre-fix this
+	// query would find nothing because AggregateID was resID.
+	var (
+		gotAggID   string
+		gotEventID string
+		gotType    string
+	)
+	row := pool.QueryRow(ctx,
+		`SELECT event_id, aggregate_id, event_type FROM inventory_outbox
+		  WHERE event_type = 'StockReserved' AND aggregate_id = $1`,
+		orderID)
+	if err := row.Scan(&gotEventID, &gotAggID, &gotType); err != nil {
+		if err == pgx.ErrNoRows {
+			t.Fatalf("StockReserved row with aggregate_id=%s not found — TIMELINE-FIX regression", orderID)
+		}
+		t.Fatalf("scan: %v", err)
+	}
+	if gotAggID != orderID {
+		t.Errorf("StockReserved.AggregateID: got %q want %q (TIMELINE-FIX regression — must be order_id, not reservation_id)", gotAggID, orderID)
+	}
+	if gotType != "StockReserved" {
+		t.Errorf("StockReserved.event_type: got %q want StockReserved", gotType)
+	}
+	// Defensive: the reservation_id should still live on the
+	// payload (downstream consumers can join on it), even though
+	// it's no longer the AggregateID.
+	row = pool.QueryRow(ctx,
+		`SELECT payload FROM inventory_outbox
+		  WHERE event_type = 'StockReserved' AND aggregate_id = $1`, orderID)
+	var body []byte
+	if err := row.Scan(&body); err != nil {
+		t.Fatalf("scan payload: %v", err)
+	}
+	if !strings.Contains(string(body), resID) {
+		t.Errorf("StockReserved payload missing reservation_id=%s: %s", resID, string(body))
+	}
+}
+
+// TestStockReleased_AggregateIDIsOrderID mirrors the StockReserved
+// regression guard for the StockReleased path: AggregateID must
+// equal order_id (not reservation_id) so the saga timeline page
+// sees the "stock was released back" event.
+func TestStockReleased_AggregateIDIsOrderID(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set; skipping consumer integration test")
+	}
+
+	applyMigrations(t, url)
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	if _, err := pool.Exec(ctx,
+		`TRUNCATE TABLE stock_items, inventory_outbox, stock_reservations RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO stock_items (sku, available, reserved, version)
+		 VALUES ('SKU-001', 10, 1, 1)
+		 ON CONFLICT (sku) DO UPDATE SET available = 10, reserved = 1, version = stock_items.version + 1`); err != nil {
+		t.Fatalf("seed stock_items: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO stock_reservations (reservation_id, sku, quantity, order_id)
+		 VALUES ('77777777-7777-7777-7777-777777777777', 'SKU-001', 1, '88888888-8888-8888-8888-888888888888')`); err != nil {
+		t.Fatalf("seed stock_reservations: %v", err)
+	}
+
+	withGlobalDeps(t, pool)
+
+	const (
+		orderID = "88888888-8888-8888-8888-888888888888"
+		resID   = "77777777-7777-7777-7777-777777777777"
+	)
+	payload, _ := json.Marshal(map[string]any{
+		"order_id":       orderID,
+		"sku":            "SKU-001",
+		"quantity":       1,
+		"reservation_id": resID,
+	})
+	env := &events.Envelope{
+		EventID:       "99999999-9999-9999-9999-999999999999",
+		EventType:     "StockReleaseRequested",
+		AggregateID:   orderID,
+		AggregateType: "Order",
+		SchemaVersion: "1.0",
+		Payload:       payload,
+	}
+	h := stockReleaseRequested(slog.Default())
+	if err := h(ctx, env); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var gotAggID string
+	row := pool.QueryRow(ctx,
+		`SELECT aggregate_id FROM inventory_outbox
+		  WHERE event_type = 'StockReleased' AND aggregate_id = $1`,
+		orderID)
+	if err := row.Scan(&gotAggID); err != nil {
+		if err == pgx.ErrNoRows {
+			t.Fatalf("StockReleased row with aggregate_id=%s not found — TIMELINE-FIX regression", orderID)
+		}
+		t.Fatalf("scan: %v", err)
+	}
+	if gotAggID != orderID {
+		t.Errorf("StockReleased.AggregateID: got %q want %q (TIMELINE-FIX regression)", gotAggID, orderID)
+	}
+}

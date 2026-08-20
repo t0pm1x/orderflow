@@ -5,7 +5,6 @@ package kafkatail
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -38,18 +37,21 @@ const groupID = "orderflow-web"
 // brokersCSV may be empty: in that case Start returns (nil, nil)
 // and no consumer is started (the web service runs without live
 // events, ready to be wired later).
+//
+// KAFKA-NO-RECONNECT fix: on any Run error (broker restart, network
+// blip, group rebalance failure, etc.) the goroutine sleeps and
+// re-creates the consumer + retries Run. Without this fix, a single
+// transient broker hiccup permanently killed the SSE stream: the
+// goroutine returned, no events flowed, but the heartbeat kept the
+// UI looking "live". With the loop the tail self-heals within
+// 1-15s of a broker recovery.
 func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *events.Bus) (func(), error) {
 	if brokersCSV == "" {
 		logger.Info("kafka tail disabled: KAFKA_BROKERS not set")
 		return nil, nil
 	}
 	brokers := splitCSV(brokersCSV)
-	c, err := kafkaconsumer.New(kafkaconsumer.Config{
-		Brokers: brokers,
-		GroupID: groupID,
-		Topics:  topics,
-		// DLQ=nil + Deduper=nil: skip retries/dedup; UI just acks.
-	}, kafkaconsumer.HandlerRegistry{
+	registry := kafkaconsumer.HandlerRegistry{
 		// order-events — saga emits these
 		"OrderCreated":          forwardToBus(bus),
 		"OrderConfirmed":        forwardToBus(bus),
@@ -63,27 +65,84 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 		// payment-events — payment service emits these
 		"PaymentCompleted": forwardToBus(bus),
 		"PaymentFailed":    forwardToBus(bus),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("kafka tail: %w", err)
 	}
-	var wg sync.WaitGroup
-	var closed atomic.Bool
+	var (
+		wg       sync.WaitGroup
+		closed   atomic.Bool
+		backoff  = 1 * time.Second
+		maxBack  = 15 * time.Second
+	)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := c.Run(ctx); err != nil && !closed.Load() {
-			logger.Error("kafka tail exited", "err", err)
+		attempt := 0
+		for {
+			if closed.Load() {
+				return
+			}
+			c, err := kafkaconsumer.New(kafkaconsumer.Config{
+				Brokers: brokers,
+				GroupID: groupID,
+				Topics:  topics,
+				// DLQ=nil + Deduper=nil: skip retries/dedup; UI just acks.
+			}, registry)
+			if err != nil {
+				attempt++
+				logger.Warn("kafka tail: consumer init failed; will retry",
+					"err", err, "attempt", attempt, "backoff", backoff.String())
+				if !sleepCtx(ctx, backoff) {
+					return
+				}
+				backoff = nextBackoff(backoff, maxBack)
+				continue
+			}
+			runErr := c.Run(ctx)
+			// Context cancellation: clean exit on shutdown.
+			if closed.Load() || ctx.Err() != nil {
+				return
+			}
+			attempt++
+			logger.Warn("kafka tail: consumer exited; will retry",
+				"err", runErr, "attempt", attempt, "backoff", backoff.String())
+			// Drop the consumer reference — the next iteration
+			// builds a fresh one (the old one was already closed
+			// by c.Run's Stop on context cancel, but we're past
+			// that path here so a fresh consumer is the only
+			// safe move).
+			if !sleepCtx(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff, maxBack)
 		}
 	}()
 	stop := func() {
 		if !closed.CompareAndSwap(false, true) {
 			return
 		}
-		c.Stop()
 		wg.Wait()
 	}
 	return stop, nil
+}
+
+// sleepCtx waits for d or returns false on ctx cancellation.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// nextBackoff returns min(d*2, max) for the retry loop.
+func nextBackoff(d, max time.Duration) time.Duration {
+	next := d * 2
+	if next > max {
+		return max
+	}
+	return next
 }
 
 func forwardToBus(bus *events.Bus) kafkaconsumer.Handler {

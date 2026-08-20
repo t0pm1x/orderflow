@@ -191,24 +191,124 @@ services:
       - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
       - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
 
-  # web depends on order/payment/inventory — provide those service blocks in
-  # your extended compose file, or run them via
-  # 'make run-{order,payment,inventory}' alongside the web container.
-  # (Those service definitions are out of scope for this PR: they live in
-  # cmd/{order,payment,inventory}/Dockerfile and their own compose fragments.)
+  # ─── backend services (audit COMPOSE-MISSING-DEPS) ─────────────
+  #
+  # The four Go service binaries build per-cmd/<svc>/Dockerfile and
+  # connect to the upstream infra (postgres-<svc>, redpanda) via the
+  # in-network DNS names. HTTP_ADDRs are bound to the in-container
+  # addresses; host ports are mapped below for local curl / smoke
+  # scripts. Each binary is distroless and runs as nonroot.
+  order:
+    build:
+      context: ..
+      dockerfile: cmd/order/Dockerfile
+    image: orderflow/order:latest
+    container_name: orderflow-order
+    depends_on:
+      postgres-order:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://orderflow:orderflow@postgres-order:5432/order_order?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+      HTTP_ADDR: ":8081"
+      OTEL_EXPORTER: stdout
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+  payment:
+    build:
+      context: ..
+      dockerfile: cmd/payment/Dockerfile
+    image: orderflow/payment:latest
+    container_name: orderflow-payment
+    depends_on:
+      postgres-payment:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://orderflow:orderflow@postgres-payment:5432/payment_payment?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+      REDIS_URL: redis://redis:6379
+      HTTP_ADDR: ":8082"
+      OTEL_EXPORTER: stdout
+    ports:
+      - "8082:8082"
+    restart: unless-stopped
+
+  inventory:
+    build:
+      context: ..
+      dockerfile: cmd/inventory/Dockerfile
+    image: orderflow/inventory:latest
+    container_name: orderflow-inventory
+    depends_on:
+      postgres-inventory:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://orderflow:orderflow@postgres-inventory:5432/inventory_inventory?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+      REDIS_URL: redis://redis:6379
+      HTTP_ADDR: ":8083"
+      OTEL_EXPORTER: stdout
+    ports:
+      - "8083:8083"
+    restart: unless-stopped
+
+  saga:
+    build:
+      context: ..
+      dockerfile: cmd/saga/Dockerfile
+    image: orderflow/saga:latest
+    container_name: orderflow-saga
+    depends_on:
+      postgres-order:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      # saga shares the order DB (matches scripts/run.ps1 + tests/harness)
+      DATABASE_URL: postgres://orderflow:orderflow@postgres-order:5432/order_order?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+      HTTP_ADDR: ":8084"
+      OTEL_EXPORTER: stdout
+    ports:
+      - "8084:8084"
+    restart: unless-stopped
+
+  # ─── web playground (BFF for the four backend services) ───────
   web:
     build:
       context: ..
       dockerfile: services/web/Dockerfile
     container_name: orderflow-web
-    ports:
-      - "8085:8083"
+    depends_on:
+      order:
+        condition: service_started
+      payment:
+        condition: service_started
+      inventory:
+        condition: service_started
     environment:
       ORDER_URL: http://order:8081
       PAYMENT_URL: http://payment:8082
       INVENTORY_URL: http://inventory:8083
       KAFKA_BROKERS: redpanda:9092
-      HTTP_ADDR: ":8083"
+      # PORT-CONFLICT fix: web's in-container port is now :8085 by
+      # default so it doesn't collide with inventory's :8083. The
+      # host-side mapping is also :8085:8085 (was :8085:8083 which
+      # would have worked because Docker maps the container's :8083
+      # to the host's :8085, but the comment was confusing — the
+      # mapping now matches the container's default).
+      HTTP_ADDR: ":8085"
+      OTEL_EXPORTER: stdout
+    ports:
+      - "8085:8085"
     restart: unless-stopped
 
 volumes:

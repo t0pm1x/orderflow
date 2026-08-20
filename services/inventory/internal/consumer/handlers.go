@@ -124,8 +124,18 @@ func stockReserveRequested(logger *slog.Logger) pkgconsumer.Handler {
 		outRec := outbox.Record{
 			EventID:       uuid.NewString(),
 			EventType:     "StockReserved",
-			AggregateID:   p.ReservationID,
-			AggregateType: "Reservation",
+			// TIMELINE-FIX: AggregateID is the order_id, not the
+			// reservation_id. The orderflow-web UI's per-order
+			// timeline filters bus events by aggregate_id; using
+			// reservation_id meant StockReserved never appeared in
+			// the saga timeline even though it was the canonical
+			// "stock was reserved for this order" event. The
+			// reservation_id is preserved on the payload for
+			// downstream consumers that need it (saga's
+			// StockReserved handler ignores aggregate_id and reads
+			// order_id from the payload).
+			AggregateID:   p.OrderID,
+			AggregateType: "Order",
 			SchemaVersion: "1.0",
 			Topic:         Topic,
 			Payload:       payload,
@@ -208,8 +218,12 @@ func stockReleaseRequested(logger *slog.Logger) pkgconsumer.Handler {
 		outRec := outbox.Record{
 			EventID:       uuid.NewString(),
 			EventType:     "StockReleased",
-			AggregateID:   p.ReservationID,
-			AggregateType: "Reservation",
+			// TIMELINE-FIX: same rationale as StockReserved above.
+			// The reservation_id stays on the payload so the saga
+			// consumer and any other downstream (e.g. analytics
+			// tooling) can still join on it.
+			AggregateID:   p.OrderID,
+			AggregateType: "Order",
 			SchemaVersion: "1.0",
 			Topic:         Topic,
 			Payload:       payload,
