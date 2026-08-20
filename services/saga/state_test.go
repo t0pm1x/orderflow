@@ -134,3 +134,31 @@ func TestWatchdog_RegisterDeregisterExpire(t *testing.T) {
 	w.Stop()
 	<-done
 }
+
+// TestWatchdog_StopIsIdempotent is the reviewer-found regression
+// net for the double-close panic in Watchdog.Stop. Pre-fix the
+// channel was closed unconditionally; a second Stop() call from a
+// deferred shutdown path panicked with "close of closed channel".
+// The fix wraps the close in sync.Once; calling Stop N times from
+// any number of goroutines must be safe.
+func TestWatchdog_StopIsIdempotent(t *testing.T) {
+	w := NewWatchdog(time.Second)
+	done := make(chan struct{})
+	go func() {
+		w.Run(context.Background(), func(string) {})
+		close(done)
+	}()
+	// Fire Stop from 8 goroutines concurrently + 2 sequential calls.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.Stop()
+		}()
+	}
+	w.Stop()
+	w.Stop()
+	wg.Wait()
+	<-done
+}

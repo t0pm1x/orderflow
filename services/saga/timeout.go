@@ -16,9 +16,10 @@ import (
 type Watchdog struct {
 	Timeout time.Duration
 
-	mu      sync.Mutex
-	sagas   map[string]time.Time // orderID → deadline
-	stopped chan struct{}
+	mu       sync.Mutex
+	sagas    map[string]time.Time // orderID → deadline
+	stopped  chan struct{}
+	stopOnce sync.Once
 }
 
 // NewWatchdog constructs a Watchdog with the given timeout.
@@ -49,9 +50,12 @@ func (w *Watchdog) Deregister(orderID string) {
 	w.reschedule()
 }
 
-// Stop signals Run to exit.
+// Stop signals Run to exit. Safe to call from any number of goroutines
+// and any number of times — the actual close is gated by a sync.Once
+// so a duplicate Stop() call from a deferred shutdown path doesn't
+// panic with "close of closed channel".
 func (w *Watchdog) Stop() {
-	close(w.stopped)
+	w.stopOnce.Do(func() { close(w.stopped) })
 }
 
 // Run loops until Stop is called or ctx is cancelled, firing
