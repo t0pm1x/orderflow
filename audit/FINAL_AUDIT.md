@@ -1399,7 +1399,53 @@ P0/P1/P2 are fixed in v1.2 (commits `e1ac2a6`, `1af9faf`, `73b8445`,
 
 ---
 
-**FINAL STATUS (post-reviewer pass)**
+## Second-pass reviewer findings (post-fix)
+
+A second adversarial reviewer sub-agent was dispatched after the
+5 reviewer-found regressions were fixed. The reviewer found:
+
+### P1 — Web scrape target added in `b5fc1b1` pointed at a
+non-existent `/metrics` endpoint
+
+- **File**: `deploy/observability/prometheus.yml`
+- **Commit**: `8ce0e00` (dropped the job)
+- **Root cause**: web service has never registered a `/metrics`
+  route (grep for `promhttp` in `services/web/` returns zero hits).
+  The `b5fc1b1` port-correctness sweep added a `web-service` job
+  assuming the endpoint existed.
+- **Fix**: dropped the job. Documented in the file that web lacks
+  `/metrics` and the job can come back when web gains
+  request-level metrics.
+
+### P1 — `73b8445` introduced copy-paste typos in payment chart's
+example override
+
+- **File**: `deploy/helm/orderflow-payment/values-override.yaml.example`
+- **Commit**: `4c312e6`
+- **Root cause**: the example file had `order_order` (the order
+  service's DB name) and `orderflow-order-secrets` (the order
+  chart's secret name) instead of the payment-service-specific
+  names. An operator copying the example would deploy a payment
+  service connected to the wrong DB and looking up a non-existent
+  Secret.
+- **Fix**: restored `payment_payment` and `orderflow-payment-secrets`.
+
+### P2 — Saga and order helm charts also missing REDIS_URL
+
+- **Files**: `deploy/helm/orderflow-{order,saga}/templates/{deployment,
+  secret}.yaml` + the matching `values-override.yaml.example` files;
+  kustomize base/services.yaml order deployment
+- **Commit**: `6d0645b`
+- **Root cause**: `73b8445`'s REDIS_URL addition was scoped to the
+  payment chart; the same wiring was missing from saga and order.
+  Both services call `pkgconsumer.NewDeduperFromRedisURL` and both
+  would silently disable consumer dedup in production.
+- **Fix**: applied the same REDIS_URL pattern from payment to the
+  saga and order helm charts + the order kustomize deployment.
+
+---
+
+**FINAL STATUS (post-second-reviewer pass)**
 
 ```
 P0: 0
@@ -1407,9 +1453,11 @@ P1: 0
 P2: 0
 P3: 0
 
-Fixed: 14 (OBX-005, NEW-P2-2, SEC-11, SEC-12, K8S-5/6/7/12/13/15,
-        K8S-17/18, SEC-13, G2 + 5 reviewer-found: web port,
-        pii key, payment REDIS, watchdog Stop, prom targets)
+Fixed: 17 (OBX-005, NEW-P2-2, SEC-11, SEC-12, K8S-5/6/7/12/13/15,
+        K8S-17/18, SEC-13, G2 + 8 reviewer-found across two passes:
+        web port, pii key, payment REDIS, watchdog Stop,
+        prom targets, web metrics target, payment example typos,
+        order + saga REDIS)
 Documented: 1 (NEW-P0-4 via ADR-0005)
 False positives: 0
 Remaining: 0 (OBX-011 per-record attribution is a future
@@ -1419,7 +1467,7 @@ Tests: PASS  (all 15 workspace modules, all services, all
               consumer/outbox/platform packages)
 Race:  PASS  (-race -short clean across all modules)
 Vet:   PASS  (clean across all modules)
-E2E:   PASS  (happy 38s + compensation 38s + chaos 106s)
+E2E:   PASS  (happy + compensation ~78s combined; chaos ~108s)
 K8s:   NOT VERIFIED  (no kind cluster in this environment; charts
                       updated to render with startup probe /
                       preStop / runAsUser + per-chart SA / RBAC
@@ -1435,5 +1483,5 @@ Reason: All P0/P1 audit findings fixed with regression tests;
         volumes). E2E + chaos suite green end-to-end on Windows
         in ~180s. The five binaries build, vet, test, and
         race-test clean. Reviewer-found regressions addressed
-        in same release.
+        across two adversarial passes in same release.
 ```
