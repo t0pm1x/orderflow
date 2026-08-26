@@ -124,3 +124,18 @@ button:disabled,
   .main { grid-template-columns: 1fr; }
   .sidebar { border-left: 0; border-top: 1px solid var(--border); max-height: 40vh; }
 }
+
+/* FILTER-CHIPS / SKU-LINKS additions (v1.1.6): the orders list now
+ * has a chip-row above the table for state filtering and clickable
+ * SKU cells that filter the list by that SKU. Chips reuse the
+ * .btn secondary look but with a pill radius; the active chip is
+ * filled with the accent colour. */
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.chip { display: inline-block; padding: 4px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+  font-size: 12px; font-weight: 600; text-decoration: none; }
+.chip:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.chip-active, .chip-active:hover { background: var(--accent); color: white; border-color: var(--accent); }
+a.mono:hover { color: var(--accent); text-decoration: underline; }
+form.row select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; }

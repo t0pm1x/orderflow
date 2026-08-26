@@ -39,9 +39,13 @@ type fakeOrderClient struct {
 	cancelErr       error
 	lastCancel      string
 	lastSubmit      *backend.OrderSubmit
+	lastListState   backend.OrderState
+	lastListLimit   int
 }
 
-func (f *fakeOrderClient) List(_ context.Context, state backend.OrderState, _ int) (*backend.OrderList, error) {
+func (f *fakeOrderClient) List(_ context.Context, state backend.OrderState, limit int) (*backend.OrderList, error) {
+	f.lastListState = state
+	f.lastListLimit = limit
 	if f.listErr != nil {
 		return f.listResp, f.listErr
 	}
@@ -769,6 +773,47 @@ func TestOrderDetail_NotFound(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 404 {
 		t.Fatalf("status: got %d want 404", resp.StatusCode)
+	}
+}
+
+// TestOrderDetail_NotFound_BodyRendersBanner pins the regression
+// where w.WriteHeader(404) was called BEFORE template execution, so a
+// template error (e.g. {{.Order.ID}} when vm.Order is nil) silently
+// truncated the body to a half-rendered HTML fragment while the test
+// TestOrderDetail_NotFound still saw status==404. The page must
+// (1) carry the user-facing "Order not found." banner, (2) not render
+// Go's "<no value>" placeholder that leaking nil-pointer evaluation
+// would emit into hx-get="...", and (3) hide the Refresh button —
+// refreshing a non-existent order is pointless.
+func TestOrderDetail_NotFound_BodyRendersBanner(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.getErr = &backend.HTTPError{Status: 404, Body: "not found", URL: "http://order/v1/orders/22222222-2222-4222-8222-222222222222"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/22222222-2222-4222-8222-222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 404 {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
+	}
+	body := new(strings.Builder)
+	if _, err := io.Copy(body, resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	s := body.String()
+	if !strings.Contains(s, "Order not found") {
+		t.Errorf("404 body must carry the user-facing 'Order not found' banner; got: %s", s)
+	}
+	if strings.Contains(s, "<no value>") {
+		t.Errorf("404 body leaked Go's '<no value>' placeholder (template guard regressed); got: %s", s)
+	}
+	if strings.Contains(s, "hx-get=\"/orders/?frag=1\"") {
+		t.Errorf("404 body rendered an hx-get to a bare '/orders/?frag=1' (Refresh button not guarded); got: %s", s)
+	}
+	if strings.Contains(s, ">Refresh</button>") {
+		t.Errorf("404 body rendered the Refresh button (must be hidden when .Order is nil); got: %s", s)
 	}
 }
 
@@ -1886,6 +1931,85 @@ func TestSidebar_Enabled_NoBadge(t *testing.T) {
 	}
 }
 
+// TestLayout_HxBoostSwapsMainContentOnly pins the navigation-
+// without-full-reload contract AND the sidebar-persistence
+// optimisation: the layout's <body> must declare hx-boost="true"
+// with hx-target="#main-content" so that plain <a href="..."> links
+// trigger htmx to swap ONLY the <section id="main-content"> region.
+// The <header class="topbar"> and <aside class="sidebar"> (with its
+// SSE EventSource) sit OUTSIDE #main-content and survive every
+// navigation unchanged — clicking a nav link does not flash the
+// topbar, tear down the live-event EventSource, or reset the
+// SSE event list (operators keep seeing live events across page
+// transitions).
+//
+// Sister assertion: the inline SSE / aria-busy / copy-id listeners
+// live in <head>, not in <body>. hx-boost swaps re-evaluate any
+// inline <script> inside the swap target, which would duplicate the
+// listeners on every navigation. Keeping the script in <head> makes
+// it run exactly once per page load (the <head> is not part of the
+// swap target).
+func TestLayout_HxBoostSwapsMainContentOnly(t *testing.T) {
+	oc := &fakeOrderClient{listResp: &backend.OrderList{Items: []backend.Order{}}}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `<body hx-boost="true"`) {
+		t.Errorf("expected <body hx-boost=\"true\" ...> on the layout; got: %s", s)
+	}
+	if !strings.Contains(s, `hx-target="#main-content"`) {
+		t.Errorf("expected hx-target=\"#main-content\" (sidebar must persist across nav); got: %s", s)
+	}
+	if strings.Contains(s, `hx-target="body"`) {
+		t.Errorf("hx-target must NOT be 'body' (that would tear down the SSE sidebar EventSource on every nav); got: %s", s)
+	}
+	if !strings.Contains(s, `hx-push-url="true"`) {
+		t.Errorf("expected hx-push-url=\"true\" so URL stays in sync with view; got: %s", s)
+	}
+	// Structural check: <header> and <aside> must appear BEFORE
+	// #main-content in document order (they sit outside the swap
+	// target). The polling div inside orders_list / order_detail /
+	// inventory must appear INSIDE #main-content.
+	headerIdx := strings.Index(s, `<header class="topbar"`)
+	mainIdx := strings.Index(s, `id="main-content"`)
+	asideIdx := strings.Index(s, `<aside class="sidebar"`)
+	if headerIdx < 0 || mainIdx < 0 || asideIdx < 0 {
+		t.Fatalf("expected header/main-content/aside in DOM; got: header=%d main=%d aside=%d", headerIdx, mainIdx, asideIdx)
+	}
+	if !(headerIdx < mainIdx && mainIdx < asideIdx) {
+		t.Errorf("expected DOM order header < main-content < aside; got header=%d main=%d aside=%d", headerIdx, mainIdx, asideIdx)
+	}
+	// SSE connect lives on the aside, NOT inside #main-content —
+	// otherwise the EventSource would be torn down on every nav.
+	// The aside is a sibling of <section id="main-content">, so
+	// sse-connect must appear after #main-content closes (which we
+	// approximate by checking it appears AFTER the #main-content
+	// tag opening). We don't try to find the closing </section>
+	// because whitespace + nested tags make the index match brittle.
+	sseConnectTag := `sse-connect="/events/stream"`
+	if pos := strings.Index(s, sseConnectTag); pos < 0 {
+		t.Errorf("expected sse-connect attribute on the sidebar aside; got: %s", s)
+	} else if pos < mainIdx {
+		t.Errorf("sse-connect must NOT be inside #main-content (sidebar must persist across nav); found at offset %d, main-content at %d", pos, mainIdx)
+	}
+	// The inline script must live in <head> (so swaps don't re-run
+	// it) — count listener registrations and assert exactly once.
+	n := strings.Count(s, "htmx:sseMessage")
+	if n != 1 {
+		t.Errorf("htmx:sseMessage listener registered %d times; expected exactly 1 (must live in <head>)", n)
+	}
+	n = strings.Count(s, "addEventListener('click'")
+	if n != 1 {
+		t.Errorf("copy-id click listener registered %d times; expected exactly 1", n)
+	}
+}
+
 // TestPageOrderEvents_Frag_RendersOnlyBody pins the htmx-polling
 // contract for the per-order timeline endpoint:
 // GET /orders/{id}/events?frag=1 returns ONLY the orderEventsBody
@@ -2403,4 +2527,160 @@ func (f *reversedInventoryClient) GetStock(_ context.Context, sku string) (*back
 	f.mu.Unlock()
 	time.Sleep(f.delay)
 	return f.stock[sku], nil
+}
+
+// TestOrdersList_StateFilter_ForwardsToUpstream pins the chip-filter
+// wiring: ?state=reserved must be forwarded to the Order service as a
+// non-empty OrderState filter (PageOrdersList must NOT collapse it to
+// ""), and the rendered chip row must highlight "Reserved" as the
+// active chip. Pre-fix the chip row wasn't rendered at all and the
+// state query param was silently ignored.
+func TestOrdersList_StateFilter_ForwardsToUpstream(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-r1", State: backend.OrderStateReserved,
+				Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}}},
+		}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/?state=reserved")
+	if err != nil {
+		t.Fatalf("GET /?state=reserved: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	if string(oc.lastListState) != "reserved" {
+		t.Errorf("state filter not forwarded to upstream: got %q want %q", oc.lastListState, "reserved")
+	}
+	body := new(strings.Builder)
+	_, _ = io.Copy(body, resp.Body)
+	s := body.String()
+	if !strings.Contains(s, `class="chip chip-active"`) || !strings.Contains(s, ">Reserved<") {
+		t.Errorf("expected active chip on Reserved; got: %s", s)
+	}
+	if !strings.Contains(s, "/orders/ord-r1") {
+		t.Errorf("expected ord-r1 row link; got: %s", s)
+	}
+}
+
+// TestOrdersList_SKUFilter_FiltersInBFF pins the client-side SKU
+// filter: ?sku=SKU-001 keeps only orders that have a SKU-001 line
+// item, and the response renders a "Filtered by SKU" banner with a
+// "clear SKU filter" link. The Order service doesn't expose a
+// per-SKU list endpoint, so the BFF widens the upstream page and
+// filters in memory.
+func TestOrdersList_SKUFilter_FiltersInBFF(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-1", State: backend.OrderStateConfirmed,
+				Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}}},
+			{ID: "ord-2", State: backend.OrderStateConfirmed,
+				Items: []backend.OrderItem{{SKU: "SKU-002", Quantity: 2}}},
+			{ID: "ord-3", State: backend.OrderStatePending,
+				Items: []backend.OrderItem{
+					{SKU: "SKU-001", Quantity: 3},
+					{SKU: "SKU-003", Quantity: 1},
+				}},
+		}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/?sku=SKU-001")
+	if err != nil {
+		t.Fatalf("GET /?sku=SKU-001: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body := new(strings.Builder)
+	_, _ = io.Copy(body, resp.Body)
+	s := body.String()
+	if strings.Contains(s, "ord-2") {
+		t.Errorf("ord-2 (SKU-002 only) must be filtered out; got: %s", s)
+	}
+	if !strings.Contains(s, "ord-1") || !strings.Contains(s, "ord-3") {
+		t.Errorf("ord-1 and ord-3 (each has SKU-001) must be present; got: %s", s)
+	}
+	if !strings.Contains(s, "Filtered by SKU:") {
+		t.Errorf("expected 'Filtered by SKU:' banner; got: %s", s)
+	}
+	if !strings.Contains(s, "clear SKU filter") {
+		t.Errorf("expected 'clear SKU filter' link; got: %s", s)
+	}
+	if oc.lastListLimit != 200 {
+		t.Errorf("SKU filter should widen upstream page to 200; got %d", oc.lastListLimit)
+	}
+}
+
+// TestOrdersList_SKUFilter_AcceptsCommaSeparated pins that the BFF
+// accepts both ?sku=A&sku=B and ?sku=A,B forms (the latter is what
+// operators tend to type when deep-linking from inventory).
+func TestOrdersList_SKUFilter_AcceptsCommaSeparated(t *testing.T) {
+	oc := &fakeOrderClient{
+		listResp: &backend.OrderList{Items: []backend.Order{
+			{ID: "ord-1", Items: []backend.OrderItem{{SKU: "SKU-001", Quantity: 1}}},
+			{ID: "ord-2", Items: []backend.OrderItem{{SKU: "SKU-002", Quantity: 1}}},
+			{ID: "ord-3", Items: []backend.OrderItem{{SKU: "SKU-999", Quantity: 1}}},
+		}},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/?sku=SKU-001,SKU-002")
+	if err != nil {
+		t.Fatalf("GET /?sku=SKU-001,SKU-002: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body := new(strings.Builder)
+	_, _ = io.Copy(body, resp.Body)
+	s := body.String()
+	if strings.Contains(s, "ord-3") {
+		t.Errorf("ord-3 (SKU-999) must be filtered out under SKU-001,SKU-002; got: %s", s)
+	}
+	if !strings.Contains(s, "ord-1") || !strings.Contains(s, "ord-2") {
+		t.Errorf("ord-1 and ord-2 must be present; got: %s", s)
+	}
+}
+
+// TestPaymentsSim_AllErrorCodesAccepted pins the new <select
+// name=error_code> on the fail form: every option
+// (card_declined / insufficient_funds / network_error / provider_timeout)
+// must round-trip through to the backend client without dropping or
+// rewriting the value. Pre-fix the field was a hidden
+// error_code=card_declined input — only one error code was reachable
+// from the UI.
+func TestPaymentsSim_AllErrorCodesAccepted(t *testing.T) {
+	codes := []string{"card_declined", "insufficient_funds", "network_error", "provider_timeout"}
+	for _, code := range codes {
+		t.Run(code, func(t *testing.T) {
+			pc := &fakePaymentClient{}
+			// Inline set construction so we can swap in the
+			// test-owned payment client (newTestSet hard-codes a
+			// fresh fakePaymentClient).
+			h := handlers.NewSet(&fakeOrderClient{}, pc, &fakeInventoryClient{}, events.NewBus(), slog.Default())
+			h.SetEventsEnabled(true)
+			r := chi.NewRouter()
+			h.Routes(r)
+			srv := httptest.NewServer(r)
+			defer srv.Close()
+			form := strings.NewReader("order_id=22222222-2222-4222-8222-222222222222&status=failed&error_code=" + code + "&last_four=0001&idempotency_token=sim-codes-tok-" + code)
+			req, _ := http.NewRequest("POST", srv.URL+"/payments/sim/fire", form)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != 200 {
+				t.Fatalf("status: got %d want 200 for error_code=%s", resp.StatusCode, code)
+			}
+			if pc.lastWebhook == nil || pc.lastWebhook.ErrorCode != code {
+				got := ""
+				if pc.lastWebhook != nil {
+					got = pc.lastWebhook.ErrorCode
+				}
+				t.Errorf("error_code: got %q want %q", got, code)
+			}
+		})
+	}
 }

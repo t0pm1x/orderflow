@@ -5,12 +5,13 @@
     {{if .BackendDown}}<div class="error">Inventory backend unavailable: {{.Error}}</div>
     {{else if not .Rows}}<p class="muted">No stock items yet. Submit some orders to populate this view.</p>
     {{else}}
+    <p class="muted">Click any SKU to see orders that include it.</p>
     <table>
       <thead><tr><th>SKU</th><th>Available</th><th>Reserved</th><th>Version</th></tr></thead>
       <tbody>
         {{range .Rows}}
         <tr>
-          <td class="mono">{{.SKU}}</td>
+          <td class="mono"><a href="/?sku={{.SKU}}" title="View orders that include this SKU">{{.SKU}}</a></td>
           <td>{{if .Missing}}&mdash;{{else}}{{.Available}}{{end}}</td>
           <td>{{if .Missing}}&mdash;{{else}}{{.Reserved}}{{end}}</td>
           <td class="muted">{{if .Missing}}&mdash;{{else}}{{.Version}}{{end}}</td>

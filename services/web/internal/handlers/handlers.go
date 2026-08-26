@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -65,7 +66,26 @@ func NewSet(order backend.OrderClient, payment backend.PaymentClient,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	t := template.New("").Funcs(template.FuncMap{"timeAgo": timeAgo})
+	t := template.New("").Funcs(template.FuncMap{
+		"timeAgo": timeAgo,
+		"dict": func(values ...any) map[string]any {
+			// Pairwise builder: dict "k1", v1, "k2", v2, ... → map.
+			// Odd-arg calls panic — fail loudly at template parse time
+			// rather than silently drop the trailing key in production.
+			if len(values)%2 != 0 {
+				panic("handlers.dict: odd argument count")
+			}
+			m := make(map[string]any, len(values)/2)
+			for i := 0; i < len(values); i += 2 {
+				key, ok := values[i].(string)
+				if !ok {
+					panic(fmt.Sprintf("handlers.dict: non-string key %v", values[i]))
+				}
+				m[key] = values[i+1]
+			}
+			return m
+		},
+	})
 	t = template.Must(t.ParseFS(templates.FS, "layout.html", "_icons.html", "orders_list.html", "order_hero.html", "order_new.html", "order_detail.html", "order_events.html", "inventory.html", "payments.html"))
 	return &Set{
 		Order:     order,
@@ -106,6 +126,17 @@ type ordersListVM struct {
 	BackendDown   bool
 	Error         string
 	EventsEnabled bool
+	// Filter is the active state filter (one of "" = all, "pending",
+	// "reserved", "confirmed", "cancelled", "failed"). Echoed into
+	// the chip-row href so the currently-active chip is highlighted
+	// and the polling re-fetch preserves the filter.
+	Filter string
+	// SKUs is the set of SKUs the user is currently filtering by
+	// (read from ?sku=SKU-A&sku=SKU-B). When non-empty the list is
+	// restricted client-side in the BFF (the Order service doesn't
+	// expose a per-SKU list endpoint, so we don't want a second
+	// round-trip — see OrderListBySKUs).
+	SKUs []string
 }
 
 // PageOrdersList serves GET / (orders list). On backend failure it
@@ -113,23 +144,101 @@ type ordersListVM struct {
 // live-events sidebar) stays usable. When called with ?frag=1 the
 // handler renders only the body fragment (no layout shell) so htmx
 // polling can swap just the page-content region.
+//
+// Optional query params:
+//
+//	?state=pending|reserved|confirmed|cancelled|failed  — chip filter
+//	?sku=SKU-A&sku=SKU-B                               — SKU filter
+//	  (multiple values allowed; comma-separated also accepted)
+//
+// Filters compose: an SKU filter is applied client-side in the BFF
+// (OrderListBySKUs); a state filter is forwarded to the Order service.
+// Either filter being non-empty re-renders the chip row with the
+// matching chip marked as active.
 func (s *Set) PageOrdersList(w http.ResponseWriter, r *http.Request) {
 	var vm ordersListVM
 	vm.Body = "ordersListBody"
 	vm.EventsEnabled = s.EventsEnabled
-	list, err := s.Order.List(r.Context(), "", 50)
+	vm.Filter = r.URL.Query().Get("state")
+	vm.SKUs = parseSKUFilter(r.URL.Query()["sku"])
+	stateFilter := backend.OrderState(vm.Filter)
+	limit := 50
+	if len(vm.SKUs) > 0 {
+		// SKU filter is a narrow subset, so a wider upstream page is
+		// more useful — bump to 200 so the operator usually sees all
+		// matching orders on a single page.
+		limit = 200
+	}
+	list, err := s.Order.List(r.Context(), stateFilter, limit)
 	if err != nil {
 		msg, _ := mapUpstreamError(s.Logger, "GET /v1/orders", err)
 		vm.BackendDown = true
 		vm.Error = msg
 	} else {
-		vm.Orders = list.Items
+		vm.Orders = OrderListBySKUs(list.Items, vm.SKUs)
 	}
 	if r.URL.Query().Get("frag") == "1" {
 		s.renderPageFrag(w, "ordersListBody", vm)
 		return
 	}
 	s.renderPage(w, vm)
+}
+
+// parseSKUFilter normalises the ?sku= multi-value or CSV forms into a
+// stable slice. Returns nil when no SKUs were supplied so callers can
+// distinguish "no filter" (nil) from "filter on empty string" (slice
+// of len 1 with ""). Comma-separated values are split so a single
+// `?sku=SKU-A,SKU-B` works the same as two `?sku=` params — easier to
+// type when deep-linking.
+func parseSKUFilter(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// OrderListBySKUs filters orders down to those that have at least one
+// line item whose SKU is in wanted. When wanted is nil/empty the input
+// is returned unchanged (no-op fast path). The Order service doesn't
+// expose a per-SKU list endpoint yet, so the BFF filters in memory —
+// the upstream page is widened to 200 (see PageOrdersList) so the
+// filtered result is usually complete for a single operator session.
+func OrderListBySKUs(in []backend.Order, wanted []string) []backend.Order {
+	if len(wanted) == 0 {
+		return in
+	}
+	want := make(map[string]struct{}, len(wanted))
+	for _, s := range wanted {
+		want[s] = struct{}{}
+	}
+	out := make([]backend.Order, 0, len(in))
+	for _, o := range in {
+		for _, it := range o.Items {
+			if _, ok := want[it.SKU]; ok {
+				out = append(out, o)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // renderFragment executes the named body template only (no layout

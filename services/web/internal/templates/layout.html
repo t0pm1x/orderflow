@@ -7,40 +7,12 @@
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/vendor/htmx.min.js"></script>
   <script src="/static/vendor/htmx-sse.js" defer></script>
-</head>
-<body>
-  <header class="topbar">
-    <a class="brand" href="/">OrderFlow</a>
-    <span class="muted">Distributed order processing — playground</span>
-    <nav>
-      <a href="/">Orders</a>
-      <a href="/inventory">Inventory</a>
-      <a href="/payments/sim">Payments sim</a>
-    </nav>
-  </header>
-
-  <main class="main">
-    <section class="content">
-      {{if eq .Body "orderNewBody"}}{{template "orderNewBody" .}}{{end}}
-      {{if eq .Body "ordersListBody"}}{{template "ordersListBody" .}}{{end}}
-      {{if eq .Body "orderDetailBody"}}{{template "orderDetailBody" .}}{{end}}
-      {{if eq .Body "inventoryBody"}}{{template "inventoryBody" .}}{{end}}
-      {{if eq .Body "paymentsSimBody"}}{{template "paymentsSimBody" .}}{{end}}
-      {{if eq .Body "orderEventsBody"}}{{template "orderEventsBody" .}}{{end}}
-    </section>
-    <aside class="sidebar" hx-ext="sse" sse-connect="/events/stream" sse-swap="event" hx-swap="afterend">
-      <h3>Live events{{if not .EventsEnabled}} <span class="badge cancelled" title="Kafka tail not started">disconnected</span>{{end}}</h3>
-      <ul id="events" class="events" role="log" aria-live="polite" aria-label="Order event stream"></ul>
-      {{if not .EventsEnabled}}
-      <p class="muted">Live events: disconnected (KAFKA_BROKERS not set or Kafka tail not started). Pages still work.</p>
-      {{end}}
-    </aside>
-  </main>
-
   <script>
-    // Vanilla JS SSE-receiver that appends one <li> per incoming event.
-    // Re-uses the EventSource already opened by htmx-sse extension so
-    // we don't double-open a connection.
+    // Inline scripts live in <head> so hx-boost swaps don't re-run
+    // them on every navigation (which would duplicate the SSE / aria-busy
+    // / copy-id listeners below). htmx event listeners are attached to
+    // `document.body`, which survives the swap target unchanged, so the
+    // handlers continue to work after navigation.
     document.body.addEventListener('htmx:sseMessage', function (e) {
       try {
         var data = JSON.parse(e.detail.data);
@@ -53,7 +25,6 @@
         while (ul.children.length > 50) ul.removeChild(ul.lastChild);
       } catch (_) {}
     });
-    // Announce submit busy state to assistive tech while htmx is in flight.
     document.body.addEventListener('htmx:beforeRequest', function (e) {
       var trigger = e.detail.elt;
       if (!trigger) return;
@@ -70,9 +41,6 @@
         : trigger.querySelector('button[type="submit"]');
       if (btn) btn.setAttribute('aria-busy', 'false');
     });
-    // Click-to-copy order IDs (and anything marked .copy-id). Uses the async
-    // Clipboard API where available; gracefully no-ops elsewhere (HTTP,
-    // insecure context, older browsers).
     (function () {
       function flash(el, ok) {
         var prev = el.dataset.prevText || el.textContent;
@@ -107,6 +75,35 @@
       });
     })();
   </script>
+</head>
+<body hx-boost="true" hx-target="#main-content" hx-swap="outerHTML" hx-push-url="true">
+  <header class="topbar">
+    <a class="brand" href="/">OrderFlow</a>
+    <span class="muted">Distributed order processing — playground</span>
+    <nav>
+      <a href="/">Orders</a>
+      <a href="/inventory">Inventory</a>
+      <a href="/payments/sim">Payments sim</a>
+    </nav>
+  </header>
+
+  <main class="main">
+    <section id="main-content" class="content">
+      {{if eq .Body "orderNewBody"}}{{template "orderNewBody" .}}{{end}}
+      {{if eq .Body "ordersListBody"}}{{template "ordersListBody" .}}{{end}}
+      {{if eq .Body "orderDetailBody"}}{{template "orderDetailBody" .}}{{end}}
+      {{if eq .Body "inventoryBody"}}{{template "inventoryBody" .}}{{end}}
+      {{if eq .Body "paymentsSimBody"}}{{template "paymentsSimBody" .}}{{end}}
+      {{if eq .Body "orderEventsBody"}}{{template "orderEventsBody" .}}{{end}}
+    </section>
+    <aside class="sidebar" hx-ext="sse" sse-connect="/events/stream" sse-swap="event" hx-swap="afterend">
+      <h3>Live events{{if not .EventsEnabled}} <span class="badge cancelled" title="Kafka tail not started">disconnected</span>{{end}}</h3>
+      <ul id="events" class="events" role="log" aria-live="polite" aria-label="Order event stream"></ul>
+      {{if not .EventsEnabled}}
+      <p class="muted">Live events: disconnected (KAFKA_BROKERS not set or Kafka tail not started). Pages still work.</p>
+      {{end}}
+    </aside>
+  </main>
 </body>
 </html>
 {{end}}

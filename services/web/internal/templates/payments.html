@@ -24,15 +24,20 @@
           </form>
         </td>
         <td>
-          <form method="post" action="/payments/sim/fire" hx-post="/payments/sim/fire" hx-swap="none">
+          <form method="post" action="/payments/sim/fire" hx-post="/payments/sim/fire" hx-swap="none" class="row">
             <input type="hidden" name="order_id" value="{{.ID}}">
             <input type="hidden" name="status" value="failed">
-            <input type="hidden" name="error_code" value="card_declined">
             <input type="hidden" name="last_four" value="{{.LastFour}}">
             <input type="hidden" name="idempotency_token" value="{{.TokenForceFail}}">
-            <button type="submit" class="danger" hx-disabled-elt="this" aria-busy="false" aria-label="Fire a failed webhook with error code card_declined">
+            <select name="error_code" aria-label="Choose failure reason" title="Failure reason forwarded to the payment provider's mock">
+              <option value="card_declined" selected>card_declined</option>
+              <option value="insufficient_funds">insufficient_funds</option>
+              <option value="network_error">network_error</option>
+              <option value="provider_timeout">provider_timeout</option>
+            </select>
+            <button type="submit" class="danger" hx-disabled-elt="this" aria-busy="false" aria-label="Fire a failed webhook with the chosen error code">
               <span class="htmx-indicator" aria-hidden="true"></span>
-              Force fail (&cross; card_declined)
+              Force fail (&cross;)
             </button>
           </form>
         </td>
