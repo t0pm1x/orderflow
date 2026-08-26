@@ -175,7 +175,7 @@ jobs:
       # stall without grepping through CI service output.
       - name: Upload E2E service logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-service-logs
           path: tests/logs/
