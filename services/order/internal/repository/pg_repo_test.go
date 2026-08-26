@@ -479,6 +479,59 @@ func TestPGRepo_ListEmptyStateReturnsAll(t *testing.T) {
 	}
 }
 
+// TestPGRepo_ListReturnsLastFourAndCompletedAt pins v1.1.7 List-query
+// completeness: List must surface the same row shape as Get, including
+// last_four (used by the BFF payments-sim's hidden last_four input)
+// and completed_at (rendered by order_detail.html's "completed"
+// timestamp line). Pre-fix the List SELECT omitted both columns, so
+// (a) every force-fail webhook submitted from /payments/sim had an
+// empty last_four — the upstream errorCode() fallback then always
+// picked "network_error" instead of the card-derived reason, and
+// (b) terminal orders surfaced via /v1/orders never displayed the
+// completion timestamp. The fix added the columns to the SELECT and
+// the scan list.
+func TestPGRepo_ListReturnsLastFourAndCompletedAt(t *testing.T) {
+	pool := testDB(t)
+	repo := NewPGRepo(pool)
+
+	id := types.NewOrderID()
+	customerID := types.NewCustomerID()
+	now := time.Now().UTC()
+	itemsJSON := []byte(`[{"sku":"L","quantity":1,"unit_price_cents":1999}]`)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO orders (id, customer_id, items, state, total_cents, last_four, created_at, updated_at, completed_at)
+		 VALUES ($1, $2, $3, 'confirmed', 1999, '4242', $4, $4, $4)`,
+		id, customerID, itemsJSON, now,
+	); err != nil {
+		t.Fatalf("seed order: %v", err)
+	}
+
+	// Pull a list wide enough to definitely include our seed
+	// (other tests in the same pool also write orders).
+	got, err := repo.List(context.Background(), domain.StateConfirmed, 500)
+	if err != nil {
+		t.Fatalf("List(confirmed, 500): %v", err)
+	}
+	var found *domain.Order
+	for i := range got {
+		if got[i].ID == id {
+			found = got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("seeded order %v not present in List(confirmed) result", id)
+	}
+	if found.LastFour != "4242" {
+		t.Errorf("LastFour: got %q want %q (List must SELECT last_four)", found.LastFour, "4242")
+	}
+	if found.CompletedAt == nil {
+		t.Error("CompletedAt: got nil want non-nil (List must SELECT completed_at)")
+	} else if found.CompletedAt.UTC().Truncate(time.Millisecond) != now.Truncate(time.Millisecond) {
+		t.Errorf("CompletedAt: got %v want %v", found.CompletedAt.UTC(), now)
+	}
+}
+
 // seedOrderForCancel is a small helper used by the cancel tests to
 // insert an order directly via the pool (bypassing Insert so the
 // test can control state/columns Insert doesn't set, like completed_at).

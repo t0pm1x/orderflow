@@ -119,13 +119,30 @@ func (h *Handler) updateState(ctx context.Context, orderID string, state domain.
 	// late 'OrderConfirmed' for a 'failed' order resurrect the
 	// order. StateFailed is reachable via the saga TTL sweep,
 	// so it must be protected too.
-	if _, err := h.pool.Exec(ctx,
-		`UPDATE orders
-		    SET state = $1, updated_at = NOW()
-		  WHERE id = $2
-		    AND state NOT IN ('confirmed', 'cancelled', 'failed')`,
-		string(state), orderID,
-	); err != nil {
+	//
+	// COMPLETED-AT-ON-CONSUMER fix: when the new state is terminal
+	// (confirmed/cancelled/failed) we also stamp completed_at so
+	// the order-detail "completed {{time}}" line in the BFF renders.
+	// Pre-fix the consumer only updated state + updated_at, so a
+	// saga-driven OrderConfirmed / OrderCancelled / saga-TTL
+	// StateFailed all left completed_at NULL — visible to the
+	// operator as "the order is confirmed but no completion
+	// timestamp". The PGRepo.Cancel path already sets completed_at;
+	// the consumer path is now consistent.
+	var stmt string
+	switch state {
+	case domain.StateConfirmed, domain.StateCancelled, domain.StateFailed:
+		stmt = `UPDATE orders
+		           SET state = $1, updated_at = NOW(), completed_at = NOW()
+		         WHERE id = $2
+		           AND state NOT IN ('confirmed', 'cancelled', 'failed')`
+	default:
+		stmt = `UPDATE orders
+		           SET state = $1, updated_at = NOW()
+		         WHERE id = $2
+		           AND state NOT IN ('confirmed', 'cancelled', 'failed')`
+	}
+	if _, err := h.pool.Exec(ctx, stmt, string(state), orderID); err != nil {
 		h.logger.Error("update order state failed", "order_id", orderID, "state", state, "err", err)
 		return err
 	}

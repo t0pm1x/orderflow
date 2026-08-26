@@ -217,6 +217,16 @@ func (r *PGRepo) Cancel(ctx context.Context, id types.OrderID) error {
 // treated as "no filter" so callers (notably the web inventory
 // page) that want all states get all states; pre-fix this
 // matched `WHERE state = ”` which returned zero rows.
+//
+// The SELECT includes every column Get reads (last_four,
+// completed_at) so the BFF / payments-sim view sees the same row
+// shape from /v1/orders as from /v1/orders/{id}. Pre-fix List
+// omitted last_four and completed_at, so the payments-sim's hidden
+// last_four input on the force-webhook form was always empty
+// (the upstream errorCode() fallback then always picked
+// "network_error" instead of the card-derived reason) and the
+// order-detail's "completed" timestamp never rendered for terminal
+// orders surfaced via the list endpoint.
 func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) ([]*domain.Order, error) {
 	// Clamp limit to match the handler's allowed range (1..500).
 	// Non-positive or excessive values fall back to the default 50.
@@ -231,13 +241,15 @@ func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) (
 	)
 	if state == "" {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, customer_id, items, state, total_cents, created_at, updated_at
+			`SELECT id, customer_id, items, state, total_cents,
+			        created_at, updated_at, completed_at, last_four
 			   FROM orders
 			  ORDER BY created_at DESC
 			  LIMIT $1`, limit)
 	} else {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, customer_id, items, state, total_cents, created_at, updated_at
+			`SELECT id, customer_id, items, state, total_cents,
+			        created_at, updated_at, completed_at, last_four
 			   FROM orders
 			  WHERE state = $1
 			  ORDER BY created_at DESC
@@ -254,11 +266,16 @@ func (r *PGRepo) List(ctx context.Context, state domain.OrderState, limit int) (
 			o         domain.Order
 			itemsJSON []byte
 			st        string
+			lastFour  sql.NullString
 		)
-		if err := rows.Scan(&o.ID, &o.CustomerID, &itemsJSON, &st, &o.TotalCents, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.CustomerID, &itemsJSON, &st, &o.TotalCents,
+			&o.CreatedAt, &o.UpdatedAt, &o.CompletedAt, &lastFour); err != nil {
 			return nil, err
 		}
 		o.State = domain.OrderState(st)
+		if lastFour.Valid {
+			o.LastFour = lastFour.String
+		}
 		if err := json.Unmarshal(itemsJSON, &o.Items); err != nil {
 			return nil, fmt.Errorf("unmarshal items: %w", err)
 		}

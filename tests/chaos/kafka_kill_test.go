@@ -12,12 +12,13 @@
 //   - Harness.RestartKafka succeeds and brings a fresh Kafka
 //     container back online after the kill.
 //
-// TODO: full end-to-end recovery — assert the order eventually
-// reaches "confirmed" after Kafka restart. Blocked today because
-// services cache KAFKA_BROKER in their env at startup; the restart
-// container gets a fresh host:port that the already-running service
-// processes cannot reach. Requires dynamic broker discovery in the
-// service binaries before this assertion can be added.
+// DEFERRED (v1.2+, см. STATUS.md): full end-to-end recovery — assert
+// the order eventually reaches "confirmed" after Kafka restart.
+// Blocked today because services cache KAFKA_BROKER in their env at
+// startup; the restart container gets a fresh host:port that the
+// already-running service processes cannot reach. Requires dynamic
+// broker discovery in the service binaries before this assertion can
+// be added.
 //
 // NOTE: as of audit v1.1.5 the harness exposes RestartServices
 // (tests/harness/harness.go) which lets a chaos test stop and

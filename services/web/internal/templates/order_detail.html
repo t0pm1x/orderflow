@@ -8,11 +8,12 @@
     <div class="row-between">
       <h1>Order <button type="button" class="copy-id mono" data-id="{{if .Order}}{{.Order.ID}}{{end}}" title="Click to copy">{{if .Order}}{{.Order.ID}}{{else}}?{{end}}</button></h1>
       <div>
-        <button hx-get="/orders/{{.Order.ID}}?frag=1" hx-target="#page-content" hx-swap="outerHTML">Refresh</button>
+        {{if .Order}}<button hx-get="/orders/{{.Order.ID}}?frag=1" hx-target="#page-content" hx-swap="outerHTML">Refresh</button>{{end}}
         <a class="btn secondary" href="/">&#8592; back to list</a>
       </div>
     </div>
     {{if .BackendDown}}<div class="error">Backend unavailable: {{.Error}}</div>{{end}}
+    {{if and .Error (not .Order)}}<div class="error">{{.Error}}</div>{{end}}
     {{if .Order}}
     <p><span class="badge {{.Order.State}}">{{template "statusIcon" .Order.State}} {{.Order.State}}</span>
        <span class="muted" title="created {{.Order.CreatedAt.Format "2006-01-02 15:04:05"}}">created {{timeAgo .Order.CreatedAt}}</span>
