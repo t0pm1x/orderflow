@@ -1,109 +1,156 @@
 # orderflow-web
 
-Tactile playground UI for the orderflow platform. Server-rendered HTML
-(`html/template`) + a sprinkle of `htmx` (vendored, offline-capable) for
-progressive enhancement, plus Server-Sent Events for live saga telemetry.
+SvelteKit SPA + thin Go BFF. The single binary serves:
 
-## Quick start (against the full platform)
+- the embedded SvelteKit SPA (built into `frontend/dist/` via `//go:embed`)
+- `/api/*` JSON proxy to the four backend services (`order`, `payment`, `inventory`, `saga`)
+- `/events/stream` SSE bridge from the in-process event bus (populated by the Kafka tail goroutine)
+- `/healthz`, `/readyz` probes
 
-The one-command launcher brings the playground up alongside order / payment /
-inventory / saga:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run.ps1
+```
+Browser (SvelteKit SPA, :8085 same-origin)
+   |
+   | fetch /api/orders            ─┐
+   | fetch /api/orders/{id}        │
+   | POST /api/orders             ─┼─> Go BFF (services/web)
+   | DELETE /api/orders/{id}       │      ├─> order:8081
+   | GET /api/inventory/stock/{sku}│      ├─> payment:8082
+   | POST /api/payments/webhook    │      └─> inventory:8083
+   | GET /events/stream (SSE)     ─┘      (kafkatail → in-process bus → SSE)
 ```
 
-Browse to **<http://127.0.0.1:8085>**.
+## Why a SPA (and not htmx)?
 
-The launcher pins the web binary to host port `:8085` (see
-`scripts/run.ps1`: `$ports = @{ ...; web=8085 }`). All other services use
-their standard ports — order `:8081`, payment `:8082`, inventory `:8083`,
-saga `:8084` — so the playground can sit on `:8085` without colliding with
-anything upstream.
+Pre-v1.1.7 the UI was server-rendered Go templates + htmx 2.0.3 +
+a hand-rolled inline JS bootstrap. The architecture was prone to
+two classes of bugs that surfaced repeatedly:
 
-The same flow on POSIX shells:
+1. **DOMContentLoaded races** — the inline `<script>` in `<head>`
+   ran before `document.body` existed; an exception in one
+   listener aborted every subsequent listener and partially
+   broke htmx's swap-target cache, so every link/form click
+   appeared to do nothing while manual URL entry worked.
+2. **htmx-sse version skew** — the vendored SSE plugin was the
+   htmx-1.x build and used a removed internal API; a runtime
+   warning fired on every page load and the live-event sidebar
+   silently never received messages.
 
-```bash
-./scripts/run.sh
-```
+A SvelteKit SPA side-steps both: htmx is gone, the SPA is a
+real client with a real event loop, and SSE is just a normal
+`EventSource` in `lib/sse.ts`. Type-safe TypeScript catches the
+class of "typo in attribute name" / "wrong JSON field" bugs at
+build time that the old template layer couldn't.
 
-For the end-to-end demo with deterministic Kafka traffic, see
-[`scripts/run-demo.ps1`](../../scripts/run-demo.ps1) (orchestrates
-`docs/demo/demo.sh` in the background, polls until ready, prints the URL).
+## Build
 
-## Standalone run (against already-running services)
+Prerequisites:
 
-```powershell
-cd services\web
-go run .\cmd\web
-# → listens on :8083 by default (this is the bare-binary default; in the
-#   full-platform run above the launcher overrides HTTP_ADDR to :8085 to
-#   avoid colliding with the inventory service, which also binds :8083)
-```
-
-Override with env: `HTTP_ADDR=:9090 ORDER_URL=http://...:8081 PAYMENT_URL=http://...:8082 INVENTORY_URL=http://...:8083 KAFKA_BROKERS=localhost:9092`.
-Leave `KAFKA_BROKERS` empty to disable the live event tail (the SSE stream
-will simply stay quiet; everything else still works).
-
-## Pages
-
-| Path | Purpose |
+| Tool | Version |
 |------|---------|
-| `/` | Orders list (htmx auto-refreshes every 2 s) |
-| `/orders/new` | Create-order form |
-| `/orders/{id}` | Order detail + saga timeline (htmx auto-refreshes every 1 s while non-terminal) |
-| `/orders/{id}/events` | Order events timeline fragment (htmx polling target used by the detail page) |
-| `/inventory` | Per-SKU stock viewer (htmx auto-refreshes every 3 s) |
-| `/payments/sim` | Force-success / force-fail webhook simulator |
-| `/events/stream` | SSE stream of Kafka events (`text/event-stream`; consumed by the live-event sidebar via the vendored `htmx-sse.js` extension) |
-| `/healthz` | Liveness |
-| `/readyz` | Readiness (parallel `GET /healthz` probes against order, payment, and inventory upstreams — all three must answer within 2 s) |
-| `/static/*` | CSS + vendored `htmx.min.js` + vendored `htmx-sse.js` |
+| Go   | 1.25+ (matches the rest of the orderflow workspace) |
+| Node.js | 20+ (only for building the SPA; runtime doesn't need it) |
+| npm  | bundled with Node.js |
 
-## Actions
+Build the single binary:
 
-| Method | Path | Effect |
-|--------|------|--------|
-| POST | `/v1/orders` | Submit a new order. On success returns `HX-Redirect: /orders/{id}` so htmx navigates to the detail page; the form also carries a server-issued `Idempotency-Key` for double-submit protection. |
-| POST | `/v1/orders/{id}` | Cancel a non-terminal order (`DELETE` proxied upstream). |
-| POST | `/payments/sim/fire` | Fire a synthetic payment webhook with a chosen outcome (success / fail) against a chosen order. |
-
-## Architecture
-
-See [`docs/superpowers/specs/2026-08-18-orderflow-web-design.md`](../../docs/superpowers/specs/2026-08-18-orderflow-web-design.md).
-
-Highlights:
-
-- Single chi router. Page handlers (`internal/handlers`) and probes / static
-  (`internal/server`) are composed in `internal/web.Main()`.
-- Templates live in `internal/templates/` and are embedded via `//go:embed`
-  so the binary is self-contained — no template path needed at runtime.
-- `htmx` (and the SSE extension) are vendored under `internal/static/vendor/`
-  and served from `/static/*`, so the playground works offline.
-- The Kafka event tail (`internal/kafkatail`) fans Kafka events into an
-  in-process bus (`internal/events`) that `PageEventsStream` drains over SSE.
-
-### Two-layer binary layout
-
-The web binary is built from **two** `cmd/web` modules by design:
-
-| Layer | Path | Package | Purpose |
-|-------|------|---------|---------|
-| Outer | [`cmd/web`](../../cmd/web/main.go) | `package main` | Tiny `main()` that calls the inner `Main()`. Listed in `go.work` so the outer binary is buildable in isolation; this is what `make build` (root Makefile) compiles into `bin/web.exe`. |
-| Inner | [`cmd/web`](./cmd/web/main.go) (this dir) | `package web` | Owns the `Main()` exported function and the `Version` variable (`-ldflags -X`). Lives next to the service's `internal/*` packages so it can import `services/web/internal/web` directly. The Release story (SIGTERM-aware shutdown, structured startup log, env overrides) is implemented here. |
-
-The outer `package main` is a one-line delegation so a single `go build ./cmd/web`
-produces a working binary without exporting internal types from the service
-package. The same pattern is used by `cmd/{order,payment,inventory,saga}` —
-each has a 10-line `main.go` that imports its service's `Main()` and calls it.
-
-## Smoke
-
-After `scripts\run.ps1` (or `scripts\run-demo.ps1`):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\smoke-web.ps1
+```sh
+make web-frontend-install   # one-time: cd services/web/frontend && npm ci
+make web-frontend-build     # cd services/web/frontend && npm run build
+make web-build              # go build with the SPA embedded
 ```
 
-Asserts happy path + compensation + 4xx + 5xx. The smoke script defaults
-`WebUrl` to `http://127.0.0.1:8085` (override with `-WebUrl`).
+The artifacts:
+
+- `services/web/frontend/dist/` — SvelteKit static build
+  (committed placeholder `index.html`, real output from `npm
+  run build`; gitignored for `_app/` and any code-split chunks
+  that would otherwise churn git history on every build).
+- `bin/web.exe` (or `bin/web` on POSIX) — single binary, embeds
+  the SPA + serves `/api/*` + `/events/stream`.
+
+A fresh checkout where `make web-frontend-build` hasn't been run
+yet still builds the Go binary, but the SPA fallback page returns
+"SPA not built yet — run `make web-frontend-build`" and only the
+`/api/*` + `/events/stream` + probes work. The Go server logs a
+warning at startup so operators see what's missing.
+
+## Dev workflow
+
+Two-process dev (Vite + Go):
+
+```sh
+# terminal 1: Go backend (proxies + SSE + serves SPA placeholder)
+go run ./cmd/web
+
+# terminal 2: Vite SPA dev server with HMR
+cd services/web/frontend && npm run dev
+```
+
+Open http://localhost:5173 — Vite serves the SPA with HMR and
+proxies `/api/*` + `/events/stream` to the Go backend on
+:8085 (configured in `vite.config.ts`). The Go binary only
+needs to be restarted when `cmd/web/main.go` or `internal/...`
+changes; SPA edits hot-reload via Vite.
+
+## Routes (Go BFF)
+
+| Method | Path                          | Notes |
+|--------|-------------------------------|-------|
+| GET    | `/healthz`                    | liveness |
+| GET    | `/readyz`                     | readiness (always 200; Kafka tail not required) |
+| GET    | `/api/orders`                  | proxy `Order.List`; SKU filter is client-side |
+| GET    | `/api/orders/{id}`             | proxy `Order.Get`; 400 on invalid UUID |
+| POST   | `/api/orders`                  | proxy `Order.Submit`; BFF-level replay guard via `idempotency_key` |
+| DELETE | `/api/orders/{id}`             | proxy `Order.Cancel`; idempotent (404 → 204) |
+| GET    | `/api/inventory/stock/{sku}`   | proxy `Inventory.GetStock` |
+| POST   | `/api/payments/webhook`        | proxy `Payment.FireWebhook` |
+| GET    | `/events/stream`               | SSE from in-process bus; 503 if Kafka disabled |
+| GET    | `/_app/*`                      | SvelteKit code-split assets |
+| GET    | `/static/*`                    | SvelteKit static dir (favicon) |
+| GET    | `/favicon.svg`                 | favicon |
+| GET    | `/` + `/*` (fallback)          | SPA `index.html` for client-side routes |
+
+## SPA routes (SvelteKit)
+
+| Path                       | Notes |
+|----------------------------|-------|
+| `/`                        | redirect → `/orders` |
+| `/orders`                  | list + state/SKU filter chips |
+| `/orders/new`              | form, `?prefill=happy\|fail` shortcuts |
+| `/orders/{id}`             | detail + timeline + cancel button |
+| `/inventory`               | per-SKU stock + clickable SKUs |
+| `/payments/sim`            | in-flight orders + force succeed/fail with error_code selector |
+
+State filtering on `/orders` is URL-driven (`?state=...&sku=...&sku=...`)
+so back-navigating preserves the filter context. The SPA
+subscribes to `/events/stream` once on layout mount and shares
+the event list with the timeline view via a `writable` store.
+
+## Tests
+
+```sh
+make -C services/web test
+```
+
+Go tests cover the API-gateway handlers via httptest with fake
+backend clients (`internal/server/api_test.go`). Svelte UI is
+tested implicitly via integration with the Go handlers — there
+are no separate `npm test` runs for the SPA today. Add Svelte
+component tests with `vitest` + `@testing-library/svelte` when
+the SPA grows beyond the 5 routes it covers now.
+
+## Architecture decisions
+
+- **No CORS.** SPA hits same-origin `/api/*`; the Go BFF proxies
+  to the backend services. Backend URLs stay server-side secrets
+  and the SPA doesn't need any CORS config on the backends.
+- **Single binary.** The SPA is embedded into the Go binary via
+  `//go:embed`; no separate static-file container, no CDN, no
+  asset-cache invalidation problems. Operators ship one image.
+- **Kafka tail stays in Go.** Native Kafka client is much simpler
+  than a Node port, and the SSE bridge (EventSource → Svelte
+  store) is one HTTP handler.
+- **Replay guard at the BFF, not upstream.** Per-process map keyed
+  by `idempotency_key`; sufficient for the playground (single
+  replica). Multi-replica deployment would move this to Redis
+  (mirroring the pattern in `services/payment/internal/idempotency/`).

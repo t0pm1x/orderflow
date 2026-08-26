@@ -25,6 +25,7 @@ The Windows examples prefer `powershell` over `pwsh` because the former is the d
 
 - **Docker Desktop** (or `dockerd` + Compose v2 on Linux). The script checks `docker info` at the start and tells you how to start the daemon if it's down.
 - **Go 1.25+** with the workspace (`go.work`) recognized at the repo root. CI uses Go 1.25.13.
+- **Node.js 20+** for building the SvelteKit SPA. The runtime binary doesn't need Node.js — the SPA is embedded into the Go binary at build time via `//go:embed` — but `make web-build` invokes `npm run build` in `services/web/frontend/` so Node.js must be on PATH for the build step. The launcher scripts do not require Node.js; the prebuilt `bin/web.exe` carries the SPA already.
 - **GNU Make** on PATH. (`make` is on most Linux/macOS systems by default; on Windows install via `choco install make` or use the bundled `make.exe` from Git for Windows.)
 - **~4 GB RAM** for the compose stack (postgres x3 + redpanda + observability containers).
 

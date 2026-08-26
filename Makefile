@@ -1,4 +1,4 @@
-.PHONY: build build-web test lint run clean tidy run-web
+.PHONY: build build-web web-frontend-build web-frontend-install web-build test lint run clean tidy run-web
 
 # Version baked into each binary at build time. The Version
 # variable lives in services/<svc>/cmd/<svc> (package <svc>), not
@@ -26,6 +26,19 @@ build:
 
 build-web:
 	go build -ldflags="$(LDFLAGS)" -o bin/web ./cmd/web
+
+# The web binary embeds the SvelteKit SPA built by Vite into
+# services/web/frontend/dist/. The embed fails with "no matching
+# files found" if the SPA hasn't been built yet, so build the
+# frontend first and only THEN the Go binary.
+web-frontend-install:
+	cd services/web && $(MAKE) frontend-install
+
+web-frontend-build:
+	cd services/web && $(MAKE) frontend-build
+
+web-build: web-frontend-build
+	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/web/cmd/web.Version=$(VERSION)" -o bin/web$(EXE) ./cmd/web
 
 # Workspace modules (mirrors go.work `use` block). Each is `cd`'d
 # into before `go test ./...` because the workspace root has no

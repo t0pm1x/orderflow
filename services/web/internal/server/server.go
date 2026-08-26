@@ -1,13 +1,34 @@
-// Package server wires the orderflow-web HTTP server: chi router,
-// shared middleware, route registration, and graceful shutdown.
+// Package server wires the orderflow-web HTTP server. Single binary:
+// serves the embedded SvelteKit SPA + the /api/* JSON proxy to
+// the four backend services + the /events/stream SSE bridge from
+// the in-process Kafka tail.
+//
+// Route map:
+//
+//   GET  /healthz                            — liveness
+//   GET  /readyz                             — readiness
+//   GET  /_app/*                             — SvelteKit code-split assets
+//   GET  /favicon.svg, /static/*            — SvelteKit static dir
+//   GET  /, /orders, /orders/:id, ...        — SPA fallback (index.html)
+//   GET  /api/orders                         — proxy listOrders
+//   GET  /api/orders/{id}                    — proxy getOrder
+//   POST /api/orders                         — proxy submitOrder
+//   DEL  /api/orders/{id}                    — proxy cancelOrder
+//   GET  /api/inventory/stock/{sku}          — proxy getInventoryStock
+//   POST /api/payments/webhook               — proxy fireWebhook
+//   GET  /events/stream                      — SSE from in-process bus
+//
+// The SPA hits /api/* same-origin, the Go BFF proxies to the
+// backend services via the existing backend.* clients. No CORS
+// configuration on the backends is required, and the backend
+// URLs stay server-side secrets.
 package server
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"errors"
+	"io/fs"
 	"log/slog"
-	"mime"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -19,38 +40,48 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	mw "github.com/t0pm1x/orderflow/platform/middleware"
-	"github.com/t0pm1x/orderflow/services/web/internal/handlers"
-	"github.com/t0pm1x/orderflow/services/web/internal/static"
+	"github.com/t0pm1x/orderflow/services/web/internal/backend"
+	"github.com/t0pm1x/orderflow/services/web/internal/events"
+	webroot "github.com/t0pm1x/orderflow/services/web"
 )
 
-// Options controls server behavior.
+// Options configures the web HTTP server. Mirrors the pattern of
+// services/order/cmd/order's Options struct so platform/middleware
+// can stay generic.
 type Options struct {
-	Name         string
-	Logger       *slog.Logger
-	OrderURL     string
-	PaymentURL   string
-	InventoryURL string
-	Handlers     *handlers.Set
+	Name          string
+	Logger        *slog.Logger
+	Order         backend.OrderClient
+	Payment       backend.PaymentClient
+	Inventory     backend.InventoryClient
+	Bus           *events.Bus
+	EventsEnabled bool // toggles /events/stream 503 vs 200
 }
 
 // Server hosts the HTTP listener. One instance per process.
 type Server struct {
-	opt    Options
-	srv    *http.Server
-	addr   atomic.Value // string
-	styles []byte       // cached styles.css, read once in New
+	opt     Options
+	srv     *http.Server
+	addr    atomic.Value // string
+	api     *API
 }
 
-// New creates a non-listening Server. Call Start to bind + serve.
+// New constructs a non-listening Server.
 func New(opt Options) *Server {
-	// styles.css is requested on every page render; read it once at
-	// startup instead of paying an embed.FS.ReadFile per request.
-	data, _ := static.FS.ReadFile("styles.css")
-	return &Server{opt: opt, styles: data}
+	return &Server{
+		opt: opt,
+		api: &API{
+			Order:     opt.Order,
+			Payment:   opt.Payment,
+			Inventory: opt.Inventory,
+			Logger:    opt.Logger,
+		},
+	}
 }
 
-// Addr returns the bound address (host:port) or "" if Start has not
-// completed.
+// Addr returns the bound address (host:port) or "" if Start has
+// not completed. Tests + the playground smoke script poll this to
+// discover the OS-picked port when HTTP_ADDR ends in ":0".
 func (s *Server) Addr() string {
 	v, _ := s.addr.Load().(string)
 	return v
@@ -61,78 +92,58 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	r := chi.NewRouter()
 	r.Use(mw.Stack(s.opt.Name, s.opt.Logger)...)
 
-	// Probes
+	// probes (same contract as the other services so k8s probes
+	// and the smoke script don't need to special-case web).
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
-		// /readyz succeeds iff Order, Payment, and Inventory upstreams
-		// all answer /healthz with a 2xx within 2s. Probes run in
-		// parallel so a single dead upstream doesn't serialize the
-		// whole check. Failures => 503 + JSON listing failed URLs.
-		urls := []string{
-			s.opt.OrderURL + "/healthz",
-			s.opt.PaymentURL + "/healthz",
-			s.opt.InventoryURL + "/healthz",
-		}
-		failed := pingUpstreams(req.Context(), urls)
+	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if len(failed) > 0 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(struct {
-				Status string   `json:"status"`
-				Failed []string `json:"failed"`
-			}{Status: "down", Failed: failed})
-			return
-		}
+		// ready iff Kafka tail is wired (so /events/stream can serve
+		// real events). Without Kafka the SPA still works — it just
+		// shows "Live events: disconnected" — so we don't gate
+		// readiness on it. Always 200.
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Static assets (CSS, vendored JS). Mounted before the handler
-	// set so the layout.html <link rel=stylesheet href=/static/styles.css>
-	// and <script src=/static/vendor/htmx.min.js> resolve on every page.
-	// styles.css is served from a startup-time cache to avoid a
-	// per-request embed.FS.ReadFile; everything else falls through
-	// to the generic /static/* handler which reads from embed.FS.
-	r.Get("/static/styles.css", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		_, _ = w.Write(s.styles)
-	})
-	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
-		p := strings.TrimPrefix(req.URL.Path, "/static/")
-		data, err := static.FS.ReadFile(p)
-		if err != nil {
-			http.NotFound(w, req)
-			return
-		}
-		contentType := mime.TypeByExtension(filepath.Ext(p))
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-		w.Header().Set("Content-Type", contentType+"; charset=utf-8")
-		_, _ = w.Write(data)
-	})
+	// API proxy + SSE
+	r.Get("/api/orders", s.api.ListOrders)
+	r.Get("/api/orders/{id}", s.api.GetOrder)
+	r.Post("/api/orders", s.api.SubmitOrder)
+	r.Delete("/api/orders/{id}", s.api.CancelOrder)
+	r.Get("/api/inventory/stock/{sku}", s.api.GetInventoryStock)
+	r.Post("/api/payments/webhook", s.api.FireWebhook)
+	r.Get("/events/stream", sseHandler(s.opt.Bus, s.opt.Logger, s.opt.EventsEnabled))
 
-	if s.opt.Handlers != nil {
-		s.opt.Handlers.Routes(r)
+	// SPA: serve the embedded SvelteKit build. The Vite output
+	// uses two layout roots: `_app/...` for code-split chunks and
+	// the static dir (favicon, etc.) at the root. SPA fallback
+	// serves index.html for any non-API GET so client-side routes
+	// (/orders/123) work on a hard refresh.
+	if err := s.mountSPA(r); err != nil {
+		// Empty embed (no frontend/dist yet) is recoverable: the
+		// server still starts, only the SPA is missing. Log a warning
+		// and continue — operators hitting `make web-build` after
+		// `make web-frontend-build` will see this in the log.
+		s.opt.Logger.Warn("spa embed empty; run `make web-frontend-build` before `go build` to populate frontend/dist/", "err", err)
 	}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", addr, err)
+		return err
 	}
-
 	s.srv = &http.Server{
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	s.addr.Store(ln.Addr().String())
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := s.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := s.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.opt.Logger.Error("web http exited", "err", err)
 		}
 	}()
@@ -146,7 +157,10 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	}()
 
 	wgDone := make(chan struct{})
-	go func() { wg.Wait(); close(wgDone) }()
+	go func() {
+		wg.Wait()
+		close(wgDone)
+	}()
 
 	select {
 	case <-wgDone:
@@ -154,4 +168,125 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		return shutdownCtx.Err()
 	}
 	return nil
+}
+
+// mountSPA wires the SvelteKit build output into r. The embed
+// lives in services/web/spa.go (sibling of frontend/, because
+// embed patterns can't contain ".." — see the comment there);
+// internal/server just consumes it via webroot.SpaFS. We fs.Sub
+// that root so file paths served are relative to dist.
+//
+// Layout:
+//   frontend/dist/_app/...   — code-split JS chunks
+//   frontend/dist/favicon.svg — static asset (Vite copies public/)
+//   any other file under dist — same as favicon
+//
+// The SPA fallback for non-API GET routes serves dist/index.html so
+// SvelteKit client-side routes (/orders/123) survive a hard
+// refresh (SvelteKit's adapter-static emits a single index.html by
+// default since we set `fallback: 'index.html'` in svelte.config.js).
+func (s *Server) mountSPA(r chi.Router) error {
+	dist, err := fs.Sub(webroot.SpaFS, "frontend/dist")
+	if err != nil {
+		return err
+	}
+
+	// _app/* — SvelteKit code-split JS/CSS bundles. StripPrefix
+	// so the on-disk path matches the URL after the prefix.
+	r.Get("/_app/*", func(w http.ResponseWriter, req *http.Request) {
+		path := strings.TrimPrefix(req.URL.Path, "/_app/")
+		f, err := dist.Open(path)
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		defer f.Close()
+		setContentTypeByExt(w, path)
+		_, _ = w.Write(readAll(f))
+	})
+
+	// /static/* — anything Vite copied from frontend/static/ (none
+	// today beyond favicon.svg, but future-proof). Mount under
+	// /static so SvelteKit's <img src="/static/..."> resolves.
+	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
+		path := strings.TrimPrefix(req.URL.Path, "/static/")
+		f, err := dist.Open(path)
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		defer f.Close()
+		setContentTypeByExt(w, path)
+		_, _ = w.Write(readAll(f))
+	})
+
+	// favicon at the root (browsers auto-fetch /favicon.ico).
+	r.Get("/favicon.svg", func(w http.ResponseWriter, _ *http.Request) {
+		data, err := fs.ReadFile(dist, "favicon.svg")
+		if err != nil {
+			http.NotFound(w, nil)
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		_, _ = w.Write(data)
+	})
+
+	// SPA fallback: any other GET (non-API, non-asset) gets the
+	// SvelteKit-rendered index.html so client-side routes survive
+	// a hard refresh. POST/PUT/DELETE outside /api/* get a 404 —
+	// the SPA never issues those outside the API gateway.
+	indexBytes, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		return err
+	}
+	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexBytes)
+	})
+	return nil
+}
+
+// readAll reads a fs.File into a byte slice. fs.File doesn't have a
+// io.ReadSeeker convenience method we can use directly, so this is a
+// tiny helper instead of pulling in bytes.Buffer or io.Copy.
+func readAll(f fs.File) []byte {
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 4096)
+	for {
+		n, err := f.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			return buf
+		}
+	}
+}
+
+// setContentTypeByExt sets a Content-Type based on the file
+// extension. Falls back to application/octet-stream for unknown
+// extensions. Keeps the SvelteKit-emitted .js (text/javascript),
+// .css (text/css), and .svg (image/svg+xml) serving as a real
+// browser would expect.
+func setContentTypeByExt(w http.ResponseWriter, path string) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".js":
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case ".mjs":
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	case ".txt":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	case ".html":
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
 }

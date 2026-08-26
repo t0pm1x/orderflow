@@ -114,7 +114,7 @@
 | v1.1.4   | final engineering pass       | done | c21b929   |          |
 | v1.1.5   | E2E chain repair + easy-run scripts | done | 73ac9e7 |          |
 | v1.1.6   | order_detail.html template guard on 404 + binary hygiene + dual-cmd docs | done | this session | this plan |
-| v1.1.7   | UI: state-filter chips + SKU filter + error_code selector + hx-boost navigation + order-service List completeness fix + consumer completed_at fix + Helm/Kustomize tag bump + orderflow-web Helm chart + 6-bug fix batch (inline-script crash, htmx-sse 1.x, filter loss, saga-timeline fallback) | done | this session | this plan |
+| v1.1.7   | UI: state-filter chips + SKU filter + error_code selector + hx-boost navigation + order-service List completeness fix + consumer completed_at fix + Helm/Kustomize tag bump + orderflow-web Helm chart + 6-bug fix batch (inline-script crash, htmx-sse 1.x, filter loss, saga-timeline fallback) + htmx→SvelteKit SPA rewrite | done | this session | this plan |
 
 ## Deferred to v1.2+
 

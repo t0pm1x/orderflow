@@ -1,0 +1,137 @@
+/* OrderFlow web — design tokens.
+ *
+ * Single source of truth for colors, spacing, and typography.
+ * Component-scoped styles reference these via CSS custom properties
+ * (`var(--accent)` etc.) so a future theme switch (light mode,
+ * per-tenant branding) is a one-file change.
+ *
+ * Dark palette mirrors the prior styles.css so the visual feel
+ * stays familiar; contrast ratios are tuned for body text on the
+ * default panel background.
+ */
+
+:root {
+  /* surface */
+  --bg: #0e1116;
+  --panel: #161b22;
+  --panel-2: #1c2128;
+  --border: #30363d;
+  --border-strong: #444c56;
+
+  /* foreground */
+  --fg: #e6edf3;
+  --fg-muted: #7d8590;
+  --fg-subtle: #8b949e;
+
+  /* accents */
+  --accent: #4493f8;
+  --accent-strong: #58a6ff;
+  --accent-soft: rgba(68, 147, 248, 0.15);
+
+  /* status */
+  --bad: #f85149;
+  --bad-soft: rgba(248, 81, 73, 0.15);
+  --good: #56d364;
+  --good-soft: rgba(86, 211, 100, 0.15);
+  --warn: #d29922;
+  --warn-soft: rgba(210, 153, 34, 0.15);
+
+  /* spacing */
+  --gap-1: 4px;
+  --gap-2: 8px;
+  --gap-3: 12px;
+  --gap-4: 16px;
+  --gap-5: 24px;
+  --gap-6: 32px;
+
+  /* radius */
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* typography */
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo,
+    Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 28px;
+
+  /* shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 4px 8px rgba(0, 0, 0, 0.45);
+}
+
+/* base reset */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  background: var(--bg);
+  color: var(--fg);
+  font: var(--fs-md) / 1.5 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+/* utility classes (use sparingly; prefer component-scoped CSS) */
+
+.muted {
+  color: var(--fg-muted);
+}
+
+.error {
+  color: var(--bad);
+  background: var(--bad-soft);
+  border: 1px solid var(--bad);
+  border-radius: var(--radius);
+  padding: var(--gap-2) var(--gap-3);
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

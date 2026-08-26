@@ -1,7 +1,0 @@
-{{define "statusIcon"}}
-{{if eq . "pending"}}<svg class="icon" viewBox="0 0 16 16" aria-label="pending"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/></svg>{{end}}
-{{if eq . "reserved"}}<svg class="icon" viewBox="0 0 16 16" aria-label="reserved"><rect x="3" y="7" width="10" height="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 7 V4 a3 3 0 0 1 6 0 V7" fill="none" stroke="currentColor" stroke-width="2"/></svg>{{end}}
-{{if eq . "confirmed"}}<svg class="icon" viewBox="0 0 16 16" aria-label="confirmed"><path d="M3 8 L7 12 L13 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{{end}}
-{{if eq . "cancelled"}}<svg class="icon" viewBox="0 0 16 16" aria-label="cancelled"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" stroke-width="2"/></svg>{{end}}
-{{if eq . "failed"}}<svg class="icon" viewBox="0 0 16 16" aria-label="failed"><line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" stroke-width="2"/><line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" stroke-width="2"/></svg>{{end}}
-{{end}}

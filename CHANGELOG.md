@@ -34,6 +34,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — web frontend: htmx → SvelteKit SPA (v1.1.7 part 7)
+
+Pre-v1.1.7 the /web service was server-rendered Go templates
+plus htmx 2.0.3 and a hand-rolled inline JS bootstrap. After
+the v1.1.7 part-6 patch batch fixed six concrete bugs
+(inline-script TypeError, htmx-sse 1.x warning, empty live
+events, lost filter context, hidden saga timeline on 404,
+no-op `hx-swap="afterend"`), the underlying architecture
+remained fragile: the inline script was still racing
+DOMContentLoaded, the SSE plugin was still throwing on a
+removed htmx-1.x internal API, and the template layer was
+incapable of catching the class of "typo in attribute name"
+bugs at build time. The right fix is a real SPA with a real
+event loop and TypeScript end-to-end.
+
+**New layout**
+
+- `services/web/frontend/` — SvelteKit 2 SPA with TypeScript
+  and Vite 5. Five routes (`/orders`, `/orders/new`,
+  `/orders/{id}`, `/inventory`, `/payments/sim`) plus a
+  topbar/sidebar layout shell. URL-driven state filtering
+  on the orders list so back-navigation preserves the
+  filter context. Live-event SSE via a single
+  `EventSource` in `lib/sse.ts`, shared with the order-detail
+  timeline through a Svelte writable store.
+- `services/web/spa.go` — `//go:embed` for
+  `frontend/dist/index.html`. The embed directive has to live
+  in a sibling-of-frontend Go file because Go's embed
+  patterns are interpreted relative to the package
+  directory and must not contain `..`. The real SvelteKit
+  build (committed via `make web-frontend-build`) replaces
+  the placeholder on every CI/local build.
+- `services/web/internal/server/server.go` (rewrite) —
+  single binary serving: embedded SvelteKit SPA via
+  `/_app/*` + `/static/*` + `/favicon.svg` + SPA fallback
+  on every other GET; `/api/*` JSON proxy to the four
+  backend services; `/events/stream` SSE bridge from the
+  in-process Kafka tail; `/healthz` + `/readyz` probes.
+- `services/web/internal/server/api.go` (rewrite) — six
+  thin proxy handlers (`ListOrders`, `GetOrder`,
+  `SubmitOrder`, `CancelOrder`, `GetInventoryStock`,
+  `FireWebhook`) with a BFF-level idempotency replay
+  guard on `POST /api/orders` (per-process map keyed by
+  the SPA-generated UUID; sufficient for the playground,
+  moves to Redis for multi-replica deployments).
+- `services/web/internal/server/api_test.go` (new) — 14
+  httptest cases covering each handler's success + error
+  path: list proxy + SKU filter, get 200/404, get bad-UUID
+  400, submit 201 + duplicate-key 409 + bad-customer-id 400,
+  cancel 204 + idempotent 404, inventory 200/404, payments
+  fire 200 + bad-status 400, isValidUUID negative cases.
+- `services/web/internal/server/sse.go` (rewrite) — the
+  /events/stream handler extracted from the old
+  PageOrderEventsStream. Emits unnamed SSE messages so the
+  browser's EventSource dispatches them with the default
+  "message" type (which is what the SPA's `lib/sse.ts`
+  subscribes to). Last-Event-ID replay from the in-process
+  ring buffer. 503 + JSON when Kafka is disabled (the SPA
+  sidebar then shows "disconnected").
+- `services/web/cmd/web/main.go` (rewrite) — thin wrapper
+  that no longer embeds templates or initializes a handler
+  set; just env-var loading + tracing init + Kafka tail +
+  `server.Start`. The two-layer cmd/web/main.go →
+  internal/web/main.go pattern stays so the inner package
+  is what `-ldflags -X` targets.
+
+**Removed**
+
+- `services/web/internal/handlers/` — ~2700 lines of
+  template-routing + `replays` cache + SSE handler set.
+  Replaced by `services/web/internal/server/`.
+- `services/web/internal/templates/` — 9 .html files
+  (layout, _icons, orders_list, order_detail, order_new,
+  order_events, order_hero, inventory, payments).
+  Replaced by SvelteKit `.svelte` components in
+  `frontend/src/routes/` + `frontend/src/components/`.
+- `services/web/internal/static/` — vendored htmx 2.0.3
+  (50 KB), htmx-sse 1.x (10 KB), custom styles.css (8 KB),
+  and the saga_diagrams SVGs. All replaced by the SvelteKit
+  build output (`frontend/dist/`).
+- `services/web/internal/handlers/pages_test.go` — ~2700
+  lines of template-rendering tests. Replaced by 14 API
+  tests in `services/web/internal/server/api_test.go`.
+
+**Build pipeline**
+
+- `services/web/Makefile` (new) — `make frontend-install`
+  (`npm ci`), `make frontend-build` (`npm run build` →
+  `frontend/dist/`), `make build` (frontend + go build),
+  `make test` (go test).
+- Root `Makefile` — added `web-frontend-install`,
+  `web-frontend-build`, `web-build` targets; `web-build`
+  depends on `web-frontend-build` so a fresh checkout that
+  tries to build the Go binary without first running
+  `npm run build` produces a clear error (placeholder
+  index.html is embedded so `go build` succeeds, but the
+  server logs a warning at startup).
+
+**Documentation**
+
+- `services/web/README.md` (rewrite) — explains the new
+  architecture, the build/dev workflow, the Go BFF route
+  map, the SPA route map, and the "no CORS / single
+  binary / Kafka stays in Go" architecture decisions.
+- `RUN.md` — added Node.js 20+ as a build prerequisite.
+
+**Wire-format compatibility**
+
+The new SPA uses JSON envelopes identical to what the
+previous htmx templates consumed from the same Go
+backend handlers (just with field names spelled out
+explicitly by `lib/types.ts` instead of template variables).
+The BFF proxies the upstream unchanged, so the SPA sees the
+same Order / OrderItem / StockItem / PaymentWebhook /
+SseEvent shape that the old templates did.
+
 ### Fixed — web UI: inline script crash + htmx-sse 1.x + filter loss + saga timeline hidden (v1.1.7 part 6)
 
 Six bugs surfaced together when an operator walked through the
