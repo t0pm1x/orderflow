@@ -34,6 +34,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — web UI: inline script crash + htmx-sse 1.x + filter loss + saga timeline hidden (v1.1.7 part 6)
+
+Six bugs surfaced together when an operator walked through the
+playground end-to-end. Five had a single shared root cause (a
+JavaScript error in the inline `<script>` that aborted every
+listener registration and broke htmx navigation); the sixth was
+independent. All fixed in this revision.
+
+- **DEFECT-7: inline script crash on null `document.body`.**
+  The listener-registration block was at the top of `<head>` and
+  called `document.body.addEventListener(...)` synchronously during
+  HTML parsing, when `<body>` doesn't exist yet. The TypeError
+  "Cannot read properties of null (reading 'addEventListener')"
+  aborted the script before the SSE / aria-busy / copy-id
+  listeners could attach, and — more critically — before htmx
+  finished wiring its swap target cache. With htmx init partially
+  broken, every link / form click appeared to do nothing (manual
+  URL entry worked because it bypasses htmx). Fix: wrap every
+  body-listener registration in a `DOMContentLoaded` handler.
+  New regression test `TestLayout_InlineScript_DOMContentLoaded`
+  asserts the wrapper is present and every `document.body.addEventListener`
+  call comes AFTER it in the rendered markup.
+
+- **DEFECT-8: htmx-sse.js 1.x incompatible with htmx 2.0.3.**
+  The vendored plugin was the htmx-1.x build; it logged
+  "WARNING: You are using an htmx 1 extension with htmx 2.0.3"
+  on every page load and used a removed internal API
+  (`api.selectAndSwap`) that threw inside `swap()`. Replaced with
+  the byte-for-byte vendored copy of `htmx-ext-sse@2.2.4` (the
+  official 2.x plugin) from the jsDelivr CDN. The wire format and
+  attribute names are unchanged from the user's perspective.
+
+- **DEFECT-1: `sse-swap="event"` filter never matched.** The
+  sidebar's `<aside>` carried `sse-swap="event"` which makes
+  htmx-sse only listen for SSE messages with the literal event
+  type `"event"`. The server emits messages with types like
+  `OrderCreated`, `OrderConfirmed`, etc., so the listener never
+  fired and the live-event list stayed empty. Fix: switch the
+  server to emit unnamed messages (browsers default the event
+  type to `"message"`) and have the `<ul>` listen for
+  `sse-swap="message"`. New regression test
+  `TestLayout_AsideSseSwapMessage` + `TestPageEventsStream_EmitsIDLine`
+  (updated) pin the wire format.
+
+- **DEFECT-2: `← back to list` lost the active filter.** The
+  link was hardcoded `href="/"`, so navigating from a filtered
+  orders list (e.g. `?state=reserved&sku=SKU-001`) to an order
+  detail and back dropped the filter context. Fix: added
+  `BackHref` to `orderDetailVM`, built in `PageOrderDetail` from
+  `r.URL.Query()` (`state=` + `sku=...`), and rendered in the
+  template. New regression test
+  `TestPageOrderDetail_BackHref_PreservesFilter` covers the 5
+  query-string combinations.
+
+- **DEFECT-5: `Saga timeline` header vanished on 404.** The
+  `<h3>Saga timeline</h3>` was inside the outer `{{if .Order}}`
+  block, so when the upstream order fetch returned 404 the entire
+  section (including the timeline header) was silently elided.
+  Fix: move the header + fallback outside the outer `if`, so the
+  404 page now shows `<h3>Saga timeline</h3>` + an explicit
+  "Saga timeline unavailable — order not loaded. <error msg>"
+  line. The full timeline + saga diagrams still render normally
+  when the order is present. New regression test
+  `TestPageOrderDetail_OrderNil_SagaTimelineFallback`.
+
+- **DEFECT-6: `hx-swap="afterend"` on the SSE aside.** The
+  attribute was a no-op (the aside has no `hx-get` / `hx-post`,
+  only `sse-connect`, and `hx-swap` only governs swap styles for
+  HTMX requests, not SSE message handling). Removed for clarity
+  — the new `htmx-ext-sse` plugin uses `sse-swap` exclusively.
+
 ### Added — orderflow-web Helm chart (v1.1.7 part 5)
 
 The web service was added in v1.1 but had no Helm chart and no

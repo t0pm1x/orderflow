@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -246,6 +248,13 @@ type orderDetailVM struct {
 	Events           []pkgEvents.Envelope
 	IdempotencyToken string
 	EventsEnabled    bool
+	// BackHref is the URL for the "← back to list" link on the
+	// detail page. It preserves the active filters from the
+	// orders-list page (Filter + SKUs) so the operator returns to
+	// the same filtered view they came from instead of the unfiltered
+	// default. Built by PageOrderDetail from r.URL.Query() and echoed
+	// verbatim by the template — see DEFECT-2 in CHANGELOG.md.
+	BackHref string
 }
 
 // PageOrderDetail serves GET /orders/{id}. It rejects non-UUID
@@ -274,6 +283,26 @@ func (s *Set) PageOrderDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vm := orderDetailVM{Body: "orderDetailBody", IdempotencyToken: newIdempotencyToken(), EventsEnabled: s.EventsEnabled}
+	// BACK-HREF-PRESERVE-FILTER: build the "← back to list" URL from
+	// the active filters (?state= and ?sku=) so the operator
+	// returns to the same filtered view. Order of query params is
+	// stable (state first, then sku) so the BFF's parseSKUFilter
+	// and the URL bar both render the same link on every detail
+	// page for the same filter combination.
+	backParts := []string{}
+	if st := r.URL.Query().Get("state"); st != "" {
+		backParts = append(backParts, "state="+url.QueryEscape(st))
+	}
+	for _, sku := range r.URL.Query()["sku"] {
+		if sku != "" {
+			backParts = append(backParts, "sku="+url.QueryEscape(sku))
+		}
+	}
+	if len(backParts) > 0 {
+		vm.BackHref = "/?" + strings.Join(backParts, "&")
+	} else {
+		vm.BackHref = "/"
+	}
 	o, err := s.Order.Get(r.Context(), id)
 	if err != nil {
 		msg, status := mapUpstreamError(s.Logger, "GET /v1/orders/{id}", err)
@@ -684,9 +713,20 @@ func (s *Set) PageEventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeSSE serializes one envelope as `id:` + `event:` + `data:`
-// lines and flushes. Returns false if the write or flush failed
-// (client disconnected); the caller should return immediately.
+// writeSSE serializes one envelope as `id:` + `data:` lines and flushes.
+// Returns false if the write or flush failed (client disconnected);
+// the caller should return immediately.
+//
+// SSE-NAMED-EVENTS fix: the previous code wrote `event: <type>`
+// alongside each message, so clients had to know every event_type
+// name in advance to subscribe (htmx-sse's `sse-swap` only fires
+// for matching event names). With this revision the wire format
+// drops the `event:` line — browsers default an unnamed message to
+// the `"message"` event type, which is what `htmx-ext-sse` 2.2.4's
+// `<ul sse-swap="message">` listens for. Event type is still in
+// the JSON `data:` payload (`env.EventType`) so the BFF can render
+// it. The Last-Event-ID replay path is unchanged (we still emit
+// the `id:` line on every event).
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, env *pkgEvents.Envelope, logger *slog.Logger) bool {
 	data, err := json.Marshal(env)
 	if err != nil {
@@ -697,7 +737,7 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, env *pkgEvents.Envelo
 		)
 		return true // marshal failure on one event shouldn't kill the stream
 	}
-	if _, err := fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", env.EventID, env.EventType, data); err != nil {
+	if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", env.EventID, data); err != nil {
 		return false
 	}
 	flusher.Flush()

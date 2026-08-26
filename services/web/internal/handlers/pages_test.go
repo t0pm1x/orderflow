@@ -1769,8 +1769,18 @@ func TestPageEventsStream_Disabled_Returns503(t *testing.T) {
 // drops the events that arrived during the disconnect window. The
 // test publishes a bus envelope with a known EventID, streams a few
 // bytes off the open connection, and asserts the frame contains
-// `id: <EventID>`, `event: <EventType>`, and `data: ...` lines in
-// the SSE wire order (id, event, data).
+// `id: <EventID>` and `data: ...` lines in the SSE wire order (id,
+// then data).
+//
+// SSE-NAMED-EVENTS fix: the previous code wrote `event: <type>`
+// alongside each message, so the assertion below checked for an
+// `event:` line in the wire frame. As of v1.1.7 the SSE wire
+// format drops the `event:` line — browsers default an unnamed
+// message to the `"message"` event type, which is what
+// `htmx-ext-sse` 2.2.4's `<ul sse-swap="message">` listens for.
+// Event type still travels in the JSON `data:` payload (so the
+// BFF can render the chip color), and the Last-Event-ID replay
+// path is unchanged. The assertion is updated accordingly.
 func TestPageEventsStream_EmitsIDLine(t *testing.T) {
 	handler, bus := newTestSetWithBus(t, &fakeOrderClient{}, &fakeInventoryClient{})
 	srv := httptest.NewServer(handler)
@@ -1847,17 +1857,19 @@ loop:
 			}
 			if strings.Contains(captured.String(), "id: replay-evt-42") {
 				body := captured.String()
-				if !strings.Contains(body, "event: OrderCreated") {
-					t.Errorf("expected `event: OrderCreated` line, got: %s", body)
+				if strings.Contains(body, "event: ") {
+					t.Errorf("expected NO `event:` line (unnamed-message wire format); got: %s", body)
 				}
 				if !strings.Contains(body, "data: ") {
 					t.Errorf("expected `data: ...` line, got: %s", body)
 				}
+				if !strings.Contains(body, `"event_type":"OrderCreated"`) {
+					t.Errorf("expected EventType to travel in the JSON data payload; got: %s", body)
+				}
 				idIdx := strings.Index(body, "id: replay-evt-42")
-				evIdx := strings.Index(body, "event: OrderCreated")
 				dataIdx := strings.Index(body, "data: ")
-				if idIdx < 0 || evIdx <= idIdx || dataIdx <= evIdx {
-					t.Errorf("SSE frame out of order (id=%d event=%d data=%d), body: %s", idIdx, evIdx, dataIdx, body)
+				if idIdx < 0 || dataIdx <= idIdx {
+					t.Errorf("SSE frame out of order (id=%d data=%d), body: %s", idIdx, dataIdx, body)
 				}
 				break loop
 			}
@@ -2010,6 +2022,75 @@ func TestLayout_HxBoostSwapsMainContentOnly(t *testing.T) {
 	}
 }
 
+// TestLayout_InlineScript_DOMContentLoaded pins DEFECT-7: the
+// inline script in <head> must defer all document.body.addEventListener
+// calls to a DOMContentLoaded handler. The previous version called
+// addEventListener synchronously at parse time of the <script>
+// element, where document.body is still null — that threw
+// "Cannot read properties of null (reading 'addEventListener')"
+// and aborted the rest of the listeners (SSE, aria-busy,
+// copy-id). This test asserts the inline script wraps every
+// document.body.addEventListener call inside a DOMContentLoaded
+// handler (i.e. the DOMContentLoaded marker must appear in the
+// markup before any document.body.addEventListener call).
+func TestLayout_InlineScript_DOMContentLoaded(t *testing.T) {
+	oc := &fakeOrderClient{listResp: &backend.OrderList{Items: []backend.Order{}}}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	domLoadedIdx := strings.Index(s, "addEventListener('DOMContentLoaded'")
+	if domLoadedIdx < 0 {
+		t.Fatalf("expected DOMContentLoaded wrapper in inline script; not found")
+	}
+	// Every document.body.addEventListener call must come AFTER
+	// the DOMContentLoaded wrapper opens. Any one before it
+	// would have run at parse time and crashed on null body.
+	if idx := strings.Index(s, "document.body.addEventListener"); idx >= 0 && idx < domLoadedIdx {
+		t.Errorf("document.body.addEventListener at offset %d is BEFORE DOMContentLoaded wrapper at offset %d — would crash on null body", idx, domLoadedIdx)
+	}
+}
+
+// TestLayout_AsideSseSwapMessage pins DEFECT-1 + DEFECT-6: the
+// sidebar <ul> carrying the live event list must declare
+// sse-swap="message" (the browser default event type for
+// unnamed SSE messages — which is what writeSSE emits as of
+// v1.1.7), and the aside must NOT carry the legacy
+// sse-swap="event" / hx-swap="afterend" attributes (which
+// matched nothing because the server emits events with names
+// like OrderCreated, not the literal "event").
+func TestLayout_AsideSseSwapMessage(t *testing.T) {
+	oc := &fakeOrderClient{listResp: &backend.OrderList{Items: []backend.Order{}}}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	// Look for the trailing attribute on the <ul id="events"> tag.
+	// The tag also has class/role/aria-live/aria-label between id and
+	// sse-swap, so we match on the closing form rather than the full
+	// opening — `aria-label="Order event stream" sse-swap="message"></ul>`
+	// appears once if and only if the fix is in place.
+	if !strings.Contains(s, `aria-label="Order event stream" sse-swap="message"></ul>`) {
+		t.Errorf("expected <ul> with aria-label=\"Order event stream\" and sse-swap=\"message\"> on the sidebar")
+	}
+	if strings.Contains(s, `sse-swap="event"`) {
+		t.Errorf("aside still carries legacy sse-swap=\"event\" (matches nothing because the wire format is unnamed messages)")
+	}
+	if strings.Contains(s, `hx-swap="afterend"`) {
+		t.Errorf("aside still carries hx-swap=\"afterend\" (no-op — aside has no hx-get/hx-post)")
+	}
+}
+
 // TestPageOrderEvents_Frag_RendersOnlyBody pins the htmx-polling
 // contract for the per-order timeline endpoint:
 // GET /orders/{id}/events?frag=1 returns ONLY the orderEventsBody
@@ -2053,6 +2134,111 @@ func TestPageOrderEvents_Frag_RendersOnlyBody(t *testing.T) {
 	}
 	if !strings.Contains(body, "Saga timeline") {
 		t.Errorf("frag missing timeline heading: %s", body)
+	}
+}
+
+// TestPageOrderDetail_OrderNil_SagaTimelineFallback pins DEFECT-5:
+// when the upstream order fetch returns 404 (or any non-200), the
+// detail page must still render the "Saga timeline" header and a
+// distinct fallback line ("Saga timeline unavailable — order not
+// loaded") so the operator sees the section structure even when the
+// order itself can't be displayed. Previously the entire <h3>
+// heading was nested inside `{{if .Order}}` and disappeared
+// silently on the 404 path, which made the layout look broken.
+func TestPageOrderDetail_OrderNil_SagaTimelineFallback(t *testing.T) {
+	oc := &fakeOrderClient{}
+	oc.getErr = &backend.HTTPError{Status: 404, Body: "order not found", URL: "http://order/v1/orders/22222222-2222-4222-8222-222222222222"}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/orders/22222222-2222-4222-8222-222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 404 {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
+	}
+	body := new(strings.Builder)
+	_, _ = io.Copy(body, resp.Body)
+	s := body.String()
+	if !strings.Contains(s, "Saga timeline") {
+		t.Errorf("expected 'Saga timeline' header on the 404 page; got: %s", s)
+	}
+	if !strings.Contains(s, "Saga timeline unavailable") {
+		t.Errorf("expected explicit fallback line when order is nil; got: %s", s)
+	}
+	if !strings.Contains(s, "Order not found") {
+		t.Errorf("expected the upstream 404 message echoed via .Error; got: %s", s)
+	}
+}
+
+// TestPageOrderDetail_BackHref_PreservesFilter pins DEFECT-2: the
+// "← back to list" link on the order detail page must carry the
+// state and SKU filters from the query string so the operator
+// returns to the same filtered list they came from. Pre-fix the
+// link was hardcoded `href="/"` and lost context on every
+// navigation.
+func TestPageOrderDetail_BackHref_PreservesFilter(t *testing.T) {
+	oc := &fakeOrderClient{
+		getResp: &backend.Order{
+			ID: "22222222-2222-4222-8222-222222222222",
+			State: backend.OrderStatePending,
+		},
+	}
+	srv := httptest.NewServer(newTestSet(t, oc))
+	defer srv.Close()
+
+	cases := []struct {
+		name string
+		query string
+		wantHref string
+	}{
+		{"no filter", "", "/"},
+		{"state only", "?state=reserved", "/?state=reserved"},
+		{"state + sku (single)", "?state=pending&sku=SKU-001", "/?state=pending&sku=SKU-001"},
+		{"state + sku (multi)", "?state=confirmed&sku=SKU-A&sku=SKU-B", "/?state=confirmed&sku=SKU-A&sku=SKU-B"},
+		{"sku only", "?sku=SKU-002", "/?sku=SKU-002"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/orders/22222222-2222-4222-8222-222222222222" + tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body := new(strings.Builder)
+			_, _ = io.Copy(body, resp.Body)
+			s := body.String()
+			// Find the back-to-list anchor specifically. The template
+			// emits the arrow as the HTML entity `&#8592;` (not the
+			// literal `←` character) — html/template preserves
+			// numeric character references verbatim in text nodes,
+			// so the rendered markup contains "&#8592; back to list"
+			// rather than "← back to list". Likewise the `&` inside
+			// the href attribute is HTML-escaped to `&amp;`, so the
+			// rendered `href="/?state=pending&sku=SKU-001"` shows up
+			// as `href="/?state=pending&amp;sku=SKU-001"`.
+			escapedHref := strings.ReplaceAll(tc.wantHref, "&", "&amp;")
+			backText := "&#8592; back to list"
+			anchorIdx := strings.Index(s, `href="`+escapedHref+`"`)
+			if anchorIdx < 0 {
+				t.Fatalf("expected href %q (escaped: %q) not found in markup", tc.wantHref, escapedHref)
+			}
+			backLinkIdx := strings.Index(s, backText)
+			if backLinkIdx < 0 {
+				t.Fatalf("expected '%s' text in markup", backText)
+			}
+			// The href and the text must be on the same <a> element.
+			closeAnchor := strings.Index(s[anchorIdx:], ">")
+			openAnchor := strings.LastIndex(s[:anchorIdx], "<a ")
+			if openAnchor < 0 || closeAnchor < 0 {
+				t.Fatalf("could not bracket the back-to-list anchor: openAnchor=%d closeAnchor(rel)=%d", openAnchor, closeAnchor)
+			}
+			closeAnchorAbs := anchorIdx + closeAnchor
+			if !(openAnchor < anchorIdx && anchorIdx < closeAnchorAbs && closeAnchorAbs < backLinkIdx) {
+				t.Errorf("href %q and '%s' text not inside the same anchor (open=%d href=%d close=%d text=%d)", tc.wantHref, backText, openAnchor, anchorIdx, closeAnchorAbs, backLinkIdx)
+			}
+		})
 	}
 }
 
