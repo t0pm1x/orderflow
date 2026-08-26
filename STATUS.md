@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-19 (post v1.1.5 release; web.1–web.11 closed)
+**Last updated:** 2026-08-26 (v1.1.7: UI additions; v1.1.6 template guard + hygiene)
 
 ## Sub-stages
 
@@ -113,6 +113,8 @@
 | v1.1.3   | housekeeping (flaky test + 6 coverage gaps) | done | 4090cd3 |          |
 | v1.1.4   | final engineering pass       | done | c21b929   |          |
 | v1.1.5   | E2E chain repair + easy-run scripts | done | 73ac9e7 |          |
+| v1.1.6   | order_detail.html template guard on 404 + binary hygiene + dual-cmd docs | done | this session | this plan |
+| v1.1.7   | UI: state-filter chips + SKU filter + error_code selector + hx-boost navigation + order-service List completeness fix + consumer completed_at fix + Helm/Kustomize tag bump + orderflow-web Helm chart | done | this session | this plan |
 
 ## Deferred to v1.2+
 

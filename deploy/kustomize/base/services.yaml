@@ -39,7 +39,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: orderflow-order
-          image: ghcr.io/t0pm1x/orderflow-order:0.2.0
+          image: ghcr.io/t0pm1x/orderflow-order:v1.1.7
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsNonRoot: true
@@ -114,7 +114,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: orderflow-payment
-          image: ghcr.io/t0pm1x/orderflow-payment:0.2.0
+          image: ghcr.io/t0pm1x/orderflow-payment:v1.1.7
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsNonRoot: true
@@ -189,7 +189,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: orderflow-inventory
-          image: ghcr.io/t0pm1x/orderflow-inventory:0.2.0
+          image: ghcr.io/t0pm1x/orderflow-inventory:v1.1.7
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsNonRoot: true
@@ -264,7 +264,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: orderflow-saga
-          image: ghcr.io/t0pm1x/orderflow-saga:0.2.0
+          image: ghcr.io/t0pm1x/orderflow-saga:v1.1.7
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsNonRoot: true

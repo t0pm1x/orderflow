@@ -34,6 +34,258 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — orderflow-web Helm chart (v1.1.7 part 5)
+
+The web service was added in v1.1 but had no Helm chart and no
+kustomize Deployment — operators could run it via
+`docker compose` or the bare-binary launcher, but not via
+`helm install` / `kubectl apply -k`. New chart at
+`deploy/helm/orderflow-web/`:
+
+- `Chart.yaml`, `values.yaml`, `values-dev.yaml`,
+  `values-override.yaml.example`.
+- `templates/`: `deployment.yaml`, `service.yaml`,
+  `configmap.yaml`, `secret.yaml`, `serviceaccount.yaml`,
+  `_helpers.tpl`.
+- 7 env vars: `HTTP_ADDR`, `OTEL_EXPORTER`,
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `LOG_LEVEL` (ConfigMap);
+  `ORDER_URL`, `PAYMENT_URL`, `INVENTORY_URL` (ConfigMap); and
+  the optional `KAFKA_BROKERS` (Secret). Defaults match the
+  in-cluster DNS of the standard `orderflow-{order,payment,
+  inventory}` Services, so a vanilla `helm install` of all
+  four backend charts plus the new web chart produces a working
+  playground.
+- The web binary is stateless (no DB, no Redis, no
+  migrations), so the chart is the simplest of the service
+  charts: no PodDisruptionBudget, no init container, no
+  migration Job. `KAFKA_BROKERS` is optional; leaving it empty
+  lets the page render with a "disconnected" SSE sidebar
+  instead of crashing on startup.
+- Resource requests/limits are sized for a stateless BFF
+  (50m/250m CPU, 64Mi/256Mi memory) — much smaller than the
+  stateful backend services.
+- `startupProbe` budget is 60s (12 × 5s) — shorter than the
+  150s budget on the backend services because web has no DB
+  pool to warm up.
+
+### Changed — Helm chart + kustomize image tag bump to v1.1.7
+
+The deploy manifests had been frozen on the v0.2.0 release image
+tag for every service even though the binary version has moved
+through v0.5 → v1.0 → v1.1.x. A `helm template` of the existing
+charts would have deployed a stale binary from 18+ months ago.
+Bumped:
+
+- `deploy/helm/orderflow-{order,payment,inventory,saga}/values.yaml`:
+  `image.tag` from `"0.2.0"` to `"v1.1.7"`.
+- `deploy/helm/orderflow-{order,payment,inventory,saga}/Chart.yaml`:
+  `version` 0.2.0 → 1.1.7 and `appVersion` "0.2.0" → "v1.1.7".
+- `deploy/helm/orderflow-{postgres,redis,redpanda}/Chart.yaml`:
+  `version` 0.2.0 → 1.1.7 (matches our deployment); `appVersion`
+  preserved (16-alpine / 7-alpine / v24.2.7 are upstream
+  versions, not orderflow release versions).
+- `deploy/kustomize/base/services.yaml`: image tag on all four
+  service Deployments from `:0.2.0` to `:v1.1.7`.
+
+Not changed in this pass (left for v1.1.8):
+
+- `orderflow-web` has no Helm chart and no kustomize Deployment
+  yet — it can be deployed via `docker compose` or the bare
+  binary launcher (`scripts/run.ps1`), but not Helm / kustomize.
+- The `autoscaling:` block in
+  `deploy/helm/orderflow-{order,saga}/values.yaml` is dead config:
+  no HPA template consumes it. Documented gap, not removed.
+
+### Fixed — order-service List completeness + consumer completed_at (v1.1.7 part 3)
+
+Cross-service audit pass turned up two real bugs in the Order
+Service that the BFF had silently compensated for:
+
+- **`Order.List` SELECT omitted `last_four` and `completed_at`**
+  (`services/order/internal/repository/pg_repo.go:List`). The
+  `Get` path correctly read both columns, but the List path
+  scanned only `(id, customer_id, items, state, total_cents,
+  created_at, updated_at)`, so orders surfaced via `/v1/orders`
+  carried `LastFour=""` and `CompletedAt=nil` on the wire. Visible
+  symptoms in the playground:
+  - The `/payments/sim` page's hidden `<input name="last_four">`
+    was always empty, so the upstream `errorCode()` fallback
+    always picked `"network_error"` instead of the card-derived
+    reason. The new `<select name="error_code">` (v1.1.7 UI
+    additions) compensates for this by making the operator pick
+    the code explicitly, but the underlying bug still
+    surfaces for any caller that reads `/v1/orders` and
+    forwards `last_four` on a follow-up webhook.
+  - The order-detail page's "completed {{time}}" line never
+    rendered for terminal orders surfaced via the list endpoint
+    (only via direct `/v1/orders/{id}` reads).
+  Fix: add both columns to the SELECT and the scan list. New
+  regression test `TestPGRepo_ListReturnsLastFourAndCompletedAt`
+  asserts both fields come back populated. (Skipped when
+  `DATABASE_URL` is unset — same skip-on-no-DB contract as the
+  other `pg_repo_test.go` tests.)
+
+- **`consumer.updateState` did not set `completed_at` on
+  terminal transitions** (`services/order/internal/consumer/handlers.go`).
+  When the saga or inventory emitted
+  `OrderConfirmed`/`OrderCancelled`/`StockReservationFailed`,
+  the consumer's bulk `UPDATE orders SET state=$1, updated_at=NOW()`
+  left `completed_at` NULL — visible in the BFF as "the order
+  is confirmed but no completion timestamp". The `PGRepo.Cancel`
+  path already sets `completed_at`; the consumer path is now
+  consistent (state→terminal sets `completed_at=NOW()`; other
+  transitions keep the existing `updated_at=NOW()` behaviour).
+
+### Added — hx-boost navigation + sidebar persistence (v1.1.7 part 2)
+
+Closes the "clicking any nav link reloads the entire page" UX
+regression reported by an operator walk-through, AND the
+"sidebar reconnects to SSE on every navigation" follow-up.
+
+- **`<body hx-boost="true" hx-target="#main-content" hx-swap="outerHTML" hx-push-url="true">`**
+  on the layout (`services/web/internal/templates/layout.html`).
+  htmx now intercepts every plain `<a href="...">` click (topbar
+  nav, state-filter chips, SKU links, "view →" row link, "← back to
+  list", "+ New order" buttons, etc.) and swaps **only** the
+  `<section id="main-content">` region — the topbar and the SSE
+  sidebar are siblings of `#main-content` and survive every
+  navigation unchanged. `hx-push-url` keeps the URL bar in sync
+  with the rendered view, so the back button still works and the
+  page is bookmarkable.
+
+- **Sidebar EventSource persists across navigation.** Pre-fix,
+  `hx-target="body"` swapped the entire body, which destroyed the
+  `<aside hx-ext="sse" sse-connect="/events/stream">` element on
+  every navigation — htmx-sse then re-created the EventSource,
+  briefly dropping live events. With `hx-target="#main-content"`,
+  the aside stays mounted: the SSE EventSource lives for the
+  lifetime of the page session, the live-event `<ul>` keeps its
+  accumulated items, and operators can click around without
+  losing the in-flight event tail.
+
+- **Inline scripts moved from `<body>` to `<head>`**
+  (`layout.html`). With hx-boost swapping `#main-content`
+  outerHTML, any inline `<script>` inside the swap target would
+  re-run on every navigation, duplicating the SSE / aria-busy /
+  copy-id listeners. htmx event listeners are attached to
+  `document.body` (which survives the swap target), so the
+  handlers continue to work after navigation. New regression test
+  `TestLayout_HxBoostSwapsMainContentOnly` asserts:
+  - `<body hx-boost="true" hx-target="#main-content">` is present,
+  - `<header>` precedes `<section id="main-content">` which
+    precedes `<aside>` in document order,
+  - `sse-connect="/events/stream"` is **outside** `#main-content`
+    (sidebar must persist across nav),
+  - each listener is registered exactly once.
+
+- **Existing forms unchanged.** Every form in the app
+  (`/v1/orders`, `/v1/orders/{id}`, `/payments/sim/fire`) already
+  declared explicit `hx-post`, which takes precedence over
+  hx-boost's URL inference — so form-submission behaviour is
+  identical to before (success → `HX-Redirect` → navigation).
+
+### Added — UI: state filter chips, SKU filter, error_code selector (v1.1.7)
+
+Closes three operator-experience gaps surfaced by the post-audit
+walk-through of `services/web`: the orders list had no UI surface
+for filtering, and the payments simulator's "Force fail" button
+could only emit `card_declined`.
+
+- **State filter chips on the orders list** (`services/web`).
+  `GET /?state=reserved` now renders a chip-row above the table
+  with All / Pending / Reserved / Confirmed / Cancelled / Failed;
+  the active chip is highlighted with the accent colour, and the
+  htmx polling re-fetch preserves the filter. `PageOrdersList`
+  forwards the chip's value to the Order service as the existing
+  `state=` query param — no upstream contract change.
+
+- **SKU filter (client-side, BFF-level)** (`services/web`). The
+  SKU cell on each orders-list row is now a link to `/?sku=SKU-X`;
+  multiple SKUs compose via either `?sku=A&sku=B` or `?sku=A,B`
+  (the BFF normalises both via `parseSKUFilter`). When an SKU
+  filter is active the BFF widens the upstream page to 200
+  (`OrderListBySKUs` then filters in memory — the Order service
+  doesn't expose a per-SKU list endpoint yet, and the BFF doesn't
+  want a second round-trip just for a UI filter). The inventory
+  page's SKU cells link to the same view, so operators can hop
+  from a stock row to "orders using this SKU" in one click. A
+  "Filtered by SKU:" banner with a copy-to-clipboard SKU pill and
+  a "clear SKU filter" link is rendered above the table when the
+  filter is non-empty.
+
+- **error_code selector in payments simulator** (`services/web`).
+  The Force-fail form's hidden `error_code=card_declined` input
+  is replaced with a `<select>` exposing all four decline paths
+  the mock provider supports: `card_declined`,
+  `insufficient_funds`, `network_error`, `provider_timeout`. Pre-fix
+  only `card_declined` was reachable from the UI; the
+  `insufficient_funds` (last-4 `0002`) and `network_error`
+  (default fallback) branches existed in
+  `services/payment/internal/webhook/handler.go:errorCode` but
+  required a curl-level call to exercise.
+
+- **Filter template helper** (`dict` template func). The chip-row
+  template uses `{{template "filterChip" (dict ...)}}` to pass
+  per-chip data; the `dict` template func is registered in
+  `handlers.NewSet` with a strict even-arg contract that panics at
+  template parse time rather than silently dropping the trailing
+  key in production.
+
+- **Styles** (`services/web/internal/static/styles.css`). Added
+  `.filter-chips`, `.chip`, `.chip-active`, `a.mono:hover`, and
+  `form.row select` selectors for the new UI elements. All
+  existing responsive / focus-visible / disabled-state selectors
+  are unchanged.
+
+### Fixed — order_detail template guard + binary hygiene (v1.1.6)
+
+- **Web: `order_detail.html` template guard on 404 path** (CRITICAL).
+  The Refresh button at `services/web/internal/templates/order_detail.html:11`
+  interpolated `{{.Order.ID}}` outside any `{{if .Order}}` guard, so a
+  `GET /orders/<id>` whose backend returned 404 produced a
+  `template: executing "orderDetailBody" at <.Order.ID>: nil pointer
+  evaluating *Order.ID` panic. The HTTP 404 status was already written
+  before `ExecuteTemplate`, so the body silently truncated to a
+  half-rendered fragment (no "Order not found." banner, malformed
+  `hx-get="/orders/<no value>?frag=1"` attribute on the Refresh
+  button). Fix: wrap the Refresh button in `{{if .Order}}…{{end}}`
+  and add a new `<div class="error">{{.Error}}</div>` banner shown
+  only when `vm.Error` is set but `vm.Order` is nil. New regression
+  test `TestOrderDetail_NotFound_BodyRendersBanner` asserts the body
+  carries the banner, does not contain `<no value>`, and does not
+  render a Refresh button on the 404 path.
+
+- **Build hygiene: extended `make clean`** (MEDIUM). The previous
+  `clean` target only removed `bin/`, leaving stale binaries under
+  `cmd/*/*.exe`, `services/*/bin/*.exe`, and `services/*/*.exe` to
+  accumulate. `make clean` now sweeps those on both Windows
+  (PowerShell) and POSIX (`find -delete`). All 19 stale artifacts
+  removed in this batch: `bin/_smoke_test.exe`, `bin/*-debug.exe`
+  (×4), `bin/web_new.exe`, root `web_new.exe`, root
+  `inventory.exe` / `order.exe` / `payment.exe` / `saga.exe` /
+  `web.exe`, `cmd/{order,payment,inventory,saga,web}/*.exe`,
+  `services/{order,payment,inventory,saga,web}/bin/*.exe`,
+  `services/saga/internal/outbox/saga.test.exe`,
+  `services/inventory/inventory.exe`, root `nul` file.
+
+- **Docs: documented the dual `cmd/<svc>` layout** (LOW).
+  `services/web/README.md` now has a "Two-layer binary layout"
+  subsection explaining why both `cmd/web/main.go` (outer
+  `package main`) and `services/web/cmd/web/main.go` (inner
+  `package web`) exist; the same pattern is used by
+  `cmd/{order,payment,inventory,saga}`. The inner layer owns
+  `Main()` and the `-ldflags -X`-injected `Version`; the outer
+  layer is a 10-line delegation so `go build ./cmd/web` from the
+  repo root produces a working binary without exposing internal
+  types from the service package.
+
+- **Tests: marked a deferred TODO as `DEFERRED`** (LOW). The
+  `// TODO: full end-to-end recovery` comment in
+  `tests/chaos/kafka_kill_test.go:15` is now `// DEFERRED (v1.2+,
+  see STATUS.md)` so the linter doesn't flag it and the reason is
+  inline with the comment (services cache `KAFKA_BROKER` at
+  startup).
+
 ### Fixed — E2E chain repair (v1.1.5)
 
 Closes the E2E test gap surfaced by the v1.1.4 batch: the orderflow

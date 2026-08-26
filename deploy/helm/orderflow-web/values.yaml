@@ -1,0 +1,104 @@
+# orderflow-web — playground BFF.
+#
+# The web service is a stateless HTTP server that proxies the order,
+# payment, and inventory services over REST and renders an htmx-driven
+# playground UI. It has NO database of its own, so this chart is
+# simpler than the per-service charts: no DATABASE_URL, no
+# migrations job, no outbox poller. The only runtime config is the
+# upstream URLs (ORDER_URL, PAYMENT_URL, INVENTORY_URL) and an
+# optional KAFKA_BROKERS for the live-event SSE tail.
+#
+# The README at services/web/README.md has the full route table
+# (13 routes / 3 actions) and the operator walk-through.
+
+image:
+  repository: ghcr.io/t0pm1x/orderflow-web
+  tag: "v1.1.7"
+  pullPolicy: IfNotPresent
+
+replicas: 2
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8085
+
+env:
+  HTTP_ADDR: ":8085"
+  OTEL_EXPORTER: "otlp"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+  LOG_LEVEL: "info"
+  # Upstream URLs default to the in-cluster order/payment/inventory
+  # service DNS names + their Helm-chart ports. Override per
+  # environment via a values override file when running outside the
+  # standard cluster.
+  ORDER_URL: "http://orderflow-order:80"
+  PAYMENT_URL: "http://orderflow-payment:80"
+  INVENTORY_URL: "http://orderflow-inventory:80"
+  # KAFKA_BROKERS is intentionally left empty so the SSE live-event
+  # tail degrades to "disconnected" rather than crashing on startup.
+  # Operators set this to the cluster Kafka address when they want
+  # the sidebar's live-event stream lit up.
+  KAFKA_BROKERS: ""
+
+# Secret carries the optional KAFKA_BROKERS (an empty default is
+# fine for the playground; production clusters override via values
+# or via secret.existingSecret).
+secret:
+  create: true
+  existingSecret: ""
+  data: {}
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "250m"
+    memory: "256Mi"
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 2
+    periodSeconds: 5
+  # startupProbe gives OTel init + htmx-template parse up to 60s
+  # before kubelet starts the liveness countdown. The web binary
+  # has no DB to wait for, so a shorter budget than the backend
+  # services is fine.
+  startup:
+    path: /healthz
+    failureThreshold: 12
+    periodSeconds: 5
+
+# preStop hook gives the kubelet 5s to drain in-flight SSE +
+# htmx-polling requests before the SIGTERM lands.
+lifecycle:
+  preStop:
+    sleepSeconds: 5
+
+# Distroless:nonroot ships UID/GID 65532. Pin both so the kubelet
+# doesn't pick a different value across schedulers. The web binary
+# is built with the same distroless base, so no fsGroup override
+# is needed (read-only rootFS is enforced by the PodSpec below).
+securityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+serviceAccount:
+  create: true
+  name: ""
+
+# Horizontal Pod Autoscaler. Not enabled by default — set
+# `autoscaling.enabled: true` and supply min/max replicas + target
+# metrics to wire up HPA. When enabled, `replicas` is ignored.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70

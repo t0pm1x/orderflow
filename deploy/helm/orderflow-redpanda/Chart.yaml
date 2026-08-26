@@ -2,5 +2,7 @@ apiVersion: v2
 name: orderflow-redpanda
 description: Single-broker Redpanda (KRaft, dev mode) for orderflow
 type: application
-version: 0.2.0
+version: 1.1.7
 appVersion: "v24.2.7"
+
+

@@ -1,0 +1,21 @@
+# values-override.yaml.example — copy to values-override.yaml and
+# fill in the connection strings for the cluster Kafka broker.
+#
+# Web reads:
+#   * ORDER_URL / PAYMENT_URL / INVENTORY_URL — upstream BFF clients.
+#     Defaults in values.yaml already point at the in-cluster
+#     orderflow-{order,payment,inventory} Service DNS names, so
+#     you only need to override these when running outside the
+#     standard cluster.
+#   * KAFKA_BROKERS — optional. Empty (the default) makes the SSE
+#     live-event sidebar show "disconnected"; set this to enable
+#     the live-event tail.
+#
+# Example (replace host:port with your broker addresses):
+#
+# secret:
+#   data:
+#     KAFKA_BROKERS: "kafka-bootstrap.kafka.svc.cluster.local:9092"
+#
+# env:
+#   ORDER_URL: "http://orderflow-order.orderflow.svc.cluster.local:80"

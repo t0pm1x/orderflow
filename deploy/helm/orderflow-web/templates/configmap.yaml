@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "orderflow-web.fullname" . }}
+  labels:
+    {{- include "orderflow-web.labels" . | nindent 4 }}
+data:
+  HTTP_ADDR: {{ .Values.env.HTTP_ADDR | quote }}
+  OTEL_EXPORTER: {{ .Values.env.OTEL_EXPORTER | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.env.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
+  ORDER_URL: {{ .Values.env.ORDER_URL | quote }}
+  PAYMENT_URL: {{ .Values.env.PAYMENT_URL | quote }}
+  INVENTORY_URL: {{ .Values.env.INVENTORY_URL | quote }}

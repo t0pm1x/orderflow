@@ -1,0 +1,16 @@
+# orderflow-web values for the dev overlay. Mirrors values.yaml but
+# pins the upstream URLs to the dev cluster DNS and points
+# KAFKA_BROKERS at the in-cluster Redpanda so the SSE live-event
+# sidebar shows real events.
+#
+# Loaded via:
+#   helm template orderflow-web deploy/helm/orderflow-web \
+#     -f deploy/helm/orderflow-web/values.yaml \
+#     -f deploy/helm/orderflow-web/values-dev.yaml
+
+image:
+  tag: "dev"
+
+secret:
+  data:
+    KAFKA_BROKERS: "orderflow-redpanda:9092"

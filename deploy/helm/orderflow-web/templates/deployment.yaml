@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orderflow-web.fullname" . }}
+  labels:
+    {{- include "orderflow-web.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "orderflow-web.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orderflow-web.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "orderflow-web.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        {{- with .Values.securityContext }}
+        {{- if .runAsUser }}
+        runAsUser: {{ .runAsUser }}
+        {{- end }}
+        {{- if .runAsGroup }}
+        runAsGroup: {{ .runAsGroup }}
+        {{- end }}
+        {{- if .fsGroup }}
+        fsGroup: {{ .fsGroup }}
+        {{- end }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            {{- with .Values.securityContext }}
+            {{- if .runAsUser }}
+            runAsUser: {{ .runAsUser }}
+            {{- end }}
+            {{- if .runAsGroup }}
+            runAsGroup: {{ .runAsGroup }}
+            {{- end }}
+            {{- end }}
+          {{- with .Values.lifecycle }}
+          {{- with .preStop }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .sleepSeconds }}"]
+          {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: HTTP_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "orderflow-web.fullname" . }}
+                  key: HTTP_ADDR
+            - name: OTEL_EXPORTER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "orderflow-web.fullname" . }}
+                  key: OTEL_EXPORTER
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "orderflow-web.fullname" . }}
+                  key: OTEL_EXPORTER_OTLP_ENDPOINT
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "orderflow-web.fullname" . }}
+                  key: LOG_LEVEL
+            - name: ORDER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "orderflow-web.fullname" . }}
+                  key: ORDER_URL
+            - name: PAYMENT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "orderflow-web.fullname" . }}
+                  key: PAYMENT_URL
+            - name: INVENTORY_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "orderflow-web.fullname" . }}
+                  key: INVENTORY_URL
+            - name: KAFKA_BROKERS
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.secret.existingSecret }}
+                  name: {{ .Values.secret.existingSecret }}
+                  {{- else }}
+                  name: {{ include "orderflow-web.fullname" . }}
+                  {{- end }}
+                  key: KAFKA_BROKERS
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          {{- with .Values.probes.startup }}
+          startupProbe:
+            httpGet:
+              path: {{ .path }}
+              port: http
+            failureThreshold: {{ .failureThreshold }}
+            periodSeconds: {{ .periodSeconds }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
