@@ -83,6 +83,20 @@ Highlights:
 - The Kafka event tail (`internal/kafkatail`) fans Kafka events into an
   in-process bus (`internal/events`) that `PageEventsStream` drains over SSE.
 
+### Two-layer binary layout
+
+The web binary is built from **two** `cmd/web` modules by design:
+
+| Layer | Path | Package | Purpose |
+|-------|------|---------|---------|
+| Outer | [`cmd/web`](../../cmd/web/main.go) | `package main` | Tiny `main()` that calls the inner `Main()`. Listed in `go.work` so the outer binary is buildable in isolation; this is what `make build` (root Makefile) compiles into `bin/web.exe`. |
+| Inner | [`cmd/web`](./cmd/web/main.go) (this dir) | `package web` | Owns the `Main()` exported function and the `Version` variable (`-ldflags -X`). Lives next to the service's `internal/*` packages so it can import `services/web/internal/web` directly. The Release story (SIGTERM-aware shutdown, structured startup log, env overrides) is implemented here. |
+
+The outer `package main` is a one-line delegation so a single `go build ./cmd/web`
+produces a working binary without exporting internal types from the service
+package. The same pattern is used by `cmd/{order,payment,inventory,saga}` —
+each has a 10-line `main.go` that imports its service's `Main()` and calls it.
+
 ## Smoke
 
 After `scripts\run.ps1` (or `scripts\run-demo.ps1`):

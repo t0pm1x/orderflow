@@ -68,6 +68,12 @@ run-web:
 
 clean:
 	rm -rf bin/
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -Command "Get-ChildItem -Path cmd,services -Recurse -Include *.exe -ErrorAction SilentlyContinue | Where-Object { $$_.DirectoryName -notmatch '\\(internal\\|.git)' } | Remove-Item -Force"
+else
+	find cmd -maxdepth 2 -name '*.exe' -delete
+	find services -path '*/bin' -prune -o -name '*.exe' -print -delete
+endif
 
 tidy:
 	@for m in $(WORKSPACE_MODULES); do \
