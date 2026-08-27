@@ -1,6 +1,6 @@
 # orderflow — Status
 
-**Last updated:** 2026-08-26 (v1.1.7: UI additions; v1.1.6 template guard + hygiene)
+**Last updated:** 2026-08-27 (v1.2.reaudit: senior-go adversarial re-audit, 1 P0 + 1 P1 fixed)
 
 ## Sub-stages
 
@@ -115,6 +115,7 @@
 | v1.1.5   | E2E chain repair + easy-run scripts | done | 73ac9e7 |          |
 | v1.1.6   | order_detail.html template guard on 404 + binary hygiene + dual-cmd docs | done | this session | this plan |
 | v1.1.7   | UI: state-filter chips + SKU filter + error_code selector + hx-boost navigation + order-service List completeness fix + consumer completed_at fix + Helm/Kustomize tag bump + orderflow-web Helm chart + 6-bug fix batch (inline-script crash, htmx-sse 1.x, filter loss, saga-timeline fallback) + htmx→SvelteKit SPA rewrite + SPA build pipeline (npm + Go embed) + Makefile/build-flow updates + RUN.md refresh | done | this session | this plan |
+| v1.2.reaudit | senior-go adversarial re-audit — F-001 (web SPA embed symbols unexported; build broken) + F-002 (saga cmd test race vs httpSrv.Serve Accept); build/test/race/vet/e2e-happy/e2e-compensation all green | done | 929e6dd (audit doc), f4f3083, c739d69 | docs/superpowers/plans/2026-08-27-orderflow-reaudit.md |
 
 ## Deferred to v1.2+
 
