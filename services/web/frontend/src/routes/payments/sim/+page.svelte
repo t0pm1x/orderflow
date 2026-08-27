@@ -127,7 +127,11 @@
             </td>
             <td>
               <div class="row">
-                <select bind:value={errorCode[o.id]} aria-label="Choose failure reason">
+                <select
+                  value={errorCode[o.id] ?? 'card_declined'}
+                  onchange={(e) => { errorCode[o.id] = (e.currentTarget as HTMLSelectElement).value; }}
+                  aria-label="Choose failure reason"
+                >
                   <option value="card_declined">card_declined</option>
                   <option value="insufficient_funds">insufficient_funds</option>
                   <option value="network_error">network_error</option>

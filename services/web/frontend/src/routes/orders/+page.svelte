@@ -29,7 +29,7 @@
     if (target) params.set('state', target);
     for (const sku of skuFilters) params.append('sku', sku);
     const qs = params.toString();
-    return '/' + (qs ? '?' + qs : '');
+    return '/orders' + (qs ? '?' + qs : '');
   }
 
   function skuChipHref(targetSku: string): string {
@@ -41,14 +41,14 @@
       : [...skuFilters, targetSku];
     for (const sku of next) params.append('sku', sku);
     const qs = params.toString();
-    return '/' + (qs ? '?' + qs : '');
+    return '/orders' + (qs ? '?' + qs : '');
   }
 
   function clearSkus(): string {
     const params = new URLSearchParams();
     if (stateFilter) params.set('state', stateFilter);
     const qs = params.toString();
-    return '/' + (qs ? '?' + qs : '');
+    return '/orders' + (qs ? '?' + qs : '');
   }
 
   async function load(showSpinner = true): Promise<void> {
@@ -115,7 +115,7 @@
     <a
       class="chip"
       class:active={!stateFilter && skuFilters.length === 0}
-      href={'/' + (skuFilters.length ? '?' + new URLSearchParams(skuFilters.map((s) => ['sku', s])).toString() : '')}
+      href={'/orders' + (skuFilters.length ? '?' + new URLSearchParams(skuFilters.map((s) => ['sku', s])).toString() : '')}
     >All</a>
     {#each STATES as st}
       <a

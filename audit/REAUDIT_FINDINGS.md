@@ -10,7 +10,7 @@ Docker available; kind/k8s NOT available.
 
 | Severity | Count | Status |
 |----------|-------|--------|
-| P0       | 2     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page) |
+| P0       | 4     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page; F-005 order chips route to `/`; F-006 payment-sim bind crash) |
 | P1       | 2     | FIXED (F-002 saga cmd test race; F-003 Makefile GOTOOLCHAIN) |
 | P2       | 0     | — |
 | P3       | 0     | — |
@@ -68,6 +68,47 @@ on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
   2. **`server.go`**: Strip the `_app/` URL prefix before opening: `path = strings.TrimPrefix(path, "_app/")`. Static asset content-type and 404 behavior unchanged.
   3. **`/static/*`**: SvelteKit static files (none today beyond favicon.svg, which has its own handler) live under `_app/immutable/assets/` post-build; the `/static/*` route now returns a clean 404 instead of inheriting the SPA HTML fallback (which would have given a misleading text/html content-type to an image request).
 - **Regression test**: probe program reads the index.html, extracts every `/_app/...` URL, curls each; all return 200 with correct Content-Type. Verified: 16/16 assets return 200 after fix.
+- **Commit**: `d0a3a55`
+
+### F-005 [P0] — Order filter chips navigate to `/` instead of `/orders`
+
+- **Component**: services/web/frontend (SvelteKit SPA)
+- **File**: `services/web/frontend/src/routes/orders/+page.svelte:32,44,51,118`
+- **Category**: bug
+- **Reproduction**: open `http://127.0.0.1:8085/orders?sku=A`. Click any state chip ("Pending"/"Reserved"/etc.) — browser navigates to `/?state=pending&sku=A` (the homepage), not `/orders?state=pending&sku=A`. Symptoms reported by user: "filter doesn't apply, page goes to /orders without filters" (actually: page goes to `/` which renders the homepage; user perceives this as "no filter applied"). Same bug for SKU toggle chips and the "clear SKU filter" link.
+- **Root cause**: The page lives at `/orders` (file `routes/orders/+page.svelte`), but every href-builder function constructs the URL with root prefix `'/'`:
+  ```ts
+  function chipHref(target) {
+    ...
+    return '/' + (qs ? '?' + qs : '');  // → '/', not '/orders'
+  }
+  ```
+  Same mistake in `skuChipHref`, `clearSkus`, and the inline "All" chip on line 118. Compiled SvelteKit SPA shell renders the same `<script>` regardless of URL, so the user always saw the bootstrap — actual chip HTML only exists client-side after JS hydration, masking the bug if you only curl `/`.
+- **Fix**: change `'/' + qs` to `'/orders' + qs` in all 4 sites. No other code path needs to change — `$derived(stateFilter)` and `$derived(skuFilters)` already reactively track `$page.url.searchParams`, and `$effect` re-fetches on change. SPA navigation between `/orders?...` and `/orders?...` triggers a same-route param change that SvelteKit handles without a full page reload.
+- **Regression test**: source-level verification (no test infra per user choice 1) — grep confirms 0 occurrences of `'/' + (qs` remain in this file; all 4 hrefs now target `/orders`. Manual: curl `bin/web.exe` for the page, open `/orders?sku=A` in a browser, click "Pending", confirm URL bar shows `/orders?state=pending&sku=A` and the filtered list renders.
+- **Commit**: (this fix)
+
+### F-006 [P0] — Payment simulator dropdown crashes with `TypeError: p is not iterable`
+
+- **Component**: services/web/frontend (SvelteKit SPA)
+- **File**: `services/web/frontend/src/routes/payments/sim/+page.svelte:130`
+- **Category**: bug
+- **Reproduction**: open `/payments/sim`. Browser console: `Dzetc_XL.js:1 Uncaught TypeError: Cannot read properties of null (reading 'length') at 7.BZARjGKU.js:2:2027 at DOmiYlhT.js:2:2724 ... at Array.<anonymous> (Dzetc_XL.js:1:13323)`. Plus `TypeError: p is not iterable` originating from Svelte 5's bind proxy. Page renders but the error_code `<select>` is non-interactive / crashes when interacted with.
+- **Root cause**: Svelte 5 (runes mode) does not support `bind:value` on indexed access to a `$state` record when the key may not exist yet:
+  ```svelte
+  <select bind:value={errorCode[o.id]} aria-label="...">
+  ```
+  `errorCode` is `Record<string, string>` keyed by `order.id`. For newly-loaded orders the entry exists (`load()` populates it), but the bind proxy machinery evaluates `errorCode[o.id]` to coerce the value, finds the initial lookup returns the proxy's `undefined` sentinel, then tries to iterate over it during the `value` → DOM-string round-trip — yielding the `null.length` and "not iterable" errors. Other `bind:value=` sites in the codebase (`orders/new/+page.svelte`) all bind to local `let` variables, which are properly tracked.
+- **Fix**: convert to uncontrolled `<select value={...} onchange={...}>` with an explicit `?? 'card_declined'` default for the first-render race:
+  ```svelte
+  <select
+    value={errorCode[o.id] ?? 'card_declined'}
+    onchange={(e) => { errorCode[o.id] = (e.currentTarget as HTMLSelectElement).value; }}
+    aria-label="Choose failure reason"
+  >
+  ```
+  No `$state` proxy is involved in the binding path; the assignment goes through a plain object index write that already works everywhere else in the file (`nextCodes[o.id] = ...` on line 44 already does this).
+- **Regression test**: source-level verification (no test infra per user choice 1) — grep confirms `bind:value={` no longer appears in `payments/sim/+page.svelte`; the new pattern matches the rest of the codebase. Manual: open `/payments/sim` in a browser, change the dropdown to `card_declined` / `insufficient_funds` / etc., confirm no console errors and the choice persists into the `onFire(o, 'failed', errorCode[o.id])` call.
 - **Commit**: (this fix)
 
 ---
@@ -116,3 +157,4 @@ The following are documented in the prior FINAL_AUDIT.md and verified to still h
 | `6643c5f` | docs(audit): finalize v1.2 senior-go re-audit findings + STATUS.md |
 | (pending) | fix(make): export GOTOOLCHAIN=auto so `make build` works on hosts with Go < 1.25.13 — F-003 |
 | (pending) | fix(web): strip embed prefix with fs.Sub + strip _app/ in handler so SPA JS bundles serve — F-004 |
+| (pending) | fix(web): route order chips to /orders + unbind payment-sim select (F-005, F-006) |
