@@ -41,7 +41,7 @@ func TestRun_ServesHealthzAndMetrics(t *testing.T) {
 		errCh <- saga.Run(ctx)
 	}()
 
-	addr := waitForAddr(t, 3*time.Second)
+	addr := waitForFreshReadyAddr(t, 3*time.Second)
 	t.Cleanup(func() { cancel() })
 
 	resp, err := http.Get("http://" + addr + "/healthz")
