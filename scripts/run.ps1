@@ -16,7 +16,9 @@
 #   pwsh -ExecutionPolicy Bypass -File scripts\run.ps1
 #   pwsh -ExecutionPolicy Bypass -File scripts\run.ps1 -NoBuild
 #
-# Requires: Docker Desktop running, Go 1.25+, GNU Make, ~4 GB RAM.
+# Requires: Docker Desktop running, Go 1.25+, GNU Make, Node.js
+# 20+ (only for the SPA build step that `make build` runs before
+# the Go build). ~4 GB RAM.
 # Logs land in tests\logs\<svc>.log (one per service).
 #
 # Compatible with both Windows PowerShell 5.1 (the default that

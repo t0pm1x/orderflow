@@ -25,7 +25,7 @@ The Windows examples prefer `powershell` over `pwsh` because the former is the d
 
 - **Docker Desktop** (or `dockerd` + Compose v2 on Linux). The script checks `docker info` at the start and tells you how to start the daemon if it's down.
 - **Go 1.25+** with the workspace (`go.work`) recognized at the repo root. CI uses Go 1.25.13.
-- **Node.js 20+** for building the SvelteKit SPA. The runtime binary doesn't need Node.js — the SPA is embedded into the Go binary at build time via `//go:embed` — but `make web-build` invokes `npm run build` in `services/web/frontend/` so Node.js must be on PATH for the build step. The launcher scripts do not require Node.js; the prebuilt `bin/web.exe` carries the SPA already.
+- **Node.js 20+** for building the SvelteKit SPA. The launcher scripts (`scripts/run.{sh,ps1}`) auto-invoke `make web-frontend-build` which runs `npm run build` in `services/web/frontend/`. **Runtime binaries do NOT need Node.js** — the SPA is embedded into `bin/web.exe` at compile time via `//go:embed`, so the running process is a single self-contained Go binary. Node.js is a build-time prerequisite only.
 - **GNU Make** on PATH. (`make` is on most Linux/macOS systems by default; on Windows install via `choco install make` or use the bundled `make.exe` from Git for Windows.)
 - **~4 GB RAM** for the compose stack (postgres x3 + redpanda + observability containers).
 
@@ -54,9 +54,19 @@ The Windows examples prefer `powershell` over `pwsh` because the former is the d
 | `payment` | 8082 | `postgres://orderflow:orderflow@127.0.0.1:5433/payment_payment?sslmode=disable` | `127.0.0.1:9092`             |
 | `inventory` | 8083 | `postgres://orderflow:orderflow@127.0.0.1:5434/inventory_inventory?sslmode=disable` | `127.0.0.1:9092`        |
 | `saga`    | 8084 | shares `postgres-order` (same DB as the order service)                           | `127.0.0.1:9092`             |
-| `web`     | 8085 | n/a (BFF, talks to order/payment/inventory via REST)                             | `127.0.0.1:9092`             |
+| `web`     | 8085 | n/a (BFF + embedded SvelteKit SPA; talks to order/payment/inventory via REST)       | `127.0.0.1:9092`             |
 
 Inventory also needs `REDIS_URL=redis://127.0.0.1:6379`; web reads `ORDER_URL` / `PAYMENT_URL` / `INVENTORY_URL` to fan out REST calls.
+
+### Build order (single binary)
+
+`make build` (invoked by `scripts/run.{sh,ps1}` before launching the web binary) runs in this order:
+
+1. `web-frontend-install` — `cd services/web/frontend && npm ci` (one-time)
+2. `web-frontend-build` — `cd services/web/frontend && npm run build` → emits `services/web/frontend/dist/{index.html, _app/, favicon.svg}` (SvelteKit static adapter output)
+3. `go build` — compiles `bin/web.exe` with the SPA embedded via `//go:embed frontend/dist/index.html` + `//go:embed frontend/dist/_app` + `//go:embed frontend/dist/favicon.svg` (see `services/web/spa.go`)
+
+A fresh checkout where `make build` fails on the SPA step: install Node.js 20+ (or run `npm ci` manually once). Set `SPA_BUILD_SKIP=1` to skip the npm step (e.g. in a CI container without Node.js — the embed still finds the placeholder `index.html` and the server logs a "SPA not built yet" warning at startup).
 
 Logs land in `tests/logs/<svc>.log` (stdout + stderr merged for each service). Tail them with any editor or `Get-Content -Wait` / `tail -F`.
 
@@ -81,8 +91,10 @@ curl -X POST http://127.0.0.1:8081/v1/orders \
 ```
 Last-four `0001` triggers the mock provider's decline branch (`services/payment/internal/provider/provider.go`); the saga emits `StockReleaseRequested` + `OrderCancelled`; final order state is `cancelled`.
 
-### Web UI
-Browse to [http://127.0.0.1:8085](http://127.0.0.1:8085) — list, create, cancel, and force-webhook from the sidebar.
+### Web UI (SvelteKit SPA + Go BFF)
+Browse to [http://127.0.0.1:8085](http://127.0.0.1:8085) — the embedded SvelteKit SPA shows the orders list with state/SKU filters, a create-order form, an order-detail page with live saga timeline, an inventory viewer, and the payments webhook simulator. The SPA talks same-origin to `/api/*` and `/events/stream` on the same `:8085` port — no separate static server, no CORS.
+
+State filtering on the orders list is URL-driven (`/?state=reserved`); SKU filtering accepts multiple values (`/?sku=A&sku=B`). Click any SKU in the inventory page to filter orders by it. The sidebar's live event stream (`/events/stream`) shows every Kafka envelope the web binary forwards from the in-process tail.
 
 ## Troubleshooting
 
@@ -97,6 +109,9 @@ Browse to [http://127.0.0.1:8085](http://127.0.0.1:8085) — list, create, cance
 | `bash: docs/demo/demo.sh: No such file or directory` on Windows | `bash` resolved to the WSL shim, which has no real Linux distro installed (Docker Desktop's WSL2 backend alone isn't enough) | use `powershell -ExecutionPolicy Bypass -File scripts\run-demo.ps1` instead (it routes through Git Bash at `C:\Program Files\Git\bin\bash.exe`), or install Ubuntu from the MS Store and `wsl --set-default ubuntu` |
 | `wsl: ... NAT mode ... /bin/bash not found` | Same as above — WSL is enabled (the shim exists) but no Linux distro is registered, so the shim has nowhere to dispatch | same fix |
 | Web UI loads with no orders | `web` started before `order` / `payment` / `inventory` finished booting | refresh; the BFF's HTTP probes only check `/healthz` liveness, not the order service's REST readiness |
+| Web UI shows "SPA not built yet" | `make web-frontend-build` was never run on this checkout, so `bin/web.exe` has the placeholder `index.html` embedded instead of the real SvelteKit bundle | `make web-frontend-build` (one-time; needs Node.js 20+) and rebuild with `make build` |
+| Web UI 404s on `/orders` and other client-side routes | The Go BFF's SPA fallback isn't serving `index.html` for `/orders`, `/inventory`, etc. | this shouldn't happen — verify `bin/web.exe` was built AFTER `web-frontend-build`; the fallback handler in `services/web/internal/server/server.go` serves `frontend/dist/index.html` for any non-API GET |
+| Live events sidebar stays empty | `KAFKA_BROKERS`/`KAFKA_BROKER` env var not set on the `web` binary | start redpanda (the launcher does this automatically) and ensure the script propagated `KAFKA_BROKERS=redpanda:9092`; the sidebar badge will change from "disconnected" to empty list (events appear as they fire) |
 
 ## How the script handles upgrades
 

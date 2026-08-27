@@ -109,5 +109,5 @@
   th, td { padding: var(--gap-2) var(--gap-3); text-align: left; border-bottom: 1px solid var(--border); }
   th { color: var(--fg-muted); font-weight: 600; font-size: var(--fs-sm); }
   .small { font-size: var(--fs-sm); }
-  a.mono:hover { color: var(--accent); }
+  a:hover { color: var(--accent); text-decoration: underline; }
 </style>

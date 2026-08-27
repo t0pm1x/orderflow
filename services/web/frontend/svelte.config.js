@@ -7,8 +7,14 @@ const config = {
 
   kit: {
     adapter: adapter({
-      pages: 'build',
-      assets: 'build',
+      // Output both SSR pages and static assets to `dist/` (a sibling
+      // of `build/`) so the Go embed directive in services/web/spa.go
+      // can match `frontend/dist/index.html` without SvelteKit
+      // overwriting the embed. `build/` is the adapter-static
+      // default — we route to `dist/` to keep the Go embed path
+      // predictable.
+      pages: 'dist',
+      assets: 'dist',
       fallback: 'index.html',
       precompress: false,
       strict: true

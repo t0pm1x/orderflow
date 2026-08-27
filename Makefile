@@ -1,4 +1,4 @@
-.PHONY: build build-web web-frontend-build web-frontend-install web-build test lint run clean tidy run-web
+.PHONY: build build-web web-frontend-build web-frontend-install web-build test lint run clean tidy run-web help
 
 # Version baked into each binary at build time. The Version
 # variable lives in services/<svc>/cmd/<svc> (package <svc>), not
@@ -17,28 +17,38 @@ ifeq ($(OS),Windows_NT)
 	EXE := .exe
 endif
 
-build:
+build: web-frontend-build
 	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/order/cmd/order.Version=$(VERSION)" -o bin/order$(EXE) ./cmd/order
 	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/payment/cmd/payment.Version=$(VERSION)" -o bin/payment$(EXE) ./cmd/payment
 	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/inventory/cmd/inventory.Version=$(VERSION)" -o bin/inventory$(EXE) ./cmd/inventory
 	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/saga/cmd/saga.Version=$(VERSION)" -o bin/saga$(EXE) ./cmd/saga
 	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/web/cmd/web.Version=$(VERSION)" -o bin/web$(EXE) ./cmd/web
 
+# `make build` runs the SvelteKit build first so a fresh
+# checkout produces a binary that serves the real SPA, not the
+# "SPA not built yet" placeholder. Set `SPA_BUILD_SKIP=1` to
+# skip the npm step (e.g. in CI containers without Node.js).
+#
+# `make web-build` rebuilds only the web binary (still pulls
+# in the SvelteKit build via the dependency).
+web-build: web-frontend-build
+	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/web/cmd/web.Version=$(VERSION)" -o bin/web$(EXE) ./cmd/web
+
+# `make build-web` skips the SvelteKit build — for fast iteration
+# on the Go BFF only when the SPA assets don't need to change.
 build-web:
 	go build -ldflags="$(LDFLAGS)" -o bin/web ./cmd/web
 
-# The web binary embeds the SvelteKit SPA built by Vite into
-# services/web/frontend/dist/. The embed fails with "no matching
-# files found" if the SPA hasn't been built yet, so build the
-# frontend first and only THEN the Go binary.
+# `make web-frontend-install` runs `npm ci` in services/web/frontend/.
+# One-time per fresh checkout / dependency change.
 web-frontend-install:
-	cd services/web && $(MAKE) frontend-install
+	+$(MAKE) -C services/web frontend-install
 
+# `make web-frontend-build` runs `npm run build` (Vite + SvelteKit)
+# producing frontend/dist/{index.html,_app/,favicon.svg}. The
+# Go binary embeds those files at compile time.
 web-frontend-build:
-	cd services/web && $(MAKE) frontend-build
-
-web-build: web-frontend-build
-	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/web/cmd/web.Version=$(VERSION)" -o bin/web$(EXE) ./cmd/web
+	+$(MAKE) -C services/web frontend-build
 
 # Workspace modules (mirrors go.work `use` block). Each is `cd`'d
 # into before `go test ./...` because the workspace root has no

@@ -13,7 +13,7 @@
 
 image:
   repository: ghcr.io/t0pm1x/orderflow-web
-  tag: "v1.1.7"
+  tag: "v1.1.7-sveltekit"
   pullPolicy: IfNotPresent
 
 replicas: 2

@@ -17,7 +17,8 @@
 #   bash scripts/run.sh --no-build
 #
 # Requires: docker daemon running, docker compose v2, Go 1.25+, GNU
-# Make, ~4 GB RAM. Logs land in tests/logs/<svc>.log (one per service).
+# Make, Node.js 20+ (only for the SPA build step), ~4 GB RAM. Logs
+# land in tests/logs/<svc>.log (one per service).
 #
 # Windows users: there is no bash script here — use the sibling
 # scripts/run.ps1 instead:

@@ -38,10 +38,13 @@
       error = null;
       // generate fresh keys for any order we haven't seen yet
       const next: Record<string, string> = {};
+      const nextCodes: Record<string, string> = {};
       for (const o of [...p, ...r]) {
         next[o.id] = idempotencyKeys[o.id] ?? newOrderKeys().ok;
+        nextCodes[o.id] = errorCode[o.id] ?? 'card_declined';
       }
       idempotencyKeys = next;
+      errorCode = nextCodes;
     } catch (e) {
       if (e instanceof ApiError) {
         error = { error: e.code, message: e.message };
@@ -124,7 +127,7 @@
             </td>
             <td>
               <div class="row">
-                <select bind:value={errorCode[o.id] ?? 'card_declined'} aria-label="Choose failure reason">
+                <select bind:value={errorCode[o.id]} aria-label="Choose failure reason">
                   <option value="card_declined">card_declined</option>
                   <option value="insufficient_funds">insufficient_funds</option>
                   <option value="network_error">network_error</option>
@@ -132,7 +135,7 @@
                 </select>
                 <button
                   class="fail"
-                  onclick={() => onFire(o, 'failed', errorCode[o.id] ?? 'card_declined')}
+                  onclick={() => onFire(o, 'failed', errorCode[o.id])}
                   aria-label={`Fire failed webhook for order ${o.id}`}
                 >
                   Force fail ✗

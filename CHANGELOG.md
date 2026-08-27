@@ -34,6 +34,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — web SPA build pipeline: npm output path + embed coverage (v1.1.7 part 8)
+
+Follow-up to the v1.1.7 part 7 SvelteKit rewrite — the first
+real `npm run build` exposed two pipeline gaps that the
+placeholder-only commit didn't trigger.
+
+- **SPA build path corrected.** `svelte.config.js` previously
+  pointed adapter-static at `pages: 'build', assets: 'build'`
+  (SvelteKit's default) — but `services/web/spa.go` embeds
+  `frontend/dist/index.html`, so the embed never picked up the
+  real output. Switched to `pages: 'dist', assets: 'dist'`
+  to match the Go embed path. `vite.config.ts` no longer needs
+  `build.outDir: 'dist'` (the adapter overrides it).
+
+- **All three embed patterns covered.** The original
+  `//go:embed frontend/dist/index.html` only picked up the
+  placeholder. Real SvelteKit output also writes
+  `frontend/dist/_app/...` (code-split JS/CSS chunks) and
+  `frontend/dist/favicon.svg`. Without explicit
+  `//go:embed frontend/dist/_app` and
+  `//go:embed frontend/dist/favicon.svg` directives, the Go
+  embed skips those — the binary boots, `/` serves the real
+  SPA, but `_app/*` returns 404. Added both directives; the
+  Go binary now serves the full SPA + code-split chunks.
+
+- **Makefile dependency on the SPA build.** Root `Makefile`'s
+  `build:` target now depends on `web-frontend-build` so a
+  fresh `make build` (or `make web-build`) invokes
+  `npm run build` automatically. CI containers without Node.js
+  can still skip the step with `SPA_BUILD_SKIP=1`. Added
+  `make web-frontend-install` (`npm ci`).
+
+- **Two Svelte compile errors caught by the first real build.**
+  `payments/sim/+page.svelte` had `bind:value={errorCode[o.id] ?? 'card_declined'}`,
+  which Svelte's compiler rejects ("Can only bind to an Identifier
+  or MemberExpression"). Fixed by pre-populating `errorCode` for
+  every order in the load function so the bind target is the
+  clean MemberExpression `errorCode[o.id]`. Also dropped an
+  unused CSS selector (`a.mono:hover` in `inventory/+page.svelte`)
+  that triggered `css_unused_selector` warnings.
+
+- **Helm chart image tag bumped.** `deploy/helm/orderflow-web/`
+  values+chart both moved from `v1.1.7` to `v1.1.7-sveltekit`
+  so the next image build pushes the SPA-enabled binary, not
+  the pre-v1.1.7-part-7 htmx one.
+
+- **RUN.md refreshed.** Added Node.js 20+ to prerequisites (build
+  step only — runtime binary is still self-contained), documented
+  the `build → web-frontend-build → go build` order, and added
+  troubleshooting rows for "SPA not built yet" + "Live events
+  sidebar empty". `scripts/run.{sh,ps1}` prerequisites now
+  mention Node.js explicitly.
+
 ### Changed — web frontend: htmx → SvelteKit SPA (v1.1.7 part 7)
 
 Pre-v1.1.7 the /web service was server-rendered Go templates

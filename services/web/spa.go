@@ -12,20 +12,27 @@
 // Putting the embed here in services/web/ (sibling of frontend/)
 // lets us write the path as "frontend/dist/index.html" directly.
 //
-// The embed is read by internal/server/server.go (the only place
-// the SPA files are served) via the exported spaFS variable.
+// Why three separate directives (index.html / _app / favicon.svg)
+// and not a single `frontend/dist`? Each //go:embed pattern must
+// match at least one file or the build fails with "no matching
+// files found". When the SPA hasn't been built yet, only
+// `dist/index.html` exists (the placeholder). Once the real
+// SvelteKit build runs, `dist/_app/` and `dist/favicon.svg`
+// appear too — so we list them explicitly to make the embed
+// succeed both before and after `npm run build`. When the adapter
+// emits additional top-level directories in a future SvelteKit
+// version, add new //go:embed directives here for each.
 package web
 
 import "embed"
 
 //go:embed frontend/dist/index.html
-//
-// The placeholder index.html is committed so a fresh checkout
-// without `npm run build` still produces a buildable binary; the
-// real SvelteKit build overwrites it on every CI/local build.
-//
-// NOTE: when running `make web-frontend-build` for the first
-// time, add new //go:embed directives here for any new top-level
-// paths the SvelteKit adapter-static emits (currently _app/ and
-// favicon.svg — see services/web/Makefile target `web-frontend-build`).
+//go:embed frontend/dist/_app
+//go:embed frontend/dist/favicon.svg
+
+// SpaFS is the SvelteKit SPA's static build output, embedded into
+// the Go binary at compile time. Consumed by
+// services/web/internal/server/server.go (mountSPA() reads the
+// _app/*, /favicon.svg, and falls back to index.html for any
+// other GET path that doesn't start with /api).
 var SpaFS embed.FS
