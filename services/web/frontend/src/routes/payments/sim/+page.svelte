@@ -15,15 +15,16 @@
   let reserved: Order[] = $state([]);
   let error: { error: string; message: string } | null = $state(null);
   let loading = $state(true);
-  let idempotencyKeys = $state<Record<string, string>>({});
+  // Per-order id -> failure-reason code. Tracked as a record for
+  // O(1) lookup from the Force-failed click handler. Svelte 5
+  // runes do not support `bind:value={record[key]}` cleanly when
+  // the key is dynamic (the bind proxy iterates the lookup
+  // result; F-006 root cause). We do the lookup manually in
+  // onchange / onclick so the binding machinery is never involved.
   let errorCode = $state<Record<string, string>>({});
 
   function newIdempotencyKey(): string {
     return crypto.randomUUID();
-  }
-
-  function newOrderKeys(): Record<string, string> {
-    return { ok: newIdempotencyKey(), fail: newIdempotencyKey() };
   }
 
   async function load(showSpinner = true): Promise<void> {
@@ -36,15 +37,15 @@
       pending = p;
       reserved = r;
       error = null;
-      // generate fresh keys for any order we haven't seen yet
+      // Default every newly-seen order's error_code to
+      // 'card_declined'. We assign the whole record so the proxy
+      // sees a single replacement instead of N indexed writes,
+      // which keeps reactive tracking predictable.
       const next: Record<string, string> = {};
-      const nextCodes: Record<string, string> = {};
       for (const o of [...p, ...r]) {
-        next[o.id] = idempotencyKeys[o.id] ?? newOrderKeys().ok;
-        nextCodes[o.id] = errorCode[o.id] ?? 'card_declined';
+        next[o.id] = errorCode[o.id] ?? 'card_declined';
       }
-      idempotencyKeys = next;
-      errorCode = nextCodes;
+      errorCode = next;
     } catch (e) {
       if (e instanceof ApiError) {
         error = { error: e.code, message: e.message };
@@ -128,14 +129,13 @@
             <td>
               <div class="row">
                 <select
-                  value={errorCode[o.id] ?? 'card_declined'}
                   onchange={(e) => { errorCode[o.id] = (e.currentTarget as HTMLSelectElement).value; }}
                   aria-label="Choose failure reason"
                 >
-                  <option value="card_declined">card_declined</option>
-                  <option value="insufficient_funds">insufficient_funds</option>
-                  <option value="network_error">network_error</option>
-                  <option value="provider_timeout">provider_timeout</option>
+                  <option value="card_declined" selected={errorCode[o.id] === 'card_declined' || !errorCode[o.id]}>card_declined</option>
+                  <option value="insufficient_funds" selected={errorCode[o.id] === 'insufficient_funds'}>insufficient_funds</option>
+                  <option value="network_error" selected={errorCode[o.id] === 'network_error'}>network_error</option>
+                  <option value="provider_timeout" selected={errorCode[o.id] === 'provider_timeout'}>provider_timeout</option>
                 </select>
                 <button
                   class="fail"

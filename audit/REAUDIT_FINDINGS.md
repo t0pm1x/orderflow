@@ -99,16 +99,18 @@ on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
   <select bind:value={errorCode[o.id]} aria-label="...">
   ```
   `errorCode` is `Record<string, string>` keyed by `order.id`. For newly-loaded orders the entry exists (`load()` populates it), but the bind proxy machinery evaluates `errorCode[o.id]` to coerce the value, finds the initial lookup returns the proxy's `undefined` sentinel, then tries to iterate over it during the `value` → DOM-string round-trip — yielding the `null.length` and "not iterable" errors. Other `bind:value=` sites in the codebase (`orders/new/+page.svelte`) all bind to local `let` variables, which are properly tracked.
-- **Fix**: convert to uncontrolled `<select value={...} onchange={...}>` with an explicit `?? 'card_declined'` default for the first-render race:
+- **Fix v1 (commit 3d75eca, INSUFFICIENT)**: convert `<select bind:value={...}>` to `<select value={...} onchange={...}>`. The compiler still routed the value through the same select-bind machinery (a MutationObserver watches the `<select>` for `value` attribute / option changes and re-applies the value via `bind_select_value`). The first iteration of the fix did NOT remove the `<select value>` attribute, so the Svelte bind machinery stayed active and kept crashing.
+- **Fix v2 (this commit)**: drop the `value=` attribute entirely. Manage selection via `selected={opt === errorCode[o.id]}` on each `<option>` instead:
   ```svelte
-  <select
-    value={errorCode[o.id] ?? 'card_declined'}
-    onchange={(e) => { errorCode[o.id] = (e.currentTarget as HTMLSelectElement).value; }}
-    aria-label="Choose failure reason"
-  >
+  <select onchange={(e) => { errorCode[o.id] = (e.currentTarget as HTMLSelectElement).value; }} ...>
+    <option value="card_declined" selected={errorCode[o.id] === 'card_declined' || !errorCode[o.id]}>card_declined</option>
+    <option value="insufficient_funds" selected={errorCode[o.id] === 'insufficient_funds'}>insufficient_funds</option>
+    ...
+  </select>
   ```
-  No `$state` proxy is involved in the binding path; the assignment goes through a plain object index write that already works everywhere else in the file (`nextCodes[o.id] = ...` on line 44 already does this).
-- **Regression test**: source-level verification (no test infra per user choice 1) — grep confirms `bind:value={` no longer appears in `payments/sim/+page.svelte`; the new pattern matches the rest of the codebase. Manual: open `/payments/sim` in a browser, change the dropdown to `card_declined` / `insufficient_funds` / etc., confirm no console errors and the choice persists into the `onFire(o, 'failed', errorCode[o.id])` call.
+  Now Svelte's select-bind machinery is not engaged at all — verified by inspecting the compiled chunk `dist/_app/immutable/nodes/7.CJ0zraJ1.js`: no `function Q`, no `MutationObserver`, no `__value` token. The chunk shrank from 4309 → 3686 bytes (the bind-select helper code dropped out).
+- **Side cleanup**: also dropped the unused `idempotencyKeys` record + `newOrderKeys()` helper. The keys were tracked but never read by `onFire()` (pre-existing dead state).
+- **Regression test**: source-level verification (no test infra per user choice 1) — grep confirms `bind:value={` and `<select value=` no longer appear in `payments/sim/+page.svelte`. Compiled chunk hash changed (`DwAd9gLP` → `CJ0zraJ1`) and the new chunk contains no select-bind code. BFF Go tests still pass. Manual: open `/payments/sim`, change the dropdown, confirm no console errors.
 - **Commit**: (this fix)
 
 ---
@@ -158,3 +160,4 @@ The following are documented in the prior FINAL_AUDIT.md and verified to still h
 | (pending) | fix(make): export GOTOOLCHAIN=auto so `make build` works on hosts with Go < 1.25.13 — F-003 |
 | (pending) | fix(web): strip embed prefix with fs.Sub + strip _app/ in handler so SPA JS bundles serve — F-004 |
 | (pending) | fix(web): route order chips to /orders + unbind payment-sim select (F-005, F-006) |
+| (pending) | fix(web): drop <select value=> entirely — use option[selected] (F-006 v2) |
