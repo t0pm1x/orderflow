@@ -49,6 +49,11 @@ export interface StockItem {
 
 export interface PaymentWebhook {
   payment_id: string;
+  /** Equal to payment_id in the playground (mock provider is
+   *  deterministic on order_id). F-009: sent explicitly so the
+   *  payment service's payments.order_id UUID column never receives
+   *  an empty string when the SPA's force-webhook button fires. */
+  order_id?: string;
   status: 'succeeded' | 'failed';
   error_code?: string;
   last_four?: string;

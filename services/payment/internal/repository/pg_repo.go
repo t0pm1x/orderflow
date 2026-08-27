@@ -68,6 +68,16 @@ func (r *PGRepo) UpsertFromWebhook(
 	to webhook.PaymentStatus,
 	events ...outbox.Record,
 ) (bool, error) {
+	// The SPA's "Force webhook" buttons fire with payment_id == order.id
+	// but the SPA type omits order_id from the body (pre-F-009). When
+	// order_id is missing, fall back to payment_id — the mock-provider
+	// semantics from F-008 make payment_id the row's natural identity.
+	// Without this, INSERT fails on the UUID-typed order_id column
+	// ("invalid input syntax for type uuid") and the BFF surfaces a
+	// 502 UPSTREAM_UNAVAILABLE.
+	if orderID == "" {
+		orderID = paymentID
+	}
 	var advanced bool
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		// Auto-create: INSERT with ON CONFLICT DO NOTHING. The

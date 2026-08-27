@@ -60,7 +60,8 @@
   async function onFire(order: Order, status: 'succeeded' | 'failed', errorCode: string): Promise<void> {
     try {
       const wh: PaymentWebhook = {
-        payment_id: order.id, // deterministic on order_id (mock dedupes)
+        payment_id: order.id,
+        order_id: order.id, // SPA convention: payment_id == order.id; explicit so the payment service's UUID column gets a valid value
         status,
         error_code: errorCode,
         last_four: order.last_four

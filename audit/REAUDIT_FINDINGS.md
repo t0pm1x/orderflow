@@ -10,7 +10,7 @@ Docker available; kind/k8s NOT available.
 
 | Severity | Count | Status |
 |----------|-------|--------|
-| P0       | 6     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page; F-005 order chips route to `/`; F-006 payment-sim bind crash; F-007 BFF empty items returns `null` not `[]`; F-008 webhook 404 when payment row not pre-created) |
+| P0       | 7     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page; F-005 order chips route to `/`; F-006 payment-sim bind crash; F-007 BFF empty items returns `null` not `[]`; F-008 webhook 404 when payment row not pre-created; F-009 F-008 INSERT failed with empty order_id for UUID-typed column) |
 | P1       | 2     | FIXED (F-002 saga cmd test race; F-003 Makefile GOTOOLCHAIN) |
 | P2       | 0     | — |
 | P3       | 0     | — |
@@ -20,6 +20,21 @@ Docker available; kind/k8s NOT available.
 on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
 
 ## Findings
+
+### F-009 [P0] — F-008 webhook INSERT fails with empty order_id (UUID-typed column)
+
+- **Component**: services/payment/internal/repository/pg_repo.go + services/web/frontend (PaymentWebhook type + payment-sim)
+- **File**: `services/payment/internal/repository/pg_repo.go:80-90`, `services/web/frontend/src/lib/types.ts:50-58`, `services/web/frontend/src/routes/payments/sim/+page.svelte:62-68`
+- **Category**: bug (data contract regression from F-008)
+- **Reproduction**: with the stack running (`make run` or `scripts/run.ps1`) and all services wired with DATABASE_URL/KAFKA_BROKERS, click "Force succeed ✓" or "Force fail ✗" on `/payments/sim`. The SPA POSTs to `/api/payments/webhook`. The BFF proxies to `/v1/payments/webhook`. The payment service executes F-008's `UpsertFromWebhook` → `INSERT INTO payments (id, order_id, ...)` with `order_id = ""`. Postgres rejects the empty string against the UUID column (`ERROR: invalid input syntax for type uuid`). Go returns 500, BFF maps to 502 `UPSTREAM_UNAVAILABLE`, SPA shows `error.message: "..."`. Pre-F-008 the handler did `Get + UpdateStatusFromNonTerminal` which never inserted with `""`, so the bug didn't surface until F-008's `INSERT ON CONFLICT DO NOTHING` was added.
+- **Root cause**: the SPA's `PaymentWebhook` type (services/web/frontend/src/lib/types.ts:50-56) declared only `payment_id`; `order_id` was implicitly the same as `payment_id` per the mock-provider contract (`payment_id == order.id`). F-008's `UpsertFromWebhook` requires `order_id` to populate the `payments.order_id` UUID column; empty string broke the INSERT.
+- **Fix**:
+  1. **Backend (defensive belt-and-suspenders)**: `PGRepo.UpsertFromWebhook` defaults `orderID = paymentID` when empty. Mirrors the SPA's deterministic mapping; idempotent because the result is the same row identity.
+  2. **Frontend (explicit)**: add `order_id?: string` to `PaymentWebhook`. SPA's `payments/sim` button click sets `order_id: order.id` explicitly so the type contract matches what the backend expects.
+- **Regression test gap**: the existing `TestWebhook_AutoCreatesRow_FromPayload` provides `order_id` in the request body, so it doesn't catch the empty-`order_id` path. **Add `TestWebhook_AutoCreatesRow_NoOrderIDDefaultsToPaymentID`** that posts a webhook without `order_id` and asserts the row is created with `order_id == payment_id`.
+- **Commit**: (this fix)
+
+---
 
 ### F-008 [P0] — Payment webhook returns 404 when saga hasn't pre-created payment row
 
@@ -42,20 +57,9 @@ on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
 - **Repo signature change**: `webhook.Repository` shrunk from 3 methods (`Get`, `UpdateStatus`, `UpdateStatusFromNonTerminal`) to one (`UpsertFromWebhook`). Both `PGRepo` and `fakeRepo` updated.
 - **Regression test**: `TestWebhook_AutoCreatesRow_FromPayload` in `services/payment/internal/webhook/handler_test.go` starts with an EMPTY fakeRepo, posts a webhook, asserts the row was created with the right order_id and the outbox event was emitted. The pre-fix `TestWebhook_MissingPayment_404` is gone (replaced by the new behavior). All other terminal-state-guard tests still pass unchanged.
 - **Side cleanup**: dropped the now-unused `ErrPaymentNotFound` (and the `Get` / `UpdateStatus` / `UpdateStatusFromNonTerminal` methods) — kept the variable as an alias for backwards-compat with any future caller that might exist outside this package.
-- **Commit**: (this fix)
+- **Commit**: `d21da3d`
 
 ---
-
-### F-001 [P0] — SvelteKit SPA rewrite fails to compile (webroot.appFS unexported)
-
-- **Component**: services/web (SvelteKit SPA rewrite)
-- **File**: `services/web/spa.go:53,61,67` and `services/web/internal/server/server.go:202,221,234,243`
-- **Category**: bug
-- **Reproduction**: `make build` exits 1 with `undefined: webroot.appFS (but have AppFS)` × 4 sites
-- **Root cause**: Uncommitted SvelteKit SPA rewrite (commit 96755b3 + 3 dirty files) declared `indexHTML`/`appFS`/`faviconSVG` unexported in `package web`, while `server.go` imports it as `webroot` and references the unexported names. Symbol mismatch blocks the entire `make build`.
-- **Fix**: Capitalize the three vars in `spa.go` (`IndexHTML`, `AppFS`, `FaviconSVG`); update 4 call sites in `server.go`. No semantic change.
-- **Regression test**: `make build` produces all 5 binaries with the correct LDFLAGS versions.
-- **Commit**: `f4f3083`
 
 ### F-002 [P1] — Flaky `TestRun_ServesHealthzAndMetrics` in services/saga/cmd/saga
 
@@ -214,3 +218,4 @@ The following are documented in the prior FINAL_AUDIT.md and verified to still h
 | (pending) | fix(web): drop <select value=> entirely — use option[selected] (F-006 v2) |
 | (pending) | fix(web/api): BFF ListOrders coerces nil items to [] + SPA listOrders defends; regression test TestAPI_ListOrders_NilItemsCoercedToEmptyArray (F-007) |
 | (pending) | fix(payment): webhook handler auto-creates payments row from payload (UpsertFromWebhook; mock-provider semantics) so SPA "Force succeed/fail" works pre-saga; regression test TestWebhook_AutoCreatesRow_FromPayload (F-008) |
+| (pending) | fix(payment/web): PGRepo.UpsertFromWebhook defaults order_id = payment_id when empty (UUID-typed column rejects ''); SPA PaymentWebhook type adds optional order_id; payment-sim sends it explicitly (F-009) |
