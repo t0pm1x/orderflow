@@ -25,10 +25,10 @@ const TopicPaymentEvents = "payment-events"
 // by this handler (docs/superpowers/specs/orderflow-events.md).
 const SchemaVersion = "1.0"
 
-// ErrPaymentNotFound is what a Repository returns (wrapped) when the
-// payment_id in the webhook body has no row. The handler maps it to a
-// 404 so a provider replay for an unknown payment is not retried as a
-// 5xx forever.
+// ErrPaymentNotFound is retained for backwards-compat with the
+// repository.Get signature, but the webhook handler no longer
+// surfaces it as a 404 — UpsertFromWebhook auto-creates the row
+// from the webhook payload (mock-provider semantics).
 var ErrPaymentNotFound = errors.New("payment not found")
 
 // PaymentStatus is the lifecycle state of a payments row.
@@ -41,21 +41,14 @@ const (
 	StatusFailed PaymentStatus = "failed"
 )
 
-// Payment is the subset of the payments row the webhook needs: enough
-// to build the outbox event (order id is the saga's aggregate id) and
-// to report the resulting state.
-type Payment struct {
-	ID          string        `json:"id"`
-	OrderID     string        `json:"order_id"`
-	AmountCents int64         `json:"amount_cents"`
-	Status      PaymentStatus `json:"status"`
-}
-
 // Repository is the payment data access seam.
 //
-// UpdateStatus must write the payments row and every outbox Record in
-// a single DB transaction: either the new status and the event commit
-// together, or neither does. Implementations:
+// UpsertFromWebhook is the only entry the webhook handler uses:
+// it auto-creates the payments row from the webhook payload when
+// missing (mock-provider semantics — the playgound's "Force
+// succeed/fail" button must work before the saga's PaymentRequested
+// consumer has had a chance to create the row) and transitions the
+// status with the terminal-state guard. Implementations:
 //   - repository.PGRepo — pgxpool + pgx.BeginFunc (production).
 //   - fakeRepo in handler_test.go — in-memory (handler unit tests).
 //
@@ -64,21 +57,26 @@ type Payment struct {
 // driver and aborts in-flight queries — without it a stuck client
 // keeps the PG backend processing requests it will never read.
 type Repository interface {
-	Get(ctx context.Context, id string) (*Payment, error)
-	UpdateStatus(ctx context.Context, id string, status PaymentStatus, events ...outbox.Record) error
-	// UpdateStatusFromNonTerminal transitions the payment to `to`
-	// only if its current status is non-terminal (i.e. NOT in
-	// {captured, failed}). Returns (true, nil) on transition with
-	// outbox rows emitted, (false, nil) when the current status is
-	// already terminal (no-op, no outbox emission), and (false,
-	// ErrPaymentNotFound) when the row vanished.
-	//
-	// The handler uses this to enforce terminal-state guards: a
-	// late webhook that flips a captured payment to failed (or
-	// vice versa) is silently dropped, and a same-status replay
-	// is also a no-op so we don't emit duplicate PaymentCompleted
-	// / PaymentFailed events.
-	UpdateStatusFromNonTerminal(ctx context.Context, id string, to PaymentStatus, events ...outbox.Record) (bool, error)
+	// UpsertFromWebhook creates the payments row from req fields
+	// if it doesn't exist (INSERT ... ON CONFLICT (id) DO NOTHING)
+	// and then transitions the status with the terminal-state
+	// guard. Returns (true, nil) on a real transition with the
+	// outbox row emitted, (false, nil) when the row's current
+	// status is terminal (no-op, no outbox emission). All in one
+	// transaction so a crash between INSERT and UPDATE never
+	// produces a half-row.
+	UpsertFromWebhook(ctx context.Context, paymentID, orderID string, amountCents int64, lastFour string, to PaymentStatus, events ...outbox.Record) (bool, error)
+}
+
+// Payment is the subset of the payments row the webhook needs: enough
+// to build the outbox event (order id is the saga's aggregate id) and
+// to report the resulting state.
+type Payment struct {
+	ID          string        `json:"id"`
+	OrderID     string        `json:"order_id"`
+	AmountCents int64         `json:"amount_cents"`
+	Status      PaymentStatus `json:"status"`
+	LastFour    string        `json:"last_four,omitempty"`
 }
 
 // PaymentCompletedPayload is the body of a PaymentCompleted event.
@@ -173,63 +171,46 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.repo.Get(r.Context(), req.PaymentID)
-	if err != nil {
-		if errors.Is(err, ErrPaymentNotFound) {
-			apierrors.WriteError(w, &apierrors.APIError{
-				Status:  http.StatusNotFound,
-				Code:    "PAYMENT_NOT_FOUND",
-				Message: err.Error(),
-				Cause:   err,
-			})
-			return
-		}
-		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "GET_FAILED", err.Error(), err))
-		return
+	p := &Payment{
+		ID:          req.PaymentID,
+		OrderID:     req.OrderID,
+		AmountCents: req.AmountCents,
+		LastFour:    req.LastFour,
 	}
-
 	ev, buildErr := buildRecord(p, eventType, errorCode(req))
 	if buildErr != nil {
 		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "EVENT_BUILD_FAILED", buildErr.Error(), buildErr))
 		return
 	}
 
-	// Terminal-state guard: a payment already in a terminal
-	// status (captured or failed) must NOT be flipped to the
-	// other terminal by a late-delivered webhook. The repo
-	// transition only fires when the current status is non-terminal,
-	// so a same-status replay also no-ops (the row's status
-	// already matches). Either way, no outbox row is emitted
-	// for the no-op path.
-	advanced, err := h.repo.UpdateStatusFromNonTerminal(r.Context(), p.ID, newStatus, ev)
+	// UpsertFromWebhook auto-creates the payments row from the
+	// webhook payload if the saga's PaymentRequested consumer
+	// hasn't run yet. The payments-sim "Force succeed/fail"
+	// buttons fire this endpoint directly without waiting for
+	// the saga; returning 404 because the row doesn't exist
+	// yet would break that UX. The terminal-state guard inside
+	// the repo still prevents a same-status replay or an
+	// opposite-terminal flip from emitting a duplicate event.
+	advanced, err := h.repo.UpsertFromWebhook(r.Context(), req.PaymentID, req.OrderID,
+		req.AmountCents, req.LastFour, newStatus, ev)
 	if err != nil {
-		if errors.Is(err, ErrPaymentNotFound) {
-			apierrors.WriteError(w, &apierrors.APIError{
-				Status:  http.StatusNotFound,
-				Code:    "PAYMENT_NOT_FOUND",
-				Message: err.Error(),
-				Cause:   err,
-			})
-			return
-		}
 		apierrors.WriteError(w, apierrors.Wrap(http.StatusInternalServerError, "DB_ERROR", err.Error(), err))
 		return
 	}
 	if !advanced {
 		// Idempotent replay: payment is already in a terminal state
 		// different from the requested one (or the row's status
-		// doesn't match — but allowedFrom covers both terminals, so
-		// this branch is a true terminal-mismatch). Return 200 so the
+		// already matches — same-status replay). Return 200 so the
 		// provider doesn't retry forever; log for observability.
 		h.logger.Info("webhook: payment already in terminal state, ignoring late update",
-			"payment_id", p.ID, "current_status", p.Status, "requested_status", newStatus)
+			"payment_id", req.PaymentID, "requested_status", newStatus)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":     "ok",
-		"payment_id": p.ID,
+		"payment_id": req.PaymentID,
 		"state":      string(newStatus),
 	})
 }

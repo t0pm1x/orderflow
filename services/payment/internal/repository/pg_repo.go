@@ -13,7 +13,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -44,70 +43,54 @@ func NewPGRepo(pool *pgxpool.Pool) *PGRepo {
 // Compile-time assertion that PGRepo satisfies webhook.Repository.
 var _ webhook.Repository = (*PGRepo)(nil)
 
-// Get loads a single payment by id. Returns an error wrapping
-// webhook.ErrPaymentNotFound when the row does not exist; the handler
-// translates that into a 404. The ctx is honored by pgx so an HTTP
-// client disconnect aborts the in-flight query.
-func (r *PGRepo) Get(ctx context.Context, id string) (*webhook.Payment, error) {
-	row := r.pool.QueryRow(ctx,
-		`SELECT id, order_id, amount_cents, status
-		   FROM payments WHERE id = $1`, id)
-	var (
-		p      webhook.Payment
-		status string
-	)
-	if err := row.Scan(&p.ID, &p.OrderID, &p.AmountCents, &status); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("payment %s: %w", id, webhook.ErrPaymentNotFound)
-		}
-		return nil, err
-	}
-	p.Status = webhook.PaymentStatus(status)
-	return &p, nil
-}
-
-// UpdateStatus moves the payment to status and appends every supplied
-// outbox Record in one transaction. A zero-row UPDATE means the id
-// vanished between Get and here, which is reported as
-// webhook.ErrPaymentNotFound rather than a silent no-op.
-func (r *PGRepo) UpdateStatus(ctx context.Context, id string, status webhook.PaymentStatus, events ...outbox.Record) error {
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx,
-			`UPDATE payments SET status = $2, updated_at = NOW() WHERE id = $1`,
-			id, string(status),
-		)
-		if err != nil {
-			return fmt.Errorf("update payment status: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("payment %s: %w", id, webhook.ErrPaymentNotFound)
-		}
-		for _, ev := range events {
-			if err := r.writer.Append(ctx, tx, ev); err != nil {
-				return fmt.Errorf("insert outbox: %w", err)
-			}
-		}
-		return nil
-	})
-}
-
-// UpdateStatusFromNonTerminal transitions the payment to `to` only
-// if its current status is non-terminal (NOT in {captured, failed}).
-// Returns (true, nil) on transition with outbox rows emitted, (false,
-// nil) when the row's status is already terminal (no-op, no outbox
-// emission), and (false, ErrPaymentNotFound) when the row doesn't
-// exist. Outbox rows only commit on a real transition so a replay
-// against a terminal-state payment doesn't produce duplicate
-// PaymentCompleted / PaymentFailed events.
-func (r *PGRepo) UpdateStatusFromNonTerminal(ctx context.Context, id string, to webhook.PaymentStatus, events ...outbox.Record) (bool, error) {
+// UpsertFromWebhook creates the payments row from the webhook payload
+// if it doesn't exist (INSERT ... ON CONFLICT (id) DO NOTHING) and then
+// transitions the status with the terminal-state guard. All in one
+// transaction so a crash between INSERT and UPDATE never produces a
+// half-row. Returns (true, nil) on a real transition with outbox rows
+// emitted, (false, nil) when the row's current status is terminal
+// (no-op, no outbox emission).
+//
+// The auto-create is what makes the playground "Force succeed/fail"
+// buttons work before the saga's PaymentRequested consumer has run —
+// the mock provider accepts any valid payment_id (deterministic on
+// order_id) and the SPA's button fires the webhook directly without
+// waiting for the saga.
+//
+// amount_cents and last_four default to 0 / "" if absent (the SPA's
+// webhooks don't always send them; the saga path fills them via the
+// PaymentRequested consumer).
+func (r *PGRepo) UpsertFromWebhook(
+	ctx context.Context,
+	paymentID, orderID string,
+	amountCents int64,
+	lastFour string,
+	to webhook.PaymentStatus,
+	events ...outbox.Record,
+) (bool, error) {
 	var advanced bool
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		// Auto-create: INSERT with ON CONFLICT DO NOTHING. The
+		// unique-constraint on payments.id turns this into a
+		// no-op when the saga's consumer already created the row.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO payments (id, order_id, amount_cents, status, last_four)
+			 VALUES ($1, $2, $3, '', $4)
+			 ON CONFLICT (id) DO NOTHING`,
+			paymentID, orderID, amountCents, lastFour,
+		); err != nil {
+			return fmt.Errorf("upsert payment: %w", err)
+		}
+		// Terminal-state guarded transition. The `status = ''`
+		// guard on the row created above ensures the first webhook
+		// always fires; subsequent webhooks obey the captured/failed
+		// terminal-state guard the same as the pre-fix flow.
 		tag, err := tx.Exec(ctx,
 			`UPDATE payments
 			    SET status = $2, updated_at = NOW()
 			  WHERE id = $1
 			    AND status NOT IN ('captured', 'failed')`,
-			id, string(to))
+			paymentID, string(to))
 		if err != nil {
 			return fmt.Errorf("update payment status: %w", err)
 		}
@@ -123,7 +106,7 @@ func (r *PGRepo) UpdateStatusFromNonTerminal(ctx context.Context, id string, to 
 		case 0:
 			return nil
 		default:
-			return fmt.Errorf("UpdateStatusFromNonTerminal: unexpected RowsAffected=%d for payment_id=%s", tag.RowsAffected(), id)
+			return fmt.Errorf("UpsertFromWebhook: unexpected RowsAffected=%d for payment_id=%s", tag.RowsAffected(), paymentID)
 		}
 	})
 	return advanced, err

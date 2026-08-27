@@ -10,7 +10,7 @@ Docker available; kind/k8s NOT available.
 
 | Severity | Count | Status |
 |----------|-------|--------|
-| P0       | 5     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page; F-005 order chips route to `/`; F-006 payment-sim bind crash; F-007 BFF empty items returns `null` not `[]`) |
+| P0       | 6     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page; F-005 order chips route to `/`; F-006 payment-sim bind crash; F-007 BFF empty items returns `null` not `[]`; F-008 webhook 404 when payment row not pre-created) |
 | P1       | 2     | FIXED (F-002 saga cmd test race; F-003 Makefile GOTOOLCHAIN) |
 | P2       | 0     | — |
 | P3       | 0     | — |
@@ -20,6 +20,31 @@ Docker available; kind/k8s NOT available.
 on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
 
 ## Findings
+
+### F-008 [P0] — Payment webhook returns 404 when saga hasn't pre-created payment row
+
+- **Component**: services/payment/internal/webhook/{handler,repository}
+- **File**: `services/payment/internal/webhook/handler.go`, `services/payment/internal/repository/pg_repo.go`, `services/payment/internal/webhook/handler_test.go`
+- **Category**: bug (UX + missing mock-provider semantics)
+- **Reproduction**: on the SPA's `/payments/sim` page, click "Force succeed ✓" or "Force fail ✗" on any in-flight order BEFORE the saga's PaymentRequested consumer has run (i.e. before inventory has reserved stock → payment consumer hasn't created the `payments` row). The BFF returns 404 from `/api/payments/webhook`, the SPA shows `error.message: "payment not found: ..."` (or similar), and the order stays stuck in `reserved`.
+- **Root cause**: the webhook handler at `services/payment/internal/webhook/handler.go:176-189` did `repo.Get(payment_id)` and returned 404 (`PAYMENT_NOT_FOUND`) when no row existed. In production this row is created by `services/payment/internal/consumer/handlers.go::PaymentRequested` when the saga fires `PaymentRequested`. But the playground's "Force succeed/fail" buttons fire the webhook directly — bypassing the saga path. Returning 404 makes the operator's "force" action silently fail.
+- **Fix**: replace the `Get + UpdateStatusFromNonTerminal` pair with a single `UpsertFromWebhook(paymentID, orderID, amountCents, lastFour, to)` method:
+  ```sql
+  INSERT INTO payments (id, order_id, amount_cents, status, last_four)
+  VALUES ($1, $2, $3, '', $4)
+  ON CONFLICT (id) DO NOTHING;
+  UPDATE payments
+    SET status = $2, updated_at = NOW()
+   WHERE id = $1
+     AND status NOT IN ('captured', 'failed');  -- terminal-state guard preserved
+  ```
+  All in one transaction so a crash between INSERT and UPDATE never produces a half-row. The terminal-state guard inside the UPDATE prevents same-status replay and opposite-terminal flip, so idempotency / P1-#1 invariants are unchanged.
+- **Repo signature change**: `webhook.Repository` shrunk from 3 methods (`Get`, `UpdateStatus`, `UpdateStatusFromNonTerminal`) to one (`UpsertFromWebhook`). Both `PGRepo` and `fakeRepo` updated.
+- **Regression test**: `TestWebhook_AutoCreatesRow_FromPayload` in `services/payment/internal/webhook/handler_test.go` starts with an EMPTY fakeRepo, posts a webhook, asserts the row was created with the right order_id and the outbox event was emitted. The pre-fix `TestWebhook_MissingPayment_404` is gone (replaced by the new behavior). All other terminal-state-guard tests still pass unchanged.
+- **Side cleanup**: dropped the now-unused `ErrPaymentNotFound` (and the `Get` / `UpdateStatus` / `UpdateStatusFromNonTerminal` methods) — kept the variable as an alias for backwards-compat with any future caller that might exist outside this package.
+- **Commit**: (this fix)
+
+---
 
 ### F-001 [P0] — SvelteKit SPA rewrite fails to compile (webroot.appFS unexported)
 
@@ -188,3 +213,4 @@ The following are documented in the prior FINAL_AUDIT.md and verified to still h
 | (pending) | fix(web): route order chips to /orders + unbind payment-sim select (F-005, F-006) |
 | (pending) | fix(web): drop <select value=> entirely — use option[selected] (F-006 v2) |
 | (pending) | fix(web/api): BFF ListOrders coerces nil items to [] + SPA listOrders defends; regression test TestAPI_ListOrders_NilItemsCoercedToEmptyArray (F-007) |
+| (pending) | fix(payment): webhook handler auto-creates payments row from payload (UpsertFromWebhook; mock-provider semantics) so SPA "Force succeed/fail" works pre-saga; regression test TestWebhook_AutoCreatesRow_FromPayload (F-008) |

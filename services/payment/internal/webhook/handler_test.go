@@ -3,7 +3,6 @@ package webhook
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,13 +13,13 @@ import (
 )
 
 // fakeRepo is an in-memory webhook.Repository. No DB required: the
-// handler's contract is "look up, classify, update + emit", all of
-// which is observable through the map and the captured events.
+// handler's contract is "look up (or auto-create), classify, update +
+// emit", all of which is observable through the map and the captured
+// events.
 type fakeRepo struct {
 	payments  map[string]*Payment
 	events    []outbox.Record
-	getErr    error
-	updateErr error
+	upsertErr error
 }
 
 func newFakeRepo(payments ...*Payment) *fakeRepo {
@@ -31,49 +30,32 @@ func newFakeRepo(payments ...*Payment) *fakeRepo {
 	return f
 }
 
-func (f *fakeRepo) Get(_ context.Context, id string) (*Payment, error) {
-	if f.getErr != nil {
-		return nil, f.getErr
+// UpsertFromWebhook is the new entry point: creates the payments
+// row from the webhook payload when missing (the saga's
+// PaymentRequested consumer may not have run yet for a manual
+// webhook fire) and transitions the status with the terminal-state
+// guard. Returns (true, nil) on a real transition, (false, nil)
+// when the row's current status is already terminal.
+func (f *fakeRepo) UpsertFromWebhook(_ context.Context, paymentID, orderID string, amountCents int64, lastFour string, to PaymentStatus, events ...outbox.Record) (bool, error) {
+	if f.upsertErr != nil {
+		return false, f.upsertErr
 	}
-	p, ok := f.payments[id]
+	p, ok := f.payments[paymentID]
 	if !ok {
-		return nil, fmt.Errorf("payment %s: %w", id, ErrPaymentNotFound)
-	}
-	copied := *p
-	return &copied, nil
-}
-
-func (f *fakeRepo) UpdateStatus(_ context.Context, id string, status PaymentStatus, events ...outbox.Record) error {
-	if f.updateErr != nil {
-		return f.updateErr
-	}
-	p, ok := f.payments[id]
-	if !ok {
-		return fmt.Errorf("payment %s: %w", id, ErrPaymentNotFound)
-	}
-	p.Status = status
-	f.events = append(f.events, events...)
-	return nil
-}
-
-// UpdateStatusFromNonTerminal mirrors the production PGRepo
-// method: the payment transitions to `to` only if its current
-// status is non-terminal. Returns (true, nil) on transition with
-// outbox events captured, (false, nil) when the row's status is
-// already terminal. The handler relies on the false branch to
-// short-circuit late webhooks without emitting duplicate
-// PaymentCompleted / PaymentFailed events.
-func (f *fakeRepo) UpdateStatusFromNonTerminal(_ context.Context, id string, to PaymentStatus, events ...outbox.Record) (bool, error) {
-	if f.updateErr != nil {
-		return false, f.updateErr
-	}
-	p, ok := f.payments[id]
-	if !ok {
-		return false, fmt.Errorf("payment %s: %w", id, ErrPaymentNotFound)
+		// Auto-create from webhook payload (mock-provider semantics).
+		p = &Payment{
+			ID:          paymentID,
+			OrderID:     orderID,
+			AmountCents: amountCents,
+			LastFour:    lastFour,
+			Status:      "",
+		}
+		f.payments[paymentID] = p
 	}
 	if p.Status == StatusCaptured || p.Status == StatusFailed {
-		// Already terminal — the same-status replay and the
-		// opposite-terminal flip both short-circuit here.
+		// Already terminal — same-status replay and opposite-
+		// terminal flip both short-circuit here. Mirrors the
+		// production PGRepo's terminal-state guard.
 		return false, nil
 	}
 	p.Status = to
@@ -91,7 +73,7 @@ func testPayment() *Payment {
 		ID:          testPaymentID,
 		OrderID:     testOrderID,
 		AmountCents: 3998,
-		Status:      "pending",
+		Status:      "",
 	}
 }
 
@@ -115,6 +97,42 @@ func decodeCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Fatalf("decode error body %q: %v", rec.Body.String(), err)
 	}
 	return body.Code
+}
+
+// TestWebhook_AutoCreatesRow_FromPayload is F-008 root-cause fix:
+// pre-fix, the webhook returned 404 if no payments row existed. The
+// SPA's "Force succeed/fail" buttons then failed with PAYMENT_NOT_FOUND
+// whenever the saga's PaymentRequested consumer hadn't run yet.
+// Now the handler auto-creates the row from the webhook payload
+// (mock-provider semantics) and the webhook chain completes.
+func TestWebhook_AutoCreatesRow_FromPayload(t *testing.T) {
+	repo := newFakeRepo() // EMPTY — no payments row pre-existing
+	const newID = "11111111-2222-3333-4444-555555555555"
+	const newOrderID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+	rec := post(t, repo, fmt.Sprintf(
+		`{"payment_id":%q,"order_id":%q,"last_four":"4242","amount_cents":1999,"status":"success"}`,
+		newID, newOrderID))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	p, ok := repo.payments[newID]
+	if !ok {
+		t.Fatalf("payment row was NOT auto-created")
+	}
+	if p.Status != StatusCaptured {
+		t.Errorf("auto-created row status: got %q want %q", p.Status, StatusCaptured)
+	}
+	if p.OrderID != newOrderID {
+		t.Errorf("auto-created row order_id: got %q want %q", p.OrderID, newOrderID)
+	}
+	if len(repo.events) != 1 {
+		t.Fatalf("events: got %d want 1", len(repo.events))
+	}
+	if repo.events[0].EventType != "PaymentCompleted" {
+		t.Errorf("event type: got %q want PaymentCompleted", repo.events[0].EventType)
+	}
 }
 
 func TestWebhook_Success_CapturesAndEmitsPaymentCompleted(t *testing.T) {
@@ -141,7 +159,7 @@ func TestWebhook_Success_CapturesAndEmitsPaymentCompleted(t *testing.T) {
 		t.Errorf("topic: got %q want %q", ev.Topic, TopicPaymentEvents)
 	}
 	if ev.AggregateID != testOrderID || ev.AggregateType != "Order" {
-		t.Errorf("aggregate: got (%q, %q) want (%q, Order)", ev.AggregateID, ev.AggregateType, testOrderID)
+		t.Errorf("aggregate: got (%q, %q) want (%q, %q)", ev.AggregateID, ev.AggregateType, testOrderID, "Order")
 	}
 	if ev.EventID == "" || ev.SchemaVersion != SchemaVersion {
 		t.Errorf("envelope: got (event_id %q, schema %q) want (non-empty, %q)", ev.EventID, ev.SchemaVersion, SchemaVersion)
@@ -238,18 +256,6 @@ func TestWebhook_InvalidStatus_400(t *testing.T) {
 	}
 }
 
-func TestWebhook_MissingPayment_404(t *testing.T) {
-	repo := newFakeRepo()
-	rec := post(t, repo, `{"payment_id":"11111111-2222-3333-4444-555555555555","status":"success"}`)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status: got %d want 404 (body %q)", rec.Code, rec.Body.String())
-	}
-	if code := decodeCode(t, rec); code != "PAYMENT_NOT_FOUND" {
-		t.Errorf("error code: got %q want PAYMENT_NOT_FOUND", code)
-	}
-}
-
 func TestWebhook_MissingPaymentID_400(t *testing.T) {
 	rec := post(t, newFakeRepo(testPayment()), `{"status":"success"}`)
 	if rec.Code != http.StatusBadRequest {
@@ -272,22 +278,9 @@ func TestWebhook_MalformedJSON_400(t *testing.T) {
 
 // A transient repo failure must surface as 5xx so the provider (and
 // the idempotency middleware, which releases the key on >=500) retries.
-func TestWebhook_GetError_500(t *testing.T) {
+func TestWebhook_UpsertError_500(t *testing.T) {
 	repo := newFakeRepo(testPayment())
-	repo.getErr = errors.New("connection reset")
-	rec := post(t, repo, fmt.Sprintf(`{"payment_id":%q,"status":"success"}`, testPaymentID))
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status: got %d want 500 (body %q)", rec.Code, rec.Body.String())
-	}
-	if code := decodeCode(t, rec); code != "GET_FAILED" {
-		t.Errorf("error code: got %q want GET_FAILED", code)
-	}
-}
-
-func TestWebhook_UpdateError_500(t *testing.T) {
-	repo := newFakeRepo(testPayment())
-	repo.updateErr = errors.New("deadlock detected")
+	repo.upsertErr = fmt.Errorf("deadlock detected")
 	rec := post(t, repo, fmt.Sprintf(`{"payment_id":%q,"status":"success"}`, testPaymentID))
 
 	if rec.Code != http.StatusInternalServerError {
@@ -297,7 +290,7 @@ func TestWebhook_UpdateError_500(t *testing.T) {
 		t.Errorf("error code: got %q want DB_ERROR", code)
 	}
 	if got := repo.payments[testPaymentID].Status; got == StatusCaptured {
-		t.Error("payment must not be captured when UpdateStatus fails")
+		t.Error("payment must not be captured when UpsertFromWebhook fails")
 	}
 }
 
@@ -363,17 +356,10 @@ func TestWebhook_TerminalGuard_LateCapturedAfterFailed(t *testing.T) {
 
 // TestWebhook_TerminalGuard_SameStatusReplay: same-status replay
 // must NOT emit a duplicate PaymentCompleted / PaymentFailed.
-// Idempotent no-op. Start with non-terminal status (simulates a
-// fresh payment that the consumer handler hasn't yet classified);
-// the first webhook transitions to captured and emits; the second
+// Idempotent no-op. The first webhook transitions; the second
 // is a same-status replay and must not double-emit.
 func TestWebhook_TerminalGuard_SameStatusReplay(t *testing.T) {
-	repo := newFakeRepo(&Payment{
-		ID:          testPaymentID,
-		OrderID:     testOrderID,
-		AmountCents: 1000,
-		Status:      "",
-	})
+	repo := newFakeRepo(testPayment())
 
 	// Two identical webhooks — the first transitions; the second
 	// is a no-op because the row is already terminal.
