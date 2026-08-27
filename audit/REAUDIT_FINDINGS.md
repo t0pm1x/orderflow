@@ -10,8 +10,8 @@ Docker available; kind/k8s NOT available.
 
 | Severity | Count | Status |
 |----------|-------|--------|
-| P0       | 1     | FIXED (F-001 — SvelteKit SPA rewrite uncompilable) |
-| P1       | 1     | FIXED (F-002 — flaky TestRun_ServesHealthzAndMetrics) |
+| P0       | 2     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page) |
+| P1       | 2     | FIXED (F-002 saga cmd test race; F-003 Makefile GOTOOLCHAIN) |
 | P2       | 0     | — |
 | P3       | 0     | — |
 
@@ -52,6 +52,22 @@ on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
 - **Root cause**: `go.work` declares `go 1.25.13` but the Makefile never exports `GOTOOLCHAIN=auto`. The Go toolchain defaults to `GOTOOLCHAIN=local`, which uses the host binary and refuses to build against a newer pin. The user must remember to `export GOTOOLCHAIN=auto` before every `make build` — an undocumented, unergonomic contract. The audit only worked around this by manually exporting the variable in the shell.
 - **Fix**: Add `export GOTOOLCHAIN ?= auto` to the Makefile. The `?=` keeps any explicit override from the user (CI may pin a specific toolchain via `go.mod`); for the default shell flow, GOTOOLCHAIN becomes `auto` and Go downloads the pin's toolchain on demand.
 - **Regression test**: unset GOTOOLCHAIN (`Remove-Item Env:GOTOOLCHAIN` in PowerShell), run `make build` — all 5 binaries build (exit=0), saga binary reports correct `version=v1.1.4-...`. Verified.
+- **Commit**: `c36ff53`
+
+### F-004 [P0] — Web SPA renders blank page (JS bundles 404)
+
+- **Component**: services/web (SvelteKit SPA rewrite)
+- **File**: `services/web/spa.go:55-61` and `services/web/internal/server/server.go:200-210,219-229`
+- **Category**: bug
+- **Reproduction**: start `bin/web.exe`, then `curl -i http://127.0.0.1:8085/`. HTML loads (200, valid SvelteKit SPA bootstrap). Then `curl -i http://127.0.0.1:8085/_app/immutable/entry/start.<hash>.js` → 404. CSS assets at `/_app/immutable/assets/0.<hash>.css` happen to resolve coincidentally via a different code path (separate from the JS lookup). The browser runs the inline `Promise.all([import(start.js), import(app.js)])` → both fail → the SPA never renders → blank page.
+- **Root cause**: Two compounded mistakes in the SvelteKit SPA rewrite (commit 96755b3):
+  1. **`spa.go`**: The `//go:embed frontend/dist/_app` pattern embeds files at `frontend/dist/_app/...` — Go's embed pattern preserves the directory prefix. The doc comment incorrectly claims "the file path inside the FS is exactly the URL path" (no prefix); in reality, `fs.WalkDir(AppFS, ".")` shows files at `frontend/dist/_app/immutable/...`, not `_app/immutable/...`.
+  2. **`server.go`**: The `/_app/*` handler did `path := strings.TrimPrefix(req.URL.Path, "/")` and then `AppFS.Open(path)`. Pre-fix, the embedded files were at `frontend/dist/_app/...` so the lookup failed; the SPA author intended no prefix stripping (per a doc comment that asserted the FS was already rooted at `_app`).
+- **Fix**: 
+  1. **`spa.go`**: Use `fs.Sub(appFSRaw, "frontend/dist/_app")` to expose AppFS as a sub-FS rooted at the `_app/` directory. Now `AppFS.Open("immutable/entry/start.X.js")` works — the FS root is `_app`, paths inside are relative.
+  2. **`server.go`**: Strip the `_app/` URL prefix before opening: `path = strings.TrimPrefix(path, "_app/")`. Static asset content-type and 404 behavior unchanged.
+  3. **`/static/*`**: SvelteKit static files (none today beyond favicon.svg, which has its own handler) live under `_app/immutable/assets/` post-build; the `/static/*` route now returns a clean 404 instead of inheriting the SPA HTML fallback (which would have given a misleading text/html content-type to an image request).
+- **Regression test**: probe program reads the index.html, extracts every `/_app/...` URL, curls each; all return 200 with correct Content-Type. Verified: 16/16 assets return 200 after fix.
 - **Commit**: (this fix)
 
 ---
@@ -99,3 +115,4 @@ The following are documented in the prior FINAL_AUDIT.md and verified to still h
 | `929e6dd` | audit: record REAUDIT_FINDINGS.md baseline + F-001/F-002 status |
 | `6643c5f` | docs(audit): finalize v1.2 senior-go re-audit findings + STATUS.md |
 | (pending) | fix(make): export GOTOOLCHAIN=auto so `make build` works on hosts with Go < 1.25.13 — F-003 |
+| (pending) | fix(web): strip embed prefix with fs.Sub + strip _app/ in handler so SPA JS bundles serve — F-004 |

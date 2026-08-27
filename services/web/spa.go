@@ -42,7 +42,10 @@
 //   faviconSVG  []byte  — Static favicon served at /favicon.svg.
 package web
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
 //go:embed frontend/dist/index.html
 //
@@ -54,11 +57,37 @@ var IndexHTML []byte
 
 //go:embed frontend/dist/_app
 //
-// SvelteKit code-split chunks. The /_app/* HTTP handler in
-// services/web/internal/server/server.go reads from this FS
-// using the FULL path (`_app/immutable/chunks/file.js`) — no
-// prefix stripping, so the lookup can't silently miss the file.
-var AppFS embed.FS
+// Raw SvelteKit code-split chunks, including the `frontend/dist/`
+// path prefix that Go's embed pattern preserves. We strip the
+// prefix via fs.Sub so the HTTP handler can look up files by
+// their URL path directly (`_app/immutable/entry/start.X.js`).
+//
+// Pre-fix (F-004): the embed pattern's author believed the
+// `_app` directory would be embedded without the prefix, so the
+// server looked up paths like `_app/immutable/entry/start.X.js`
+// in AppFS — but the actual path inside the FS was
+// `frontend/dist/_app/immutable/entry/start.X.js`. Every JS
+// request 404'd and the SPA rendered an empty page.
+//
+// F-004 fix: keep the embed pattern (it has to point at a real
+// directory tree), but expose AppFS as a sub-FS rooted at
+// `frontend/dist/_app`. The handler stays unchanged.
+var appFSRaw embed.FS
+
+// AppFS is the embedded SPA bundle rooted at the _app/ directory.
+// See appFSRaw above for why this is a sub-FS of the raw embed.
+var AppFS = mustSub(appFSRaw, "frontend/dist/_app")
+
+// mustSub wraps fs.Sub, panicking on the impossible error case.
+// It exists so the package init is a single line of declarative
+// state, not a two-step "var ... ; init() { ... }".
+func mustSub(fsys embed.FS, dir string) fs.FS {
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		panic("web: fs.Sub(" + dir + "): " + err.Error())
+	}
+	return sub
+}
 
 //go:embed frontend/dist/favicon.svg
 //

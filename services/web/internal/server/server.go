@@ -189,16 +189,16 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 // refresh (SvelteKit's adapter-static emits a single index.html by
 // default since we set `fallback: 'index.html'` in svelte.config.js).
 func (s *Server) mountSPA(r chi.Router) error {
-	// _app/* — SvelteKit code-split JS/CSS bundles. The appFS is
-	// rooted at `frontend/dist/_app/`, so the file path inside the
-	// FS is exactly the URL path with the `/_app/` prefix included.
-	// We do NOT strip the prefix — doing so made the lookup silently
-	// miss the file (the previous bug: the handler stripped
-	// `/_app/`, looked for `immutable/chunks/...`, didn't find it,
-	// and fell back to the SPA HTML with `text/plain` Content-Type,
-	// which the browser refused to apply as a stylesheet).
+	// _app/* — SvelteKit code-split JS/CSS bundles. AppFS is exposed
+	// as a sub-FS rooted at the _app/ directory (see services/web/spa.go
+	// F-004 fix: fs.Sub strips the embed pattern's `frontend/dist/_app`
+	// prefix). Lookup paths inside AppFS are therefore RELATIVE to the
+	// _app/ root — i.e. they start with `immutable/...`, not `_app/immutable/...`.
+	// We strip the leading `_app/` from the URL path before opening so
+	// the lookup matches.
 	r.Get("/_app/*", func(w http.ResponseWriter, req *http.Request) {
 		path := strings.TrimPrefix(req.URL.Path, "/")
+		path = strings.TrimPrefix(path, "_app/")
 		f, err := webroot.AppFS.Open(path)
 		if err != nil {
 			http.NotFound(w, req)
@@ -212,20 +212,16 @@ func (s *Server) mountSPA(r chi.Router) error {
 	// /static/* — anything Vite copied from frontend/static/ (none
 	// today beyond favicon.svg, but future-proof). Mount under
 	// /static so SvelteKit's <img src="/static/..."> resolves.
-	// The static/ dir IS embedded in appFS by default (SvelteKit
-	// copies src/static/* into dist/ root, not dist/_app/), so we
-	// open from appFS root. If a future SvelteKit version moves
-	// /static under /_app, change the path prefix here.
+	// After the F-004 fs.Sub fix, AppFS is rooted at _app/ and does
+	// not contain a top-level `static/` directory; SvelteKit's static
+	// files land under _app/immutable/assets/ alongside the code-split
+	// bundles, served with the correct content-type by the /_app/*
+	// handler above. The /static/* route stays as a no-op 404 so any
+	// future-proof <img src="/static/..."> reference fails fast with
+	// a useful status instead of mysteriously inheriting a stale SPA
+	// HTML shell from the r.Get("/*") fallback below.
 	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
-		path := strings.TrimPrefix(req.URL.Path, "/")
-		f, err := webroot.AppFS.Open(path)
-		if err != nil {
-			http.NotFound(w, req)
-			return
-		}
-		defer f.Close()
-		setContentTypeByExt(w, path)
-		_, _ = w.Write(readAll(f))
+		http.NotFound(w, req)
 	})
 
 	// favicon at the root (browsers auto-fetch /favicon.ico).
