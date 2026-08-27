@@ -181,6 +181,34 @@ func TestAPI_ListOrders_FiltersBySKUsClientSide(t *testing.T) {
 	}
 }
 
+// TestAPI_ListOrders_NilItemsCoercedToEmptyArray — F-007 regression
+// net. Pre-fix the BFF passed the upstream's nil slice straight
+// through to JSON, which serialised as `{"items": null}`. The SPA's
+// `listOrders` returned `null`, then the payments/sim page spread
+// it via `[...t, ...n]` and threw "n is not iterable" on the very
+// first load with no pending/reserved orders.
+//
+// Test the two paths that triggered the bug:
+//   1. Upstream returns nil Items → BFF writes `[]`, not `null`
+//   2. (...and verify the same for the SKU filter path)
+func TestAPI_ListOrders_NilItemsCoercedToEmptyArray(t *testing.T) {
+	// Path 1: upstream returns nil Items (no orders match the filter).
+	order := &fakeOrder{listResp: &backend.OrderList{Items: nil}}
+	_, r := newTestAPI(order, &fakePayment{}, &fakeInventory{})
+
+	w := do(t, r, http.MethodGet, "/api/orders", nil)
+	if w.Code != 200 {
+		t.Fatalf("status: got %d want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"items":[]`) {
+		t.Errorf("expected `\"items\":[]` in body, got: %s", body)
+	}
+	if strings.Contains(body, `"items":null`) {
+		t.Errorf("BUG (F-007): body contains `\"items\":null` — SPA crashes on `[...null]`")
+	}
+}
+
 func TestAPI_ListOrders_UpstreamErrorReturns502(t *testing.T) {
 	order := &fakeOrder{listErr: errors.New("connection refused")}
 	_, r := newTestAPI(order, &fakePayment{}, &fakeInventory{})

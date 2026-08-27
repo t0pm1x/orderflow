@@ -206,6 +206,15 @@ func (a *API) ListOrders(w http.ResponseWriter, r *http.Request) {
 
 	// SKU filter (client-side; mirror services/web/internal/handlers/handlers.go:OrderListBySKUs)
 	filtered := orders.Items
+	if filtered == nil {
+		// Defensive: the Order service serializes a nil slice as
+		// JSON null. The SPA's TypeScript declares items as Order[]
+		// (non-nullable) and [...items] (spread) throws on null.
+		// F-007 root cause: pre-fix this leaked through and the
+		// payments/sim page crashed with "n is not iterable" the
+		// first time it loaded with no pending/reserved orders.
+		filtered = []backend.Order{}
+	}
 	if len(skus) > 0 {
 		want := make(map[string]struct{}, len(skus))
 		for _, s := range skus {

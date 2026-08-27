@@ -53,8 +53,13 @@ export async function listOrders(opts: {
   const qs = params.toString();
   const url = `/api/orders${qs ? '?' + qs : ''}`;
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  const body = await jsonOrThrow<OrderListResponse>(res);
-  return body.items;
+  const body = (await res.json()) as OrderListResponse;
+  // F-007: the BFF once serialized a nil slice as JSON null;
+  // TypeScript declared Order[] (non-nullable) and the SPA used
+  // [...items] which threw on null. Belt-and-suspenders: BFF
+  // also coerces (api.go) but defend here too in case any future
+  // endpoint regresses.
+  return Array.isArray(body.items) ? body.items : [];
 }
 
 export async function getOrder(id: string): Promise<Order> {

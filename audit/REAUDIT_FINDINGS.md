@@ -10,7 +10,7 @@ Docker available; kind/k8s NOT available.
 
 | Severity | Count | Status |
 |----------|-------|--------|
-| P0       | 4     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page; F-005 order chips route to `/`; F-006 payment-sim bind crash) |
+| P0       | 5     | FIXED (F-001 SvelteKit embed symbols; F-004 SPA blank page; F-005 order chips route to `/`; F-006 payment-sim bind crash; F-007 BFF empty items returns `null` not `[]`) |
 | P1       | 2     | FIXED (F-002 saga cmd test race; F-003 Makefile GOTOOLCHAIN) |
 | P2       | 0     | — |
 | P3       | 0     | — |
@@ -100,7 +100,7 @@ on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
   ```
   `errorCode` is `Record<string, string>` keyed by `order.id`. For newly-loaded orders the entry exists (`load()` populates it), but the bind proxy machinery evaluates `errorCode[o.id]` to coerce the value, finds the initial lookup returns the proxy's `undefined` sentinel, then tries to iterate over it during the `value` → DOM-string round-trip — yielding the `null.length` and "not iterable" errors. Other `bind:value=` sites in the codebase (`orders/new/+page.svelte`) all bind to local `let` variables, which are properly tracked.
 - **Fix v1 (commit 3d75eca, INSUFFICIENT)**: convert `<select bind:value={...}>` to `<select value={...} onchange={...}>`. The compiler still routed the value through the same select-bind machinery (a MutationObserver watches the `<select>` for `value` attribute / option changes and re-applies the value via `bind_select_value`). The first iteration of the fix did NOT remove the `<select value>` attribute, so the Svelte bind machinery stayed active and kept crashing.
-- **Fix v2 (this commit)**: drop the `value=` attribute entirely. Manage selection via `selected={opt === errorCode[o.id]}` on each `<option>` instead:
+- **Fix v2 (commit de3039e)**: drop the `value=` attribute entirely. Manage selection via `selected={opt === errorCode[o.id]}` on each `<option>` instead:
   ```svelte
   <select onchange={(e) => { errorCode[o.id] = (e.currentTarget as HTMLSelectElement).value; }} ...>
     <option value="card_declined" selected={errorCode[o.id] === 'card_declined' || !errorCode[o.id]}>card_declined</option>
@@ -109,8 +109,34 @@ on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
   </select>
   ```
   Now Svelte's select-bind machinery is not engaged at all — verified by inspecting the compiled chunk `dist/_app/immutable/nodes/7.CJ0zraJ1.js`: no `function Q`, no `MutationObserver`, no `__value` token. The chunk shrank from 4309 → 3686 bytes (the bind-select helper code dropped out).
+- **Fix v3 — DISCOVERED AFTER v2 SHIPPED**: the `null.length` / `not iterable` errors PERSISTED even after v2. The chunk 7 still crashed on initial render. Root cause was NOT the `<select>` — it was the upstream `/api/orders` endpoint returning `{"items": null}` when no orders match the filter (Go serialises a nil slice as JSON `null`). The payments/sim page's `load()` does `for (const r of [...pending, ...reserved])`; spread of `null` throws "null is not iterable". See **F-007** for the actual fix.
 - **Side cleanup**: also dropped the unused `idempotencyKeys` record + `newOrderKeys()` helper. The keys were tracked but never read by `onFire()` (pre-existing dead state).
-- **Regression test**: source-level verification (no test infra per user choice 1) — grep confirms `bind:value={` and `<select value=` no longer appear in `payments/sim/+page.svelte`. Compiled chunk hash changed (`DwAd9gLP` → `CJ0zraJ1`) and the new chunk contains no select-bind code. BFF Go tests still pass. Manual: open `/payments/sim`, change the dropdown, confirm no console errors.
+- **Regression test**: see F-007 — `TestAPI_ListOrders_NilItemsCoercedToEmptyArray` (BFF) + defensive `Array.isArray(body.items) ? body.items : []` in `listOrders` (frontend).
+- **Commit**: `de3039e`
+
+### F-007 [P0] — BFF `/api/orders` returns `{"items": null}` when empty, crashes SPA `[...items]` spread
+
+- **Component**: services/web/internal/server/api.go + services/web/frontend/src/lib/api.ts
+- **File**: `services/web/internal/server/api.go:200-231`, `services/web/frontend/src/lib/api.ts:46-58`
+- **Category**: bug (data contract + downstream client)
+- **Reproduction**: with zero orders matching the filter (e.g. brand-new cluster, or all orders in terminal states), `GET /api/orders?state=pending` returns `{"items":null,"next_cursor":""}` instead of `{"items":[],"next_cursor":""}`. The SPA `listOrders` returns `null` (despite the TypeScript type declaring `Order[]` non-nullable). Any consumer that spreads the result — `for (const o of [...pending, ...reserved])` in `payments/sim/+page.svelte`, `{orders.length}` access in `orders/+page.svelte`, etc. — throws `TypeError: null is not iterable` (minified as `n is not iterable` after the `null.length` check first fails). The bug is masked when E2E tests have populated orders, but is reliably triggered by `make e2e-chaos` or any test that drains the queue before asserting empty.
+- **Root cause**: the BFF at `services/web/internal/server/api.go` does `filtered := orders.Items` (where `orders` is `*backend.OrderList`); when the upstream returns no rows, `Items` is `nil` (Go zero-value slice). `writeJSON(..., map[string]any{"items": filtered, ...})` serialises the nil slice as JSON `null`. Sibling test `services/web/internal/repository/pg_repo_test.go:418-420` explicitly documents this same shape drift: "the inventory page rendered 'No stock items yet' even when confirmed orders existed in stock_items, because the list call returned `{\"items\":null}`". The fix was never propagated to the BFF.
+- **Fix**:
+  1. **Backend (root cause)**: in `api.go::ListOrders`, coerce nil to empty slice before writing JSON:
+     ```go
+     filtered := orders.Items
+     if filtered == nil {
+         filtered = []backend.Order{}  // never serialise as `null`
+     }
+     // ... rest of SKU filter unchanged ...
+     writeJSON(w, http.StatusOK, map[string]any{"items": filtered, ...})
+     ```
+  2. **Frontend (defensive belt-and-suspenders)**: in `api.ts::listOrders`, also coerce:
+     ```ts
+     return Array.isArray(body.items) ? body.items : [];
+     ```
+     Catches the bug for any future endpoint that regresses.
+- **Regression test**: `TestAPI_ListOrders_NilItemsCoercedToEmptyArray` in `services/web/internal/server/api_test.go`. Mocks `listResp: &backend.OrderList{Items: nil}` (the exact production shape), calls `GET /api/orders`, asserts the body contains `"items":[]` and not `"items":null`. Would have failed before the fix.
 - **Commit**: (this fix)
 
 ---
@@ -161,3 +187,4 @@ The following are documented in the prior FINAL_AUDIT.md and verified to still h
 | (pending) | fix(web): strip embed prefix with fs.Sub + strip _app/ in handler so SPA JS bundles serve — F-004 |
 | (pending) | fix(web): route order chips to /orders + unbind payment-sim select (F-005, F-006) |
 | (pending) | fix(web): drop <select value=> entirely — use option[selected] (F-006 v2) |
+| (pending) | fix(web/api): BFF ListOrders coerces nil items to [] + SPA listOrders defends; regression test TestAPI_ListOrders_NilItemsCoercedToEmptyArray (F-007) |
