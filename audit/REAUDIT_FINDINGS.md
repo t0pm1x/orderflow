@@ -43,6 +43,17 @@ on hot paths, `make e2e-happy` (43.30s), `make e2e-compensation` (44.69s).
 - **Regression test**: `go test -short -race -count=5 ./services/saga/cmd/saga/...` now 5/5 PASS; `-count=10` PASS.
 - **Commit**: `c739d69`
 
+### F-003 [P1] — `make build` fails on hosts with Go < 1.25.13 (GOTOOLCHAIN not set)
+
+- **Component**: Makefile
+- **File**: `Makefile:13-18`
+- **Category**: bug / config
+- **Reproduction**: on a host with Go 1.25.4 (any host older than `go.work`'s pin of 1.25.13), run `make build` from a fresh shell. Output: `go: go.work requires go >= 1.25.13 (running go 1.25.4; GOTOOLCHAIN=local)` then `make: *** [build] Error 1`. Build exits 1.
+- **Root cause**: `go.work` declares `go 1.25.13` but the Makefile never exports `GOTOOLCHAIN=auto`. The Go toolchain defaults to `GOTOOLCHAIN=local`, which uses the host binary and refuses to build against a newer pin. The user must remember to `export GOTOOLCHAIN=auto` before every `make build` — an undocumented, unergonomic contract. The audit only worked around this by manually exporting the variable in the shell.
+- **Fix**: Add `export GOTOOLCHAIN ?= auto` to the Makefile. The `?=` keeps any explicit override from the user (CI may pin a specific toolchain via `go.mod`); for the default shell flow, GOTOOLCHAIN becomes `auto` and Go downloads the pin's toolchain on demand.
+- **Regression test**: unset GOTOOLCHAIN (`Remove-Item Env:GOTOOLCHAIN` in PowerShell), run `make build` — all 5 binaries build (exit=0), saga binary reports correct `version=v1.1.4-...`. Verified.
+- **Commit**: (this fix)
+
 ---
 
 ## Items confirmed pre-audit (NOT new findings)
@@ -86,3 +97,5 @@ The following are documented in the prior FINAL_AUDIT.md and verified to still h
 | `f4f3083` | fix(web): export spa.go embed symbols (AppFS/IndexHTML/FaviconSVG) — F-001 |
 | `c739d69` | fix(saga/test): use waitForFreshReadyAddr in TestRun_ServesHealthzAndMetrics — F-002 |
 | `929e6dd` | audit: record REAUDIT_FINDINGS.md baseline + F-001/F-002 status |
+| `6643c5f` | docs(audit): finalize v1.2 senior-go re-audit findings + STATUS.md |
+| (pending) | fix(make): export GOTOOLCHAIN=auto so `make build` works on hosts with Go < 1.25.13 — F-003 |

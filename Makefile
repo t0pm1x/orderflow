@@ -17,6 +17,14 @@ ifeq ($(OS),Windows_NT)
 	EXE := .exe
 endif
 
+# go.work pins go=1.25.13; on hosts with older Go (e.g. 1.25.4),
+# the default GOTOOLCHAIN=local refuses to build with "go.work
+# requires go >= 1.25.13". GOTOOLCHAIN=auto makes Go download
+# the pin's toolchain on demand so `make build` works regardless
+# of the host Go version. This matches what the build pipeline
+# (Makefile + go.work + go versions in go.mod) actually expects.
+export GOTOOLCHAIN ?= auto
+
 build: web-frontend-build
 	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/order/cmd/order.Version=$(VERSION)" -o bin/order$(EXE) ./cmd/order
 	go build -ldflags="$(LDFLAGS) -X github.com/t0pm1x/orderflow/services/payment/cmd/payment.Version=$(VERSION)" -o bin/payment$(EXE) ./cmd/payment
