@@ -173,29 +173,33 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 // mountSPA wires the SvelteKit build output into r. The embed
 // lives in services/web/spa.go (sibling of frontend/, because
 // embed patterns can't contain ".." — see the comment there);
-// internal/server just consumes it via webroot.SpaFS. We fs.Sub
-// that root so file paths served are relative to dist.
+// internal/server consumes three typed exports:
+// webroot.appFS (the `_app/` code-split bundle, served at
+// `/_app/*` with real Content-Type), webroot.faviconSVG (the
+// favicon at /favicon.svg), and webroot.indexHTML (the SPA
+// fallback served for every other non-API GET).
 //
 // Layout:
-//   frontend/dist/_app/...   — code-split JS chunks
+//   frontend/dist/_app/...   — code-split JS/CSS chunks
 //   frontend/dist/favicon.svg — static asset (Vite copies public/)
-//   any other file under dist — same as favicon
+//   any other GET              — index.html (SPA fallback)
 //
 // The SPA fallback for non-API GET routes serves dist/index.html so
 // SvelteKit client-side routes (/orders/123) survive a hard
 // refresh (SvelteKit's adapter-static emits a single index.html by
 // default since we set `fallback: 'index.html'` in svelte.config.js).
 func (s *Server) mountSPA(r chi.Router) error {
-	dist, err := fs.Sub(webroot.SpaFS, "frontend/dist")
-	if err != nil {
-		return err
-	}
-
-	// _app/* — SvelteKit code-split JS/CSS bundles. StripPrefix
-	// so the on-disk path matches the URL after the prefix.
+	// _app/* — SvelteKit code-split JS/CSS bundles. The appFS is
+	// rooted at `frontend/dist/_app/`, so the file path inside the
+	// FS is exactly the URL path with the `/_app/` prefix included.
+	// We do NOT strip the prefix — doing so made the lookup silently
+	// miss the file (the previous bug: the handler stripped
+	// `/_app/`, looked for `immutable/chunks/...`, didn't find it,
+	// and fell back to the SPA HTML with `text/plain` Content-Type,
+	// which the browser refused to apply as a stylesheet).
 	r.Get("/_app/*", func(w http.ResponseWriter, req *http.Request) {
-		path := strings.TrimPrefix(req.URL.Path, "/_app/")
-		f, err := dist.Open(path)
+		path := strings.TrimPrefix(req.URL.Path, "/")
+		f, err := webroot.AppFS.Open(path)
 		if err != nil {
 			http.NotFound(w, req)
 			return
@@ -208,9 +212,13 @@ func (s *Server) mountSPA(r chi.Router) error {
 	// /static/* — anything Vite copied from frontend/static/ (none
 	// today beyond favicon.svg, but future-proof). Mount under
 	// /static so SvelteKit's <img src="/static/..."> resolves.
+	// The static/ dir IS embedded in appFS by default (SvelteKit
+	// copies src/static/* into dist/ root, not dist/_app/), so we
+	// open from appFS root. If a future SvelteKit version moves
+	// /static under /_app, change the path prefix here.
 	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
-		path := strings.TrimPrefix(req.URL.Path, "/static/")
-		f, err := dist.Open(path)
+		path := strings.TrimPrefix(req.URL.Path, "/")
+		f, err := webroot.AppFS.Open(path)
 		if err != nil {
 			http.NotFound(w, req)
 			return
@@ -222,26 +230,17 @@ func (s *Server) mountSPA(r chi.Router) error {
 
 	// favicon at the root (browsers auto-fetch /favicon.ico).
 	r.Get("/favicon.svg", func(w http.ResponseWriter, _ *http.Request) {
-		data, err := fs.ReadFile(dist, "favicon.svg")
-		if err != nil {
-			http.NotFound(w, nil)
-			return
-		}
 		w.Header().Set("Content-Type", "image/svg+xml")
-		_, _ = w.Write(data)
+		_, _ = w.Write(webroot.FaviconSVG)
 	})
 
 	// SPA fallback: any other GET (non-API, non-asset) gets the
 	// SvelteKit-rendered index.html so client-side routes survive
 	// a hard refresh. POST/PUT/DELETE outside /api/* get a 404 —
 	// the SPA never issues those outside the API gateway.
-	indexBytes, err := fs.ReadFile(dist, "index.html")
-	if err != nil {
-		return err
-	}
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(indexBytes)
+		_, _ = w.Write(webroot.IndexHTML)
 	})
 	return nil
 }
