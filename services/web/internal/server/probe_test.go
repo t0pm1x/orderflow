@@ -237,3 +237,80 @@ func TestHealthAll_KafkaDown(t *testing.T) {
 		t.Errorf("order=%q want ok", snap.Order.Status)
 	}
 }
+
+// TestHealthAll_CacheHits exercises the 1-second snapshot cache:
+// two back-to-back calls must only hit each upstream once. Without
+// the cache, the second call would re-probe every upstream and
+// the call counter would land at 2 — both for the happy path
+// (200/OK) and on the slow path where the first call had time to
+// populate the cache before the second one arrived.
+func TestHealthAll_CacheHits(t *testing.T) {
+	order := newFakeUpstream(200, ``, 0)
+	payment := newFakeUpstream(200, ``, 0)
+	inventory := newFakeUpstream(200, ``, 0)
+	saga := newFakeUpstream(200, ``, 0)
+	defer order.Close()
+	defer payment.Close()
+	defer inventory.Close()
+	defer saga.Close()
+
+	srv := server.New(server.Options{
+		Name:   "test",
+		Logger: slog.Default(),
+		Urls: server.ServiceURLs{
+			Order: order.URL, Payment: payment.URL,
+			Inventory: inventory.URL, Saga: saga.URL,
+		},
+		KafkaHealth: func() bool { return true },
+	})
+
+	// First call populates the cache.
+	rec1 := httptest.NewRecorder()
+	srv.HealthAll(rec1, httptest.NewRequest(http.MethodGet, "/api/health/all", nil))
+	if rec1.Code != 200 {
+		t.Fatalf("first call status=%d body=%s", rec1.Code, rec1.Body.String())
+	}
+	if got := order.calls.Load(); got != 1 {
+		t.Fatalf("after first call: order.calls=%d want 1", got)
+	}
+
+	// Second call, well within the 1s cache window, must NOT
+	// re-probe any upstream.
+	rec2 := httptest.NewRecorder()
+	srv.HealthAll(rec2, httptest.NewRequest(http.MethodGet, "/api/health/all", nil))
+	if rec2.Code != 200 {
+		t.Fatalf("second call status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+	if got := order.calls.Load(); got != 1 {
+		t.Errorf("order.calls=%d after second call, want 1 (second call must hit cache)", got)
+	}
+
+	// Sanity-check the cached payload is byte-identical to the
+	// fresh one: same status, same per-upstream state.
+	snap1 := decodeSnapshot(t, rec1.Body.Bytes())
+	snap2 := decodeSnapshot(t, rec2.Body.Bytes())
+	if snap2.SnapshotAt != snap1.SnapshotAt {
+		t.Errorf("cached snapshot has fresh SnapshotAt: %s vs %s", snap2.SnapshotAt, snap1.SnapshotAt)
+	}
+	for name, h2 := range map[string]server.ServiceHealth{
+		"order": snap2.Order, "payment": snap2.Payment,
+		"inventory": snap2.Inventory, "saga": snap2.Saga, "kafka": snap2.Kafka,
+	} {
+		var h1 server.ServiceHealth
+		switch name {
+		case "order":
+			h1 = snap1.Order
+		case "payment":
+			h1 = snap1.Payment
+		case "inventory":
+			h1 = snap1.Inventory
+		case "saga":
+			h1 = snap1.Saga
+		case "kafka":
+			h1 = snap1.Kafka
+		}
+		if h1.Status != h2.Status {
+			t.Errorf("%s: cached status=%q want %q", name, h2.Status, h1.Status)
+		}
+	}
+}
