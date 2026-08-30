@@ -82,10 +82,20 @@ type Server struct {
 	api  *API
 
 	// healthCache holds the last /api/health/all snapshot for 1s.
-	// Typed `any` because the cacheEntry type is declared inside
-	// HealthAll (probe.go) to keep it out of the package surface.
+	// nil means cache miss; cacheEntry is package-level so the
+	// Server field can be a typed *cacheEntry (the previous `any`
+	// + runtime type assertion pattern was a footgun that let
+	// future maintainers cache any type by accident).
 	healthCacheMu sync.Mutex
-	healthCache   any
+	healthCache   *healthCacheEntry
+}
+
+// healthCacheEntry is one snapshot of /api/health/all: when it was
+// taken and the snapshot itself. healthCache stores a pointer to
+// this struct (or nil for a cold cache); see Server.healthCache.
+type healthCacheEntry struct {
+	taken    time.Time
+	snapshot HealthSnapshot
 }
 
 // New constructs a non-listening Server.

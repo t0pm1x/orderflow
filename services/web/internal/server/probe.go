@@ -139,15 +139,11 @@ func detailForDegraded(elapsed time.Duration, body string) string {
 // clock — collision-free in practice for a single-process
 // playground.
 func (s *Server) HealthAll(w http.ResponseWriter, r *http.Request) {
-	type cacheEntry struct {
-		taken    time.Time
-		snapshot HealthSnapshot
-	}
 	s.healthCacheMu.Lock()
-	cached, ok := s.healthCache.(cacheEntry)
-	if ok && time.Since(cached.taken) < time.Second {
+	if cached := s.healthCache; cached != nil && time.Since(cached.taken) < time.Second {
+		snap := cached.snapshot
 		s.healthCacheMu.Unlock()
-		writeJSON(w, http.StatusOK, cached.snapshot)
+		writeJSON(w, http.StatusOK, snap)
 		return
 	}
 	s.healthCacheMu.Unlock()
@@ -197,7 +193,7 @@ func (s *Server) HealthAll(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	s.healthCacheMu.Lock()
-	s.healthCache = cacheEntry{taken: time.Now(), snapshot: snap}
+	s.healthCache = &healthCacheEntry{taken: time.Now(), snapshot: snap}
 	s.healthCacheMu.Unlock()
 
 	writeJSON(w, http.StatusOK, snap)
