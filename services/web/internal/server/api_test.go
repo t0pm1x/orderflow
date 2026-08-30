@@ -448,3 +448,75 @@ func TestSSEHandler_503WhenEventsDisabled(t *testing.T) {
 
 // silence unused import warnings if a future refactor drops one.
 var _ = time.Second
+
+// TestAPI_SubmitOrder_AutoGenCustomerID_OnEmpty locks in the fix
+// for the SvelteKit-rewrite regression: when the SPA submits an
+// order with no customer_id (placeholder text in /orders/new
+// promises "auto-generated UUID"), the BFF must generate a UUID
+// rather than forwarding the empty string to the Order Service
+// (which rejects with 400 VALIDATION because orders.customer_id
+// is NOT NULL UUID).
+func TestAPI_SubmitOrder_AutoGenCustomerID_OnEmpty(t *testing.T) {
+	o := &fakeOrder{
+		submitResp: &backend.Order{ID: "00000000-0000-4000-8000-000000000001"},
+	}
+	api := &API{Order: o, Logger: slog.Default()}
+
+	r := chi.NewRouter()
+	r.Post("/api/orders", api.SubmitOrder)
+
+	body := `{"idempotency_key":"00000000-0000-4000-8000-000000000002","items":[{"sku":"WIDGET","quantity":1}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if o.lastSubmit.CustomerID == nil {
+		t.Fatalf("CustomerID was nil — BFF did not forward the field at all")
+	}
+	got := *o.lastSubmit.CustomerID
+	if got == "" {
+		t.Fatalf("CustomerID was empty string — BFF forwarded the raw empty value instead of auto-generating")
+	}
+	if !isValidUUID(got) {
+		t.Errorf("auto-generated CustomerID=%q is not a valid UUID", got)
+	}
+	if got == "00000000-0000-4000-8000-000000000002" {
+		t.Errorf("CustomerID matches the idempotency_key by coincidence — fake or copy-paste bug?")
+	}
+}
+
+// TestAPI_SubmitOrder_PassesThroughCustomerID_WhenProvided locks in
+// the inverse path: when the SPA supplies a customer_id explicitly,
+// the BFF must forward it verbatim rather than overwriting it.
+func TestAPI_SubmitOrder_PassesThroughCustomerID_WhenProvided(t *testing.T) {
+	o := &fakeOrder{
+		submitResp: &backend.Order{ID: "00000000-0000-4000-8000-000000000003"},
+	}
+	api := &API{Order: o, Logger: slog.Default()}
+
+	r := chi.NewRouter()
+	r.Post("/api/orders", api.SubmitOrder)
+
+	provided := "11111111-2222-3333-4444-555555555555"
+	body := `{"idempotency_key":"00000000-0000-4000-8000-000000000004","customer_id":"` + provided + `","items":[{"sku":"WIDGET","quantity":1}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if o.lastSubmit.CustomerID == nil {
+		t.Fatalf("CustomerID was nil")
+	}
+	if got := *o.lastSubmit.CustomerID; got != provided {
+		t.Errorf("CustomerID=%q, want %q (BFF must not overwrite an explicit value)", got, provided)
+	}
+}
