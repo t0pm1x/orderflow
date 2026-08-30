@@ -45,6 +45,7 @@ func (h *Handler) Registry() pkgconsumer.HandlerRegistry {
 		"StockReservationFailed": h.StockReservationFailed,
 		"OrderConfirmed":         h.OrderConfirmed,
 		"OrderCancelled":         h.OrderCancelled,
+		"PaymentCompleted":       h.PaymentCompleted,
 		"PaymentFailed":          h.PaymentFailed,
 	}
 }
@@ -95,6 +96,24 @@ func (h *Handler) OrderCancelled(ctx context.Context, env *events.Envelope) erro
 		return err
 	}
 	return h.updateState(ctx, p.OrderID, domain.OrderState("cancelled"))
+}
+
+// PaymentCompleted handles PaymentCompleted events by transitioning
+// the referenced order to the confirmed state. Independent path from
+// the saga's OrderConfirmed emit — covers the cross-topic race where
+// PaymentCompleted arrives before the saga's OrderCreatedHandler has
+// committed the order_sagas row, which causes the saga's
+// PaymentCompletedHandler to silently skip with ErrNotFound. Idempotent
+// via updateState's terminal-state WHERE clause; the saga's eventual
+// OrderConfirmed becomes a no-op UPDATE.
+func (h *Handler) PaymentCompleted(ctx context.Context, env *events.Envelope) error {
+	var p struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return err
+	}
+	return h.updateState(ctx, p.OrderID, domain.OrderState("confirmed"))
 }
 
 // PaymentFailed handles PaymentFailed events by transitioning the
