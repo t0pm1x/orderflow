@@ -89,3 +89,26 @@ export interface SseEvent {
   /** Event-specific payload; we treat as opaque JSON. */
   payload: unknown;
 }
+
+// Health snapshot from GET /api/health/all. Wire format matches
+// services/web/internal/server/probe.go ServiceHealth +
+// HealthSnapshot. Keep these two definitions in sync.
+
+export type ServiceStatus = 'ok' | 'degraded' | 'down';
+
+export interface ServiceHealth {
+  status: ServiceStatus;
+  latency_ms: number;
+  taken_at: string;
+  detail?: string;
+}
+
+export interface HealthSnapshot {
+  order: ServiceHealth;
+  payment: ServiceHealth;
+  inventory: ServiceHealth;
+  saga: ServiceHealth;
+  /** Kafka tail has only ok|down (no degraded middle ground). */
+  kafka: { status: 'ok' | 'down'; latency_ms: number; taken_at: string; detail?: string };
+  snapshot_at: string;
+}
