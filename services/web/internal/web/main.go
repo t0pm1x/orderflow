@@ -132,13 +132,14 @@ func Run(ctx context.Context) error {
 	}
 
 	srv := server.New(server.Options{
-		Name:         "web",
-		Logger:       logger,
-		Order:        bc,
-		Payment:      bc,
-		Inventory:    bc,
-		Bus:          bus,
+		Name:          "web",
+		Logger:        logger,
+		Order:         bc,
+		Payment:       bc,
+		Inventory:     bc,
+		Bus:           bus,
 		EventsEnabled: stopTail != nil,
+		KafkaHealth:   kafkatail.Health.Load,
 		Urls: server.ServiceURLs{
 			Order:     orderURL,
 			Payment:   paymentURL,

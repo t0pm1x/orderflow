@@ -16,6 +16,7 @@
 //   DEL  /api/orders/{id}                    — proxy cancelOrder
 //   GET  /api/inventory/stock/{sku}          — proxy getInventoryStock
 //   POST /api/payments/webhook               — proxy fireWebhook
+//   GET  /api/health/all                     — multi-service health probe
 //   GET  /events/stream                      — SSE from in-process bus
 //
 // The SPA hits /api/* same-origin, the Go BFF proxies to the
@@ -135,6 +136,7 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	r.Delete("/api/orders/{id}", s.api.CancelOrder)
 	r.Get("/api/inventory/stock/{sku}", s.api.GetInventoryStock)
 	r.Post("/api/payments/webhook", s.api.FireWebhook)
+	r.Get("/api/health/all", s.HealthAll)
 	r.Get("/events/stream", sseHandler(s.opt.Bus, s.opt.Logger, s.opt.EventsEnabled))
 
 	// SPA: serve the embedded SvelteKit build. The Vite output
