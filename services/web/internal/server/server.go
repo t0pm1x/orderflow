@@ -45,6 +45,16 @@ import (
 	webroot "github.com/t0pm1x/orderflow/services/web"
 )
 
+// ServiceURLs captures the resolved upstream base URLs. The
+// probe handler reads these via Options.Urls so it can fan out
+// to /healthz without re-reading env vars.
+type ServiceURLs struct {
+	Order     string
+	Payment   string
+	Inventory string
+	Saga      string
+}
+
 // Options configures the web HTTP server. Mirrors the pattern of
 // services/order/cmd/order's Options struct so platform/middleware
 // can stay generic.
@@ -56,6 +66,7 @@ type Options struct {
 	Inventory     backend.InventoryClient
 	Bus           *events.Bus
 	EventsEnabled bool // toggles /events/stream 503 vs 200
+	Urls          ServiceURLs
 }
 
 // Server hosts the HTTP listener. One instance per process.

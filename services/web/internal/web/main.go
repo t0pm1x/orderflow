@@ -84,12 +84,19 @@ func Run(ctx context.Context) error {
 	slog.SetDefault(platform.NewLogger())
 	logger := slog.Default()
 
+	httpAddr := envOrDefault("HTTP_ADDR", ":8085")
+	orderURL := envOrDefault("ORDER_URL", "http://localhost:8081")
+	paymentURL := envOrDefault("PAYMENT_URL", "http://localhost:8082")
+	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8083")
+	sagaURL := envOrDefault("SAGA_URL", "http://localhost:8084")
+
 	logger.Info("orderflow-web starting",
 		"version", Version,
-		"http_addr", envOrDefault("HTTP_ADDR", ":8085"),
-		"order_url", redact(envOrDefault("ORDER_URL", "http://localhost:8081")),
-		"payment_url", redact(envOrDefault("PAYMENT_URL", "http://localhost:8082")),
-		"inventory_url", redact(envOrDefault("INVENTORY_URL", "http://localhost:8083")),
+		"http_addr", redact(httpAddr),
+		"order_url", redact(orderURL),
+		"payment_url", redact(paymentURL),
+		"inventory_url", redact(inventoryURL),
+		"saga_url", redact(sagaURL),
 		"kafka_brokers", redact(envOrDefault("KAFKA_BROKERS", "")))
 
 	shutdownTracing, err := platform.InitTracing(ctx, "web", Version)
@@ -101,11 +108,6 @@ func Run(ctx context.Context) error {
 		defer cancel()
 		_ = shutdownTracing(shutdownCtx)
 	}()
-
-	httpAddr := envOrDefault("HTTP_ADDR", ":8085")
-	orderURL := envOrDefault("ORDER_URL", "http://localhost:8081")
-	paymentURL := envOrDefault("PAYMENT_URL", "http://localhost:8082")
-	inventoryURL := envOrDefault("INVENTORY_URL", "http://localhost:8083")
 
 	bus := events.NewBus()
 	defer bus.Close()
@@ -137,6 +139,12 @@ func Run(ctx context.Context) error {
 		Inventory:    bc,
 		Bus:          bus,
 		EventsEnabled: stopTail != nil,
+		Urls: server.ServiceURLs{
+			Order:     orderURL,
+			Payment:   paymentURL,
+			Inventory: inventoryURL,
+			Saga:      sagaURL,
+		},
 	})
 	if err := srv.Start(ctx, httpAddr); err != nil {
 		return fmt.Errorf("server start: %w", err)
