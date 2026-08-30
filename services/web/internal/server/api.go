@@ -33,6 +33,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/google/uuid"
+
 	"github.com/t0pm1x/orderflow/services/web/internal/backend"
 )
 
@@ -335,6 +337,16 @@ func (a *API) SubmitOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, a.Logger, "POST /api/orders", http.StatusBadRequest,
 			"VALIDATION", "customer_id must be a UUID (or leave blank for auto-generation).", nil)
 		return
+	}
+	// Auto-generate customer_id when the SPA sends an empty value.
+	// /orders/new form has placeholder text promising "auto-generated
+	// UUID" — that promise was lost in the SvelteKit rewrite (commit
+	// 96755b3 deleted the uuid.NewString() call from the pre-existing
+	// htmx handler). The Order Service rejects empty customer_id with
+	// 400 VALIDATION because orders.customer_id is NOT NULL UUID.
+	// F-009 / F-010 set the precedent that BFF owns this UX promise.
+	if req.CustomerID == "" {
+		req.CustomerID = uuid.NewString()
 	}
 	if a.replaySeen(req.IdempotencyKey, time.Now()) {
 		writeError(w, a.Logger, "POST /api/orders", http.StatusConflict,
