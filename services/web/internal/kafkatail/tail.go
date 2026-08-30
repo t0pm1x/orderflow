@@ -88,7 +88,6 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 				Health.Store(false)
 				return
 			}
-			Health.Store(true)
 			c, err := kafkaconsumer.New(kafkaconsumer.Config{
 				Brokers: brokers,
 				GroupID: groupID,
@@ -96,6 +95,10 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 				// DLQ=nil + Deduper=nil: skip retries/dedup; UI just acks.
 			}, registry)
 			if err != nil {
+				// Ensure we don't report "healthy" while the consumer
+				// can't even be constructed. The next iteration's
+				// New + Run is the only path that flips Health true.
+				Health.Store(false)
 				attempt++
 				logger.Warn("kafka tail: consumer init failed; will retry",
 					"err", err, "attempt", attempt, "backoff", backoff.String())
@@ -105,15 +108,23 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 				backoff = nextBackoff(backoff, maxBack)
 				continue
 			}
+			// Consumer is constructed and about to Run — flip the
+			// chip green ONLY now. Previously this line sat at the
+			// top of the loop, which made the dashboard report
+			// "connected" while the consumer was being (re-)built
+			// and while we were sleeping through the reconnect
+			// backoff — even though zero events were flowing.
+			Health.Store(true)
+			attempt = 0
+			backoff = 1 * time.Second
 			runErr := c.Run(ctx)
 			Health.Store(false)
 			// Context cancellation: clean exit on shutdown.
 			if closed.Load() || ctx.Err() != nil {
 				return
 			}
-			attempt++
 			logger.Warn("kafka tail: consumer exited; will retry",
-				"err", runErr, "attempt", attempt, "backoff", backoff.String())
+				"err", runErr, "backoff", backoff.String())
 			// Drop the consumer reference — the next iteration
 			// builds a fresh one (the old one was already closed
 			// by c.Run's Stop on context cancel, but we're past
