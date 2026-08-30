@@ -27,6 +27,12 @@ var topics = []string{
 	"inventory-events",
 }
 
+// Health reports whether the Kafka tail consumer is currently
+// connected. The probe handler reads this for the dashboard's
+// Kafka chip. Starts true when a consumer is running; flips
+// false on Run error and on graceful shutdown.
+var Health atomic.Bool
+
 const groupID = "orderflow-web"
 
 // Start subscribes a Kafka consumer to all orderflow event topics
@@ -48,6 +54,7 @@ const groupID = "orderflow-web"
 func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *events.Bus) (func(), error) {
 	if brokersCSV == "" {
 		logger.Info("kafka tail disabled: KAFKA_BROKERS not set")
+		Health.Store(false)
 		return nil, nil
 	}
 	brokers := splitCSV(brokersCSV)
@@ -78,8 +85,10 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 		attempt := 0
 		for {
 			if closed.Load() {
+				Health.Store(false)
 				return
 			}
+			Health.Store(true)
 			c, err := kafkaconsumer.New(kafkaconsumer.Config{
 				Brokers: brokers,
 				GroupID: groupID,
@@ -97,6 +106,7 @@ func Start(ctx context.Context, logger *slog.Logger, brokersCSV string, bus *eve
 				continue
 			}
 			runErr := c.Run(ctx)
+			Health.Store(false)
 			// Context cancellation: clean exit on shutdown.
 			if closed.Load() || ctx.Err() != nil {
 				return
