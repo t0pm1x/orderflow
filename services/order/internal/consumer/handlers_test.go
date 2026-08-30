@@ -18,11 +18,12 @@ import (
 func TestRegistry_HasAllEventTypes(t *testing.T) {
 	r := NewHandler(nil, slog.Default()).Registry()
 	want := []string{
+		"OrderCancelled",
+		"OrderConfirmed",
+		"PaymentCompleted",
+		"PaymentFailed",
 		"StockReserved",
 		"StockReservationFailed",
-		"OrderConfirmed",
-		"OrderCancelled",
-		"PaymentFailed",
 	}
 	for _, ev := range want {
 		if _, ok := r[ev]; !ok {
