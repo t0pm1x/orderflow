@@ -67,14 +67,24 @@ type Options struct {
 	Bus           *events.Bus
 	EventsEnabled bool // toggles /events/stream 503 vs 200
 	Urls          ServiceURLs
+	// KafkaHealth reports whether the in-process Kafka tail is
+	// consuming. Supplied as a closure so internal/server does not
+	// import internal/kafkatail. nil is treated as "down".
+	KafkaHealth func() bool
 }
 
 // Server hosts the HTTP listener. One instance per process.
 type Server struct {
-	opt     Options
-	srv     *http.Server
-	addr    atomic.Value // string
-	api     *API
+	opt  Options
+	srv  *http.Server
+	addr atomic.Value // string
+	api  *API
+
+	// healthCache holds the last /api/health/all snapshot for 1s.
+	// Typed `any` because the cacheEntry type is declared inside
+	// HealthAll (probe.go) to keep it out of the package surface.
+	healthCacheMu sync.Mutex
+	healthCache   any
 }
 
 // New constructs a non-listening Server.
