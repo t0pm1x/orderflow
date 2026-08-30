@@ -19,7 +19,8 @@
     <a class="brand" href="/">OrderFlow</a>
     <span class="muted">Distributed order processing — playground</span>
     <nav>
-      <a href="/" class:active={$page.url.pathname === '/' || $page.url.pathname.startsWith('/orders')}>Orders</a>
+      <a href="/" class:active={$page.url.pathname === '/' || $page.url.pathname.startsWith('/dashboard')}>Dashboard</a>
+      <a href="/orders" class:active={!$page.url.pathname.startsWith('/dashboard') && ($page.url.pathname === '/' || $page.url.pathname.startsWith('/orders'))}>Orders</a>
       <a href="/inventory" class:active={$page.url.pathname.startsWith('/inventory')}>Inventory</a>
       <a href="/payments/sim" class:active={$page.url.pathname.startsWith('/payments')}>Payments sim</a>
     </nav>
