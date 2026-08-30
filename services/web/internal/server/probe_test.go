@@ -21,7 +21,7 @@ type fakeUpstream struct {
 
 func newFakeUpstream(status int, body string, delay time.Duration) *fakeUpstream {
 	f := &fakeUpstream{}
-	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		f.calls.Add(1)
 		if delay > 0 {
 			time.Sleep(delay)

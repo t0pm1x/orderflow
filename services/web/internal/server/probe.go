@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// ServiceHealth is the per-upstream health snapshot returned by
+// /api/health/all. Status is one of "ok" | "down" | "degraded";
+// LatencyMS is the wall-clock time of the probe in milliseconds;
+// TakenAt is the RFC3339Nano timestamp the probe completed.
+// Detail is set only when Status != "ok" to keep the happy path
+// wire format small.
 type ServiceHealth struct {
 	Status    string `json:"status"`
 	LatencyMS int64  `json:"latency_ms"`
@@ -18,6 +24,10 @@ type ServiceHealth struct {
 	Detail    string `json:"detail,omitempty"`
 }
 
+// HealthSnapshot is the wire payload of GET /api/health/all. One
+// ServiceHealth per upstream (Order/Payment/Inventory/Saga) plus a
+// Kafka tail probe; SnapshotAt is the time the snapshot was
+// assembled (not when the last individual probe finished).
 type HealthSnapshot struct {
 	Order      ServiceHealth `json:"order"`
 	Payment    ServiceHealth `json:"payment"`
