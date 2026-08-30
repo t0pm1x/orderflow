@@ -14,6 +14,7 @@ import type {
   PaymentWebhook,
   StockItem,
   SubmitOrderRequest,
+  HealthSnapshot,
 } from './types';
 
 export class ApiError extends Error {
@@ -103,4 +104,11 @@ export async function fireWebhook(wh: PaymentWebhook): Promise<void> {
   });
   if (res.status === 200) return;
   await jsonOrThrow(res);
+}
+
+export async function getHealthAll(): Promise<HealthSnapshot> {
+  const res = await fetch('/api/health/all', {
+    headers: { Accept: 'application/json' }
+  });
+  return jsonOrThrow<HealthSnapshot>(res);
 }
