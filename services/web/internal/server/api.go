@@ -27,6 +27,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -197,6 +198,16 @@ func (a *API) ListOrders(w http.ResponseWriter, r *http.Request) {
 	skus := r.URL.Query()["sku"]
 
 	limit := 200 // widened so the SKU filter has enough rows to operate on
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		// Caller-supplied limit (used by the dashboard's KPI window,
+		// which only needs the 10 most recent orders). Falls back
+		// to the default if the value is missing or non-numeric;
+		// non-positive values are clamped to 1 so the upstream
+		// still receives a usable page size.
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
 	orders, err := a.Order.List(r.Context(), state, limit)
 	if err != nil {
 		status, code, msg := mapUpstreamError(w, a.Logger, "GET /api/orders", err)

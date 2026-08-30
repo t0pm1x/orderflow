@@ -47,10 +47,12 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 export async function listOrders(opts: {
   state?: OrderState;
   skus?: string[];
+  limit?: number;
 } = {}): Promise<Order[]> {
   const params = new URLSearchParams();
   if (opts.state) params.set('state', opts.state);
   for (const sku of opts.skus ?? []) params.append('sku', sku);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
   const url = `/api/orders${qs ? '?' + qs : ''}`;
   const res = await fetch(url, { headers: { Accept: 'application/json' } });

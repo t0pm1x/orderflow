@@ -35,7 +35,7 @@
 
   async function refreshOrders(): Promise<void> {
     try {
-      orders = await listOrders({});
+      orders = await listOrders({ limit: 10 });
       ordersErr = null;
     } catch (e) {
       if (e instanceof ApiError) ordersErr = e.message;
